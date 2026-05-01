@@ -262,18 +262,43 @@ class Polymarket:
         return market
 
     def get_all_events(self) -> "list[SimpleEvent]":
+        """Fetch active+open events from gamma. Paginates up to GAMMA_EVENT_LIMIT."""
+        max_total = int(os.getenv("GAMMA_EVENT_LIMIT", "200"))
+        page_size = 100
         events = []
-        res = httpx.get(self.gamma_events_endpoint)
-        if res.status_code == 200:
-            print(len(res.json()))
-            for event in res.json():
+        offset = 0
+        while len(events) < max_total:
+            try:
+                res = httpx.get(
+                    self.gamma_events_endpoint,
+                    params={
+                        "limit": page_size,
+                        "offset": offset,
+                        "active": "true",
+                        "closed": "false",
+                        "archived": "false",
+                    },
+                    timeout=15,
+                )
+            except httpx.HTTPError as e:
+                logger.warning("gamma events fetch failed: %s", e)
+                break
+            if res.status_code != 200:
+                logger.warning("gamma events bad status: %s", res.status_code)
+                break
+            batch = res.json()
+            if not batch:
+                break
+            for event in batch:
                 try:
-                    print(1)
                     event_data = self.map_api_to_event(event)
                     events.append(SimpleEvent(**event_data))
                 except Exception as e:
-                    print(e)
-                    pass
+                    logger.debug("skip event %s: %s", event.get("id"), e)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        logger.info("get_all_events: fetched %d events", len(events))
         return events
 
     def map_api_to_event(self, event) -> SimpleEvent:
