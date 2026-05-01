@@ -3,10 +3,20 @@
 This is a money-handling Polymarket bot. Treat every change as a potential
 production incident.
 
+> **Sister project:** `~/Desktop/poly/bot` is the user's other Polymarket
+> bot — a multi-agent swarm. They share the paper-trade journal and
+> 10-strategy doc in `~/Desktop/poly/`, but **no code**. Each runs on its
+> own wallet, its own SQLite, its own Docker container. Don't propagate
+> changes between them; don't import or reference swarm modules from here.
+>
+> For shared launch / risk decisions (e.g. "$100 each on Sunday"), see
+> `~/Desktop/poly/OPERATIONS.md`.
+
 ## Read first
 
 - `SPEC.md` — what the bot does, contracts between modules, env vars.
 - `deploy/PREFLIGHT.md` — operator checklist before live trading.
+- `~/Desktop/poly/OPERATIONS.md` — joint operations playbook for both bots.
 - `agents/application/prompts.py:one_best_trade` — the LLM contract that
   determines side semantics. **Any change here must be matched in
   `agents/polymarket/polymarket.py:execute_market_order` and vice versa.**
@@ -116,6 +126,19 @@ NEVER without going through `deploy/PREFLIGHT.md`. Specifically:
 - Tag prefix `prod-YYYYMMDD-HHMM` for VPS releases.
 - Tag prefix `v0.X.Y-prod-prep` for pre-production milestones.
 - Keep `SPEC.md` in lockstep with the tagged version.
+
+## Sunday 2026-05-03 launch — $100 in this bot
+
+Per the dual-bot plan in `~/Desktop/poly/OPERATIONS.md`:
+
+- This bot gets **$100 USDC** on its own wallet (`POLY1_WALLET` in `.env`).
+- Sister swarm bot gets **$100** on a separate wallet — independent.
+- Both flip to live the same morning, but failures are independent.
+- Cross-bot policy: if BOTH lose >5% on the same day, halt both. If only
+  one halts, the other keeps going (each bot's RiskGate decides).
+- Stage-1 trade size for the first 24 h is small ($1-$5 / trade) to
+  observe real CLOB fees before scaling. Configured via
+  `MAX_POSITION_FRACTION` in `.env`.
 
 ## Hebrew/English
 
