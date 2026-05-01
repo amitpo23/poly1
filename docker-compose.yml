@@ -1,0 +1,22 @@
+services:
+  trader:
+    build: .
+    image: poly1:local
+    container_name: poly1
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+    volumes:
+      - ./data:/app/data
+      - ./local_db_events:/app/local_db_events
+      - ./local_db_markets:/app/local_db_markets
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 1g
+    cpus: "1.0"
+    stop_grace_period: 60s

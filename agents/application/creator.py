@@ -2,9 +2,17 @@ from agents.application.executor import Executor as Agent
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
 
+import logging
+import time
+
+
+logger = logging.getLogger(__name__)
+
 
 class Creator:
-    def __init__(self):
+    def __init__(self, max_retries: int = 3, retry_delay_seconds: int = 5):
+        self.max_retries = max_retries
+        self.retry_delay_seconds = retry_delay_seconds
         self.polymarket = Polymarket()
         self.gamma = Gamma()
         self.agent = Agent()
@@ -19,28 +27,37 @@ class Creator:
         then executes that trade without any human intervention
 
         """
-        try:
-            events = self.polymarket.get_all_tradeable_events()
-            print(f"1. FOUND {len(events)} EVENTS")
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                return self._one_best_market_once()
+            except Exception:
+                logger.exception(
+                    "Market creation attempt %s/%s failed",
+                    attempt,
+                    self.max_retries,
+                )
+                if attempt == self.max_retries:
+                    raise
+                time.sleep(self.retry_delay_seconds)
 
-            filtered_events = self.agent.filter_events_with_rag(events)
-            print(f"2. FILTERED {len(filtered_events)} EVENTS")
+    def _one_best_market_once(self):
+        events = self.polymarket.get_all_tradeable_events()
+        print(f"1. FOUND {len(events)} EVENTS")
 
-            markets = self.agent.map_filtered_events_to_markets(filtered_events)
-            print()
-            print(f"3. FOUND {len(markets)} MARKETS")
+        filtered_events = self.agent.filter_events_with_rag(events)
+        print(f"2. FILTERED {len(filtered_events)} EVENTS")
 
-            print()
-            filtered_markets = self.agent.filter_markets(markets)
-            print(f"4. FILTERED {len(filtered_markets)} MARKETS")
+        markets = self.agent.map_filtered_events_to_markets(filtered_events)
+        print()
+        print(f"3. FOUND {len(markets)} MARKETS")
 
-            best_market = self.agent.source_best_market_to_create(filtered_markets)
-            print(f"5. IDEA FOR NEW MARKET {best_market}")
-            return best_market
+        print()
+        filtered_markets = self.agent.filter_markets(markets)
+        print(f"4. FILTERED {len(filtered_markets)} MARKETS")
 
-        except Exception as e:
-            print(f"Error {e} \n \n Retrying")
-            self.one_best_market()
+        best_market = self.agent.source_best_market_to_create(filtered_markets)
+        print(f"5. IDEA FOR NEW MARKET {best_market}")
+        return best_market
 
     def maintain_positions(self):
         pass
@@ -50,5 +67,6 @@ class Creator:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     c = Creator()
     c.one_best_market()

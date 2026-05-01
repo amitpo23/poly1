@@ -33,7 +33,7 @@ class Prompter:
         
         """
 
-    def prompts_polymarket(
+    def prompts_polymarket_forecast(
         self, data1: str, data2: str, market_question: str, outcome: str
     ) -> str:
         current_market_data = str(data1)
@@ -162,28 +162,35 @@ class Prompter:
 
         """
             + f"""
-        
+
         You made the following prediction for a market: {prediction}
 
         The current outcomes ${outcomes} prices are: ${outcome_prices}
 
-        Given your prediction, respond with a genius trade in the format:
-        `
-            price:'price_on_the_orderbook',
-            size:'percentage_of_total_funds',
-            side: BUY or SELL,
-        `
+        IMPORTANT — side semantics (read carefully):
+        - The first outcome in the outcomes list is the "primary" outcome.
+        - "side": "BUY" means: BUY the FIRST outcome (i.e., bet that the first outcome will happen).
+        - "side": "SELL" means: bet AGAINST the first outcome (equivalent to BUY of the second outcome).
+        - "price" must be the price of the outcome you are BUYING (or, for SELL, the price of the FIRST outcome you are betting against).
+        - Pick BUY if your forecast favors the first outcome; pick SELL if it favors the second.
+        - Do not respond with SELL if your forecast does not favor the second outcome.
 
-        Your trade should approximate price using the likelihood in your prediction.
+        Respond with a trade in valid JSON format:
+        {{
+            "price": price_on_the_orderbook,
+            "size_fraction": percentage_of_total_funds,
+            "side": "BUY or SELL",
+            "confidence": confidence_between_0_and_1
+        }}
 
-        Example response:
+        Use a conservative size_fraction unless the edge is unusually clear.
 
-        RESPONSE```
-            price:0.5,
-            size:0.1,
-            side:BUY,
-        ```
-        
+        Examples:
+        - You predict outcomes[0] is more likely than the market implies → "side": "BUY", "price": current price of outcomes[0]
+        - You predict outcomes[1] is more likely than the market implies → "side": "SELL", "price": current price of outcomes[0]
+
+        Example response: {{"price": 0.5, "size_fraction": 0.1, "side": "BUY", "confidence": 0.62}}
+
         """
         )
 

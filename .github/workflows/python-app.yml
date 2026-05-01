@@ -30,7 +30,10 @@ jobs:
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
     - name: Lint with black
       run: |
-        black .
+        black --check .
     - name: Test with unittest
       run: |
-        python -m unittest discover
+        python -m unittest discover -s tests
+    - name: Validate CLI entrypoint
+      run: |
+        PYTHONPATH=. python scripts/python/cli.py --help

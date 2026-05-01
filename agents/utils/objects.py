@@ -24,6 +24,15 @@ class Trade(BaseModel):
     type: str
 
 
+class TradeRecommendation(BaseModel):
+    price: float
+    size_fraction: float
+    side: str
+    confidence: Optional[float] = None
+    raw_response: Optional[str] = None
+    amount_usdc: Optional[float] = None
+
+
 class SimpleMarket(BaseModel):
     id: int
     question: str

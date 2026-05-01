@@ -1,6 +1,7 @@
 # core polymarket api
 # https://github.com/Polymarket/py-clob-client/tree/main/examples
 
+import logging
 import os
 import pdb
 import time
@@ -8,6 +9,8 @@ import ast
 import requests
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 from web3 import Web3
 from web3.constants import MAX_INT
@@ -27,14 +30,21 @@ from py_clob_client.clob_types import (
     OrderBookSummary,
 )
 from py_clob_client.order_builder.constants import BUY
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
-from agents.utils.objects import SimpleMarket, SimpleEvent
+from agents.utils.objects import SimpleMarket, SimpleEvent, TradeRecommendation
 
 load_dotenv()
 
 
 class Polymarket:
-    def __init__(self) -> None:
+    def __init__(self, live: bool = True) -> None:
+        self.live = live
         self.gamma_url = "https://gamma-api.polymarket.com"
         self.gamma_markets_endpoint = self.gamma_url + "/markets"
         self.gamma_events_endpoint = self.gamma_url + "/events"
@@ -66,8 +76,12 @@ class Polymarket:
             address=self.ctf_address, abi=self.erc1155_set_approval
         )
 
-        self._init_api_keys()
-        self._init_approvals(False)
+        if self.live:
+            self._init_api_keys()
+            self._init_approvals(False)
+        else:
+            self.client = None
+            self.credentials = None
 
     def _init_api_keys(self) -> None:
         self.client = ClobClient(
@@ -75,7 +89,19 @@ class Polymarket:
         )
         self.credentials = self.client.create_or_derive_api_creds()
         self.client.set_api_creds(self.credentials)
-        # print(self.credentials)
+        # Patch session timeout: py_clob_client uses requests with no default timeout.
+        try:
+            session = getattr(self.client, "session", None)
+            if session is not None:
+                original_request = session.request
+
+                def _request_with_timeout(method, url, **kwargs):
+                    kwargs.setdefault("timeout", 20)
+                    return original_request(method, url, **kwargs)
+
+                session.request = _request_with_timeout
+        except Exception:
+            pass
 
     def _init_approvals(self, run: bool = False) -> None:
         if not run:
@@ -265,7 +291,7 @@ class Polymarket:
             "featured": event["featured"],
             "restricted": event["restricted"],
             "end": event["endDate"],
-            "markets": ",".join([x["id"] for x in event["markets"]]),
+            "markets": ",".join(str(x["id"]) for x in event["markets"]),
         }
 
     def filter_events_for_trading(
@@ -338,24 +364,128 @@ class Polymarket:
             OrderArgs(price=price, size=size, side=side, token_id=token_id)
         )
 
-    def execute_market_order(self, market, amount) -> str:
-        token_id = ast.literal_eval(market[0].dict()["metadata"]["clob_token_ids"])[1]
+    def execute_market_order(
+        self, market, recommendation: TradeRecommendation
+    ) -> dict:
+        if self.client is None:
+            raise RuntimeError(
+                "Polymarket initialized in read-only mode (live=False); "
+                "cannot execute orders."
+            )
+
+        metadata = market[0].dict()["metadata"]
+        token_ids = ast.literal_eval(metadata["clob_token_ids"])
+        outcomes = ast.literal_eval(metadata["outcomes"])
+        outcome_prices_raw = metadata.get("outcome_prices")
+
+        if len(outcomes) != 2 or len(token_ids) != 2:
+            raise ValueError(
+                f"execute_market_order supports binary markets only; "
+                f"got outcomes={outcomes} token_ids={token_ids}"
+            )
+
+        # CLOB market orders are always BUY of a specific token.
+        # Convention (must match the LLM prompt at prompts.py:one_best_trade):
+        #   outcomes[0] is the "primary" outcome and the LLM anchors `price` to it.
+        #   side=BUY  => buy outcomes[0] at recommendation.price
+        #   side=SELL => bet against outcomes[0] = buy outcomes[1] at (1 - recommendation.price)
+        side = recommendation.side.upper()
+        if side == "BUY":
+            token_id = token_ids[0]
+            order_price = recommendation.price
+        elif side == "SELL":
+            token_id = token_ids[1]
+            order_price = 1.0 - recommendation.price
+        else:
+            raise ValueError(f"side must be BUY or SELL, got {side}")
+
+        if not 0.0 < order_price < 1.0:
+            raise ValueError(
+                f"order_price out of (0,1): {order_price} from side={side} "
+                f"recommendation.price={recommendation.price}"
+            )
+
+        # Sanity check: warn if recommendation.price is on the wrong side of 0.5
+        # for what `side` claims (e.g. side=BUY but price=0.2 implies the LLM
+        # actually thought outcomes[0] was unlikely).
+        try:
+            outcome_prices = [float(p) for p in ast.literal_eval(outcome_prices_raw)]
+            if len(outcome_prices) == 2:
+                anchored_to_first = abs(recommendation.price - outcome_prices[0]) <= abs(
+                    recommendation.price - outcome_prices[1]
+                )
+                if not anchored_to_first:
+                    logger.warning(
+                        "execute_market_order: price=%s appears anchored to "
+                        "outcomes[1] (prices=%s) — LLM may have meant the opposite "
+                        "side. Proceeding with side=%s.",
+                        recommendation.price, outcome_prices, side,
+                    )
+        except Exception:
+            pass
+
+        amount_usdc = recommendation.amount_usdc
+        if amount_usdc is None or amount_usdc <= 0:
+            raise ValueError(
+                f"recommendation.amount_usdc must be set and > 0, got {amount_usdc}"
+            )
+
         order_args = MarketOrderArgs(
             token_id=token_id,
-            amount=amount,
+            amount=amount_usdc,
+            price=order_price,
         )
-        signed_order = self.client.create_market_order(order_args)
-        print("Execute market order... signed_order ", signed_order)
-        resp = self.client.post_order(signed_order, orderType=OrderType.FOK)
-        print(resp)
-        print("Done!")
-        return resp
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(min=2, max=20),
+            retry=retry_if_exception_type(
+                (httpx.TimeoutException, httpx.NetworkError, requests.Timeout, requests.ConnectionError)
+            ),
+            reraise=True,
+        )
+        def _post():
+            signed = self.client.create_market_order(order_args)
+            return self.client.post_order(signed, orderType=OrderType.FOK)
+
+        resp = _post()
+
+        order_id = None
+        status = "unknown"
+        if isinstance(resp, dict):
+            order_id = resp.get("orderID") or resp.get("order_id")
+            status = resp.get("status", "unknown")
+
+        return {
+            "token_id": token_id,
+            "outcome_traded": outcomes[token_ids.index(token_id)],
+            "amount_usdc": amount_usdc,
+            "price_recommended": recommendation.price,
+            "order_price": order_price,
+            "side_recommended": side,
+            "order_id": order_id,
+            "status": status,
+            "raw": resp,
+        }
 
     def get_usdc_balance(self) -> float:
-        balance_res = self.usdc.functions.balanceOf(
-            self.get_address_for_private_key()
-        ).call()
-        return float(balance_res / 10e5)
+        if not self.private_key:
+            raise RuntimeError(
+                "POLYGON_WALLET_PRIVATE_KEY missing; cannot derive address for balance lookup."
+            )
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(min=1, max=10),
+            reraise=True,
+        )
+        def _read():
+            return self.usdc.functions.balanceOf(
+                self.get_address_for_private_key()
+            ).call()
+
+        # USDC has 6 decimals.
+        return float(_read() / 1e6)
 
 
 def test():
