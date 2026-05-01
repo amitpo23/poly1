@@ -297,15 +297,20 @@ class Polymarket:
     def filter_events_for_trading(
         self, events: "list[SimpleEvent]"
     ) -> "list[SimpleEvent]":
+        # NOTE: `restricted` on the gamma API marks events that Polymarket
+        # restricts from US-based UI users; it does NOT mean the CLOB rejects
+        # orders. As of 2026-05, ALL active+open events are flagged restricted,
+        # so excluding them here would idle the bot forever. We filter by
+        # active/closed/archived only and let the wallet's jurisdiction decide.
+        # Override with EXCLUDE_RESTRICTED=true if needed.
+        exclude_restricted = os.getenv("EXCLUDE_RESTRICTED", "false").lower() == "true"
         tradeable_events = []
         for event in events:
-            if (
-                event.active
-                and not event.restricted
-                and not event.archived
-                and not event.closed
-            ):
-                tradeable_events.append(event)
+            if not (event.active and not event.archived and not event.closed):
+                continue
+            if exclude_restricted and event.restricted:
+                continue
+            tradeable_events.append(event)
         return tradeable_events
 
     def get_all_tradeable_events(self) -> "list[SimpleEvent]":
