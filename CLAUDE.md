@@ -17,6 +17,10 @@ production incident.
 - `SPEC.md` — what the bot does, contracts between modules, env vars.
 - `deploy/PREFLIGHT.md` — operator checklist before live trading.
 - `~/Desktop/poly/OPERATIONS.md` — joint operations playbook for both bots.
+- `~/Desktop/poly/HANDOFF.md` — pre-launch decision brief for the next
+  reviewer (alongside `~/Desktop/poly/reviews/swarm_review_2026-05-01.md`).
+  Read this if you arrive in the codebase between 2026-05-01 and the
+  Sunday launch and there's still an open A/B/C decision.
 - `agents/application/prompts.py:one_best_trade` — the LLM contract that
   determines side semantics. **Any change here must be matched in
   `agents/polymarket/polymarket.py:execute_market_order` and vice versa.**
