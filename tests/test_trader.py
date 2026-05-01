@@ -60,6 +60,28 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
         rows = tl.recent(limit=5)
         self.assertEqual(rows[0]["status"], MAY_HAVE_FIRED)
 
+    def test_may_have_fired_blocks_beyond_dedupe_window(self):
+        """MAY_HAVE_FIRED must block re-trading regardless of age — operator
+        verifies on-chain and clears the row manually. A time-bounded check
+        would re-open a double-fill window after the dedupe window expires."""
+        import sqlite3
+        from datetime import datetime, timedelta, timezone
+        from agents.application.trade_log import MAY_HAVE_FIRED
+
+        tl = TradeLog(self.db_path)
+        # Backdate a MAY_HAVE_FIRED row to 7 days ago — well past any reasonable
+        # dedupe window. It must still block re-trading.
+        ancient = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO trades (ts, cycle_id, market_id, status, error) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (ancient, "old-cycle", "777", MAY_HAVE_FIRED, "ancient stranded"),
+            )
+            conn.commit()
+        self.assertTrue(tl.has_active_trade_for_market("777", hours=6))
+        self.assertTrue(tl.has_active_trade_for_market("777", hours=1))
+
 
 class TestRiskGate(TempDataMixin, unittest.TestCase):
     def _gate(self, **kwargs):

@@ -43,10 +43,12 @@ SKIPPED_GATE = "skipped_gate"
 SKIPPED_DRY_RUN = "skipped_dry_run"
 
 # Statuses that block re-trading the same market within the dedupe window.
-# MAY_HAVE_FIRED is included because the order may have actually executed
-# on the exchange even though we never recorded the response — re-submitting
-# could double-fill.
-ACTIVE_STATUSES = (PENDING, SUBMITTED, FILLED, MAY_HAVE_FIRED)
+TIME_BOUNDED_ACTIVE_STATUSES = (PENDING, SUBMITTED, FILLED)
+# MAY_HAVE_FIRED blocks unconditionally — the order may have actually executed
+# on the exchange even though we never recorded the response; re-submitting
+# could double-fill. Operator must verify on-chain and clear the row manually.
+UNBOUNDED_BLOCKING_STATUSES = (MAY_HAVE_FIRED,)
+ACTIVE_STATUSES = TIME_BOUNDED_ACTIVE_STATUSES + UNBOUNDED_BLOCKING_STATUSES
 
 
 def _now() -> str:
@@ -77,14 +79,25 @@ class TradeLog:
 
     def has_active_trade_for_market(self, market_id: str, hours: int = 6) -> bool:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+        time_bounded_placeholders = ",".join("?" for _ in TIME_BOUNDED_ACTIVE_STATUSES)
+        unbounded_placeholders = ",".join("?" for _ in UNBOUNDED_BLOCKING_STATUSES)
+        # MAY_HAVE_FIRED rows block forever (operator must clear manually);
+        # other active statuses block only within the dedupe window.
         sql = (
-            f"SELECT 1 FROM trades WHERE market_id = ? AND status IN ({placeholders}) "
-            f"AND ts >= ? LIMIT 1"
+            f"SELECT 1 FROM trades WHERE market_id = ? AND ("
+            f"  (status IN ({time_bounded_placeholders}) AND ts >= ?)"
+            f"  OR status IN ({unbounded_placeholders})"
+            f") LIMIT 1"
         )
         with self._lock, self._connect() as conn:
             row = conn.execute(
-                sql, (str(market_id), *ACTIVE_STATUSES, cutoff)
+                sql,
+                (
+                    str(market_id),
+                    *TIME_BOUNDED_ACTIVE_STATUSES,
+                    cutoff,
+                    *UNBOUNDED_BLOCKING_STATUSES,
+                ),
             ).fetchone()
             return row is not None
 

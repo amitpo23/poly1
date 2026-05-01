@@ -1,7 +1,10 @@
-"""Web monitor for both Polymarket bots.
+"""Web monitor + minimal control surface for both Polymarket bots.
 
 Serves a single auto-refreshing HTML page at http://127.0.0.1:7777/
-that shows poly1 + swarm state side-by-side. Read-only. Stdlib only.
+that shows poly1 + swarm state side-by-side, plus a HALT/RESUME button
+for poly1 (writes/removes the RiskGate kill-switch file).
+
+Stdlib only.
 
 Usage:
     python ~/Desktop/poly/monitor_web.py                # localhost:7777
@@ -9,9 +12,15 @@ Usage:
     python ~/Desktop/poly/monitor_web.py --bind 0.0.0.0 # LAN access (be careful)
 
 Endpoints:
-    GET /          — auto-refreshing HTML dashboard (every 10s)
-    GET /data.json — JSON snapshot
-    GET /healthz   — readiness probe (returns 200 if both DBs reachable)
+    GET  /                         auto-refreshing HTML dashboard (every 10s)
+    GET  /data.json                JSON snapshot
+    GET  /healthz                  readiness probe (200 if any DB reachable)
+    POST /control/poly1/halt       create kill-switch file → next cycle halts
+    POST /control/poly1/resume     remove kill-switch file → trading allowed
+
+Control endpoints accept POST only and only from 127.0.0.1 (loopback) — even
+when --bind=0.0.0.0 is used, remote clients see read-only access. Swarm has
+no kill-switch file mechanism; halting it requires SIGTERM (see status panel).
 """
 from __future__ import annotations
 
@@ -32,6 +41,9 @@ except ImportError as e:
     print(f"could not import monitor.py — make sure it lives next to this file: {e}",
           file=sys.stderr)
     sys.exit(1)
+
+
+POLY1_HALT_FILE = Path(os.path.expanduser("~/coding/poly1/data/HALT"))
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -110,7 +122,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .kv .k { color: var(--dim); }
   .footer { margin-top: 16px; font-size: 11px; color: var(--dim); text-align: center; }
   .alert { background: #4d1212; color: #ff7b72; padding: 6px 8px; border-radius: 4px; margin: 6px 0; }
+  .controls { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 12px; border-radius: 4px; cursor: pointer; font: inherit;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn-halt { color: #ff7b72; border-color: #4d1212; }
+  .btn-halt:hover { background: #4d1212; }
+  .btn-resume { color: #56d364; border-color: #1a472a; }
+  .btn-resume:hover { background: #1a472a; }
+  .ctrl-status { font-size: 11px; color: var(--dim); }
+  .halt-active { color: #ff7b72; font-weight: bold; }
 </style>
+<script>
+  async function poly1Control(action) {
+    const verb = action === "halt" ? "HALT trading" : "RESUME trading";
+    if (!confirm(verb + " on poly1?")) return;
+    const r = await fetch("/control/poly1/" + action, {method: "POST"});
+    const t = await r.text();
+    alert(r.ok ? ("OK: " + t) : ("FAIL " + r.status + ": " + t));
+    if (r.ok) setTimeout(() => location.reload(), 500);
+  }
+</script>
 </head>
 <body>
 <h1>Polymarket Bots Monitor <span class="ts">{TS}</span></h1>
@@ -121,12 +155,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <h2>poly1 <span class="badge {P1_BADGE}">{P1_HB}</span></h2>
     <div class="dim">~/coding/poly1</div>
     {P1_BODY}
+    <div class="controls">
+      <button class="btn btn-halt"   onclick="poly1Control('halt')">HALT</button>
+      <button class="btn btn-resume" onclick="poly1Control('resume')">RESUME</button>
+      <span class="ctrl-status">{P1_HALT_STATUS}</span>
+    </div>
   </div>
 
   <div class="card">
     <h2>swarm <span class="badge {SW_BADGE}">{SW_HB}</span></h2>
     <div class="dim">~/Desktop/poly/bot</div>
     {SW_BODY}
+    <div class="ctrl-status" style="margin-top:10px">
+      no kill-switch file. To halt: <code>kill -TERM $(pgrep -f "python main.py start")</code>
+    </div>
   </div>
 
 </div>
@@ -299,6 +341,12 @@ def _swarm_body(state: dict) -> str:
     return "".join(parts)
 
 
+def _poly1_halt_status_html() -> str:
+    if POLY1_HALT_FILE.exists():
+        return '<span class="halt-active">HALTED — kill switch active</span>'
+    return "trading allowed"
+
+
 def render_html() -> str:
     p1 = _clean(poly1_state())
     sw = _clean(swarm_state())
@@ -317,6 +365,7 @@ def render_html() -> str:
         .replace("{SW_BADGE}", sw_badge_cls)
         .replace("{P1_BODY}", _poly1_body(p1))
         .replace("{SW_BODY}", _swarm_body(sw))
+        .replace("{P1_HALT_STATUS}", _poly1_halt_status_html())
     )
 
 
@@ -329,6 +378,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _is_loopback(self) -> bool:
+        ip = self.client_address[0] if self.client_address else ""
+        return ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
     def do_GET(self) -> None:  # noqa: N802
         try:
             if self.path in ("/", "/index.html"):
@@ -339,6 +392,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ts": datetime.now(timezone.utc).isoformat(),
                     "poly1": _clean(poly1_state()),
                     "swarm": _clean(swarm_state()),
+                    "poly1_halted": POLY1_HALT_FILE.exists(),
                 }
                 body = json.dumps(snapshot, default=str, indent=2).encode("utf-8")
                 return self._send(200, body, "application/json")
@@ -349,6 +403,28 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.dumps({"ok": ok, "p1": "error" not in p1,
                                    "sw": "error" not in sw}).encode("utf-8")
                 return self._send(200 if ok else 503, body, "application/json")
+            return self._send(404, b"not found", "text/plain")
+        except Exception as e:
+            body = f"server error: {e}".encode("utf-8")
+            self._send(500, body, "text/plain")
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            if not self._is_loopback():
+                return self._send(403, b"control endpoints require loopback access",
+                                  "text/plain")
+            if self.path == "/control/poly1/halt":
+                POLY1_HALT_FILE.parent.mkdir(parents=True, exist_ok=True)
+                POLY1_HALT_FILE.write_text(
+                    f"halted via web monitor at "
+                    f"{datetime.now(timezone.utc).isoformat()}\n"
+                )
+                return self._send(200, b"poly1 HALT file created", "text/plain")
+            if self.path == "/control/poly1/resume":
+                if POLY1_HALT_FILE.exists():
+                    POLY1_HALT_FILE.unlink()
+                    return self._send(200, b"poly1 HALT file removed", "text/plain")
+                return self._send(200, b"poly1 was not halted", "text/plain")
             return self._send(404, b"not found", "text/plain")
         except Exception as e:
             body = f"server error: {e}".encode("utf-8")

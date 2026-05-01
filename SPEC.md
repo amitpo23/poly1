@@ -135,13 +135,21 @@ CREATE INDEX idx_status_ts ON trades(status, ts);
 | `filled` | Exchange confirmed fill. |
 | `failed` | `execute_market_order` raised; no order on exchange. |
 | `may_have_fired` | Stranded `pending` recovered on startup. **Manual on-chain check required before re-trading the market.** |
-| `skipped_dedupe` | Same market had an active row (PENDING/SUBMITTED/FILLED/MAY_HAVE_FIRED) within 6h. |
+| `skipped_dedupe` | Same market is currently blocked by an active row (see below). |
 | `skipped_gate` | Confidence or other guard failed. |
 | `skipped_dry_run` | `EXECUTE=false`; the row records what would have been sent. |
 
-`ACTIVE_STATUSES = (pending, submitted, filled, may_have_fired)` —
-the dedupe window blocks re-trading any market with such a row in the last
-6 hours.
+**Dedupe rules (`has_active_trade_for_market`):**
+- `TIME_BOUNDED_ACTIVE_STATUSES = (pending, submitted, filled)` — block
+  re-trading the same market only if a row exists **within the dedupe window**
+  (default 6h).
+- `UNBOUNDED_BLOCKING_STATUSES = (may_have_fired,)` — block **forever**,
+  regardless of age. The order may have actually executed on-chain even
+  though we never recorded the response; the operator must verify on-chain
+  and either delete the row or insert a manual reconciliation record before
+  the bot will re-trade that market.
+- `ACTIVE_STATUSES = TIME_BOUNDED_ACTIVE_STATUSES + UNBOUNDED_BLOCKING_STATUSES`
+  is the union, kept for callers that just need "is this market blocked."
 
 ### `data/llm_usage.jsonl`
 
