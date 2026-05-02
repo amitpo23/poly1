@@ -189,10 +189,6 @@ class Executor:
         
             
             return combined_result
-    def filter_events(self, events: "list[SimpleEvent]") -> str:
-        prompt = self.prompter.filter_events(events)
-        return self._invoke_tracked(prompt, tag="filter_events")
-
     def filter_events_with_rag(self, events: "list[SimpleEvent]") -> str:
         prompt = self.prompter.filter_events()
         logger.debug("filter_events_with_rag prompt: %s", prompt)
