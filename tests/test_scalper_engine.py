@@ -57,5 +57,58 @@ class TestPlaceLeg(unittest.TestCase):
         self.assertEqual(row["attempts_up"], 1)
 
 
+class TestMarketDiscovery(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.log = TradeLog(db_path=self.tmp.name)
+        self.dao = ScalperPairsDAO(self.log)
+        self.gamma = MagicMock()
+        self.engine = ScalperEngine(client=MagicMock(), log=self.log,
+                                      dao=self.dao, cfg=ScalperConfig(),
+                                      gamma=self.gamma, execute=False)
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            p = self.tmp.name + suffix
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_discover_filters_to_updown_15m_only(self):
+        self.gamma.get_events_by_tag = MagicMock(return_value=[
+            {"slug": "btc-updown-15m-100", "markets": [
+                {"slug": "btc-updown-15m-100",
+                 "clobTokenIds": "['tok_up', 'tok_dn']",
+                 "outcomes": "['Up', 'Down']",
+                 "endDate": "2026-05-05T12:15:00Z",
+                 "acceptingOrders": True}]},
+            {"slug": "trump-2028", "markets": [{"slug": "trump-2028"}]},
+            {"slug": "eth-updown-5m-50", "markets": [{"slug": "eth-updown-5m-50"}]},
+        ])
+        slugs = self.engine.discover_markets()
+        self.assertEqual([m["slug"] for m in slugs], ["btc-updown-15m-100"])
+
+    def test_discover_skips_not_accepting_orders(self):
+        self.gamma.get_events_by_tag = MagicMock(return_value=[
+            {"slug": "btc-updown-15m-100", "markets": [
+                {"slug": "btc-updown-15m-100", "acceptingOrders": False,
+                 "clobTokenIds": "['tok_up', 'tok_dn']",
+                 "outcomes": "['Up', 'Down']",
+                 "endDate": "2026-05-05T12:15:00Z"}]},
+        ])
+        self.assertEqual(self.engine.discover_markets(), [])
+
+    def test_discover_creates_pair_in_dao(self):
+        self.gamma.get_events_by_tag = MagicMock(return_value=[
+            {"slug": "btc-updown-15m-100", "markets": [
+                {"slug": "btc-updown-15m-100", "acceptingOrders": True,
+                 "clobTokenIds": "['tok_up', 'tok_dn']",
+                 "outcomes": "['Up', 'Down']",
+                 "endDate": "2026-05-05T12:15:00Z"}]},
+        ])
+        self.engine.discover_markets()
+        self.assertIsNotNone(self.dao.get_by_slug("btc-updown-15m-100"))
+
+
 if __name__ == "__main__":
     unittest.main()

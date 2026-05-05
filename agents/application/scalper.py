@@ -270,3 +270,50 @@ class ScalperEngine:
                 price=intended_price, size_usdc=0.0, error=str(e),
             )
             return {"filled": False, "error": str(e)}
+
+    def discover_markets(self) -> list:
+        """Scan gamma for *-updown-15m-* events. Create scalper_pairs rows for new ones."""
+        import ast
+        if self.gamma is None:
+            raise RuntimeError("gamma client not provided")
+        events = self.gamma.get_events_by_tag(tag_id=21)
+        out = []
+        for ev in events:
+            for m in ev.get("markets", []):
+                slug = m.get("slug", "")
+                if self.SLUG_FILTER not in slug:
+                    continue
+                if not m.get("acceptingOrders", False):
+                    continue
+                try:
+                    tokens = ast.literal_eval(m["clobTokenIds"])
+                    outcomes = ast.literal_eval(m["outcomes"])
+                except Exception as e:
+                    logger.warning("scalper: bad market metadata %s: %s", slug, e)
+                    continue
+                if len(tokens) != 2 or len(outcomes) != 2:
+                    continue
+                period_ts = self._parse_period_ts(slug, m.get("endDate"))
+                self.dao.create(slug=slug, period_ts=period_ts,
+                                up_token=tokens[0], down_token=tokens[1])
+                out.append({
+                    "slug": slug,
+                    "up_token": tokens[0],
+                    "down_token": tokens[1],
+                    "period_ts": period_ts,
+                })
+        return out
+
+    @staticmethod
+    def _parse_period_ts(slug: str, end_date) -> int:
+        suffix = slug.rsplit("-", 1)[-1]
+        if suffix.isdigit():
+            return int(suffix)
+        if end_date:
+            from datetime import datetime
+            try:
+                return int(datetime.fromisoformat(
+                    end_date.replace("Z", "+00:00")).timestamp())
+            except Exception:
+                pass
+        return 0

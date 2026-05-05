@@ -183,6 +183,16 @@ class GammaMarketClient:
             }
         )
 
+    def get_events_by_tag(self, tag_id: int, limit: int = 50) -> list:
+        """GET /events?tag_id=&active=true&closed=false&limit=&order=endDate&ascending=true"""
+        params = {
+            "tag_id": tag_id, "active": "true", "closed": "false",
+            "limit": str(limit), "order": "endDate", "ascending": "true",
+        }
+        response = httpx.get(self.gamma_events_endpoint, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
     def get_market(self, market_id: int) -> dict():
         url = self.gamma_markets_endpoint + "/" + str(market_id)
         logger.debug("gamma get_market %s", url)
