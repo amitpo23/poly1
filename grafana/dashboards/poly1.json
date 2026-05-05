@@ -1,0 +1,391 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "panel", "id": "stat", "name": "Stat", "version": ""},
+    {"type": "panel", "id": "table", "name": "Table", "version": ""},
+    {"type": "panel", "id": "piechart", "name": "Pie chart", "version": ""},
+    {"type": "panel", "id": "timeseries", "name": "Time series", "version": ""},
+    {"type": "datasource", "id": "frser-sqlite-datasource", "name": "SQLite", "version": ""}
+  ],
+  "id": null,
+  "uid": "poly1-main",
+  "title": "Poly1 — Both Agents",
+  "description": "Trader (LLM) + Scalper (Strategy C) live activity and P&L",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "tags": ["poly1", "trading"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Overview",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Trader — Capital Deployed ($)",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": {"mode": "fixed", "fixedColor": "blue"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT COALESCE(SUM(size_usdc),0) as value FROM trades WHERE status = 'filled'",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Scalper — Capital Deployed ($)",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": {"mode": "fixed", "fixedColor": "orange"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]}
+        }
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT COALESCE(SUM(cost_up + cost_down), 0) as value FROM scalper_pairs",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Scalper — Avg Gross Edge (%)",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0},
+              {"color": "green", "value": 2}
+            ]
+          },
+          "color": {"mode": "thresholds"}
+        }
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT ROUND(AVG((1.0 - cost_up/(qty_up+0.001) - cost_down/(qty_down+0.001)) * 100), 2) as value FROM scalper_pairs WHERE state IN ('both_filled','leg2_filled') AND qty_up > 0 AND qty_down > 0",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Scalper — Closed Pairs (won)",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {"mode": "fixed", "fixedColor": "green"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        }
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT COUNT(*) as value FROM scalper_pairs WHERE state IN ('both_filled','leg2_filled')",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Trader (LLM Agent)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Trader — Trades per Hour",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "fieldConfig": {
+        "defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 10}}
+      },
+      "options": {"tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT strftime('%Y-%m-%dT%H:00:00Z', ts) as time, SUM(CASE WHEN status='filled' THEN 1 ELSE 0 END) as filled, SUM(CASE WHEN status='skipped_dry_run' THEN 1 ELSE 0 END) as dry_run, SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed, SUM(CASE WHEN status='skipped_gate' THEN 1 ELSE 0 END) as gate_blocked FROM trades WHERE status != 'scalper_leg' GROUP BY strftime('%Y-%m-%dT%H:00:00Z', ts) ORDER BY time",
+          "queryType": "time series",
+          "timeColumns": ["time"]
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "piechart",
+      "title": "Trader — Trades by Status",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 6},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {"pieType": "pie", "legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT status, COUNT(*) as count FROM trades WHERE status != 'scalper_leg' GROUP BY status ORDER BY count DESC",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Trader — Trades Today",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 6},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"mode": "fixed", "fixedColor": "blue"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT COUNT(*) as value FROM trades WHERE status='filled' AND ts > datetime('now','-1 day')",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Trader — Deployed Today ($)",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 10},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": {"mode": "fixed", "fixedColor": "blue"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT COALESCE(SUM(size_usdc),0) as value FROM trades WHERE status='filled' AND ts > datetime('now','-1 day')",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Trader — Last 25 Trades",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 14},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {"sortBy": [{"displayName": "ts", "desc": true}]},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "size_usdc"}, "properties": [{"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "price"}, "properties": [{"id": "unit", "value": "percentunit"}]},
+          {"matcher": {"id": "byName", "options": "confidence"}, "properties": [{"id": "unit", "value": "percentunit"}]},
+          {"matcher": {"id": "byName", "options": "status"}, "properties": [
+            {"id": "custom.displayMode", "value": "color-background"},
+            {"id": "mappings", "value": [
+              {"type": "value", "options": {"filled": {"color": "green", "text": "✅ filled"}}},
+              {"type": "value", "options": {"failed": {"color": "red", "text": "❌ failed"}}},
+              {"type": "value", "options": {"may_have_fired": {"color": "orange", "text": "⚠️ may_have_fired"}}},
+              {"type": "value", "options": {"skipped_gate": {"color": "yellow", "text": "🚫 gate"}}}
+            ]}
+          ]}
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT ts, market_id, status, side, ROUND(price,3) as price, ROUND(size_usdc,2) as size_usdc, ROUND(confidence,2) as confidence, error FROM trades WHERE status != 'scalper_leg' ORDER BY ts DESC LIMIT 25",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Scalper (Strategy C)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24},
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "type": "piechart",
+      "title": "Scalper — Pairs by State",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 25},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {
+        "pieType": "donut",
+        "legend": {"displayMode": "table", "placement": "right"},
+        "tooltip": {"mode": "single"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT state, COUNT(*) as count FROM scalper_pairs GROUP BY state ORDER BY count DESC",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Scalper — Legs per Hour (shadow vs live)",
+      "gridPos": {"h": 8, "w": 18, "x": 6, "y": 25},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "fieldConfig": {
+        "defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 10}}
+      },
+      "options": {"tooltip": {"mode": "multi"}},
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT strftime('%Y-%m-%dT%H:00:00Z', ts) as time, SUM(CASE WHEN error LIKE '%SHADOW%' THEN 1 ELSE 0 END) as shadow_legs, SUM(CASE WHEN error NOT LIKE '%SHADOW%' THEN 1 ELSE 0 END) as live_legs FROM trades WHERE status = 'scalper_leg' GROUP BY strftime('%Y-%m-%dT%H:00:00Z', ts) ORDER BY time",
+          "queryType": "time series",
+          "timeColumns": ["time"]
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "table",
+      "title": "Scalper — Closed Pairs P&L",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 33},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {"sortBy": [{"displayName": "closed_at", "desc": true}]},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "cost_up"}, "properties": [{"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "cost_down"}, "properties": [{"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "gross_edge_%"}, "properties": [
+            {"id": "unit", "value": "percent"},
+            {"id": "custom.displayMode", "value": "color-background"},
+            {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 0},
+              {"color": "green", "value": 2}
+            ]}}
+          ]}
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT slug, ROUND(cost_up,3) as cost_up, ROUND(cost_down,3) as cost_down, ROUND(qty_up,2) as qty_up, ROUND(qty_down,2) as qty_down, ROUND(cost_up/(qty_up+0.001) + cost_down/(qty_down+0.001), 4) as sum_avg, ROUND((1.0 - cost_up/(qty_up+0.001) - cost_down/(qty_down+0.001)) * 100, 2) as \"gross_edge_%\", state, datetime(closed_ts/1000,'unixepoch') as closed_at FROM scalper_pairs WHERE state IN ('both_filled','leg2_filled') ORDER BY closed_ts DESC LIMIT 50",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "table",
+      "title": "Scalper — RECONCILE_NEEDED (requires operator action)",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 43},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+      "options": {},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "cost_up"}, "properties": [{"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "cost_down"}, "properties": [{"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "state"}, "properties": [
+            {"id": "custom.displayMode", "value": "color-background"},
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}
+          ]}
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {"type": "frser-sqlite-datasource", "uid": "${DS_TRADELOG}"},
+          "rawQueryText": "SELECT slug, ROUND(cost_up,3) as cost_up, qty_up, state, error, datetime(opened_ts/1000,'unixepoch') as opened_at FROM scalper_pairs WHERE state = 'reconcile_needed' ORDER BY opened_ts DESC",
+          "queryType": "table",
+          "timeColumns": []
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_TRADELOG",
+        "type": "datasource",
+        "pluginId": "frser-sqlite-datasource",
+        "current": {"text": "TradeLog", "value": "TradeLog"},
+        "hide": 2
+      }
+    ]
+  }
+}
