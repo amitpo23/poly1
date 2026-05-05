@@ -5,10 +5,11 @@ scalper_pairs queries return [] / {} gracefully if the table does not exist yet.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,12 +30,12 @@ def _conn() -> sqlite3.Connection:
 
 
 def _rows(sql: str, params: tuple = ()) -> list[dict]:
-    with _conn() as c:
+    with contextlib.closing(_conn()) as c:
         return [dict(r) for r in c.execute(sql, params).fetchall()]
 
 
 def _scalar(sql: str, params: tuple = (), default: Any = None) -> Any:
-    with _conn() as c:
+    with contextlib.closing(_conn()) as c:
         row = c.execute(sql, params).fetchone()
         return row[0] if row else default
 
@@ -88,6 +89,8 @@ def trades_by_status(status: str) -> list[dict]:
     return _rows("SELECT * FROM trades WHERE status=? ORDER BY ts DESC", (status,))
 
 
+# Status strings below are intentionally hardcoded to keep db.py free of
+# application imports. Keep in sync with trade_log.py constants.
 def trades_filled() -> list[dict]:
     return _rows("SELECT * FROM trades WHERE status='filled' ORDER BY ts")
 
@@ -113,7 +116,7 @@ def trade_status_counts() -> dict[str, int]:
 
 
 def open_positions() -> list[dict]:
-    """filled trades that are not yet redeemed — approximate 'capital at risk'."""
+    """All filled trades, newest first — capital at risk is approximate until settlement tracking is added."""
     return _rows(
         "SELECT * FROM trades WHERE status='filled' ORDER BY ts DESC"
     )
