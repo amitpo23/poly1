@@ -82,6 +82,32 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
         self.assertTrue(tl.has_active_trade_for_market("777", hours=6))
         self.assertTrue(tl.has_active_trade_for_market("777", hours=1))
 
+    def test_scalper_pairs_table_exists(self):
+        log = TradeLog(db_path=self.db_path)
+        with log._connect() as conn:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='scalper_pairs'"
+            ).fetchone()
+        self.assertIsNotNone(row, "scalper_pairs table must be created on init")
+
+    def test_wal_mode_enabled(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            path = f.name
+        try:
+            log = TradeLog(db_path=path)
+            with log._connect() as conn:
+                mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            self.assertEqual(mode.lower(), "wal")
+        finally:
+            os.unlink(path)
+
+    def test_scalper_leg_status_constant(self):
+        from agents.application.trade_log import SCALPER_LEG, ACTIVE_STATUSES
+        self.assertEqual(SCALPER_LEG, "scalper_leg")
+        # Must NOT be in ACTIVE_STATUSES — scalper has its own dedupe
+        self.assertNotIn(SCALPER_LEG, ACTIVE_STATUSES)
+
 
 class TestRiskGate(TempDataMixin, unittest.TestCase):
     def _gate(self, **kwargs):

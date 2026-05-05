@@ -30,6 +30,27 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS idx_market_status_ts ON trades(market_id, status, ts);
 CREATE INDEX IF NOT EXISTS idx_status_ts ON trades(status, ts);
+
+CREATE TABLE IF NOT EXISTS scalper_pairs (
+    slug TEXT PRIMARY KEY,
+    period_ts INTEGER NOT NULL,
+    up_token TEXT NOT NULL,
+    down_token TEXT NOT NULL,
+    qty_up REAL NOT NULL DEFAULT 0,
+    qty_down REAL NOT NULL DEFAULT 0,
+    cost_up REAL NOT NULL DEFAULT 0,
+    cost_down REAL NOT NULL DEFAULT 0,
+    attempts_up INTEGER NOT NULL DEFAULT 0,
+    attempts_down INTEGER NOT NULL DEFAULT 0,
+    last_price_up REAL,
+    last_price_down REAL,
+    state TEXT NOT NULL,
+    opened_ts INTEGER NOT NULL,
+    closed_ts INTEGER,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_scalper_state ON scalper_pairs(state);
+CREATE INDEX IF NOT EXISTS idx_scalper_period ON scalper_pairs(period_ts);
 """
 
 
@@ -41,6 +62,7 @@ MAY_HAVE_FIRED = "may_have_fired"  # crashed mid-execute; needs manual review
 SKIPPED_DEDUPE = "skipped_dedupe"
 SKIPPED_GATE = "skipped_gate"
 SKIPPED_DRY_RUN = "skipped_dry_run"
+SCALPER_LEG = "scalper_leg"
 
 # Statuses that block re-trading the same market within the dedupe window.
 TIME_BOUNDED_ACTIVE_STATUSES = (PENDING, SUBMITTED, FILLED)
@@ -69,6 +91,8 @@ class TradeLog:
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             yield conn
             conn.commit()
         finally:
