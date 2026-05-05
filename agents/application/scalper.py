@@ -122,3 +122,35 @@ class ScalpPair:
         else:
             other_avg = cost_other / qty_other
         return (other_avg + price) <= self.cfg.max_sum_avg
+
+    def evaluate_second_leg(
+        self, side: str, best_ask: float, now_ms: int
+    ) -> Optional[dict]:
+        """Return second-leg fire signal or None.
+
+        Caller must have set dynamic_threshold_<side> after leg 1 fill.
+        """
+        if side == "up":
+            dyn = self.dynamic_threshold_up
+            timer_attr = "below_dyn_since_up_ms"
+        elif side == "down":
+            dyn = self.dynamic_threshold_down
+            timer_attr = "below_dyn_since_down_ms"
+        else:
+            raise ValueError(f"side must be 'up' or 'down', got {side}")
+
+        if dyn is None:
+            return None
+        if best_ask > dyn:
+            setattr(self, timer_attr, None)
+            return None
+        # ask <= dyn from here on
+        if best_ask <= dyn - self.cfg.second_side_buffer:
+            return {"reason": "dyn_threshold_immediate", "price": best_ask}
+        cur = getattr(self, timer_attr)
+        if cur is None:
+            setattr(self, timer_attr, now_ms)
+            return None
+        if (now_ms - cur) >= self.cfg.second_side_time_ms:
+            return {"reason": "dyn_threshold_continuous", "price": best_ask}
+        return None

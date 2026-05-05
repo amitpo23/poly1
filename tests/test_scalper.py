@@ -101,5 +101,44 @@ class TestProfitGate(unittest.TestCase):
                                                         qty_other=5, cost_other=2.0))
 
 
+class TestSecondLeg(unittest.TestCase):
+    def setUp(self):
+        self.cfg = ScalperConfig()
+        self.pair = ScalpPair(slug="s", period_ts=1, up_token="u",
+                               down_token="d", cfg=self.cfg)
+        # Simulate leg 1 fill on UP at 0.45 → dyn_threshold for DOWN = 1 - 0.45 + 0.04 = 0.59
+        self.pair.dynamic_threshold_down = 0.59
+
+    def test_second_leg_immediate_trigger(self):
+        # ask <= dyn - second_side_buffer (0.01) → immediate
+        sig = self.pair.evaluate_second_leg("down", best_ask=0.57, now_ms=1000)
+        self.assertEqual(sig["reason"], "dyn_threshold_immediate")
+
+    def test_second_leg_blocked_when_above_dyn(self):
+        sig = self.pair.evaluate_second_leg("down", best_ask=0.62, now_ms=1000)
+        self.assertIsNone(sig)
+        self.assertIsNone(self.pair.below_dyn_since_down_ms)
+
+    def test_second_leg_continuous_below_starts_timer(self):
+        # ask = 0.585 → below dyn (0.59) but above (dyn - buffer = 0.58)
+        sig = self.pair.evaluate_second_leg("down", best_ask=0.585, now_ms=1000)
+        self.assertIsNone(sig)  # timer just started
+        self.assertEqual(self.pair.below_dyn_since_down_ms, 1000)
+
+    def test_second_leg_fires_after_200ms_continuous(self):
+        self.pair.evaluate_second_leg("down", best_ask=0.585, now_ms=1000)
+        sig = self.pair.evaluate_second_leg("down", best_ask=0.585, now_ms=1200)
+        self.assertEqual(sig["reason"], "dyn_threshold_continuous")
+
+    def test_second_leg_timer_resets_on_exit(self):
+        self.pair.evaluate_second_leg("down", best_ask=0.585, now_ms=1000)
+        # price spikes back above dyn
+        self.pair.evaluate_second_leg("down", best_ask=0.62, now_ms=1100)
+        self.assertIsNone(self.pair.below_dyn_since_down_ms)
+        # comes back — timer restarts
+        self.pair.evaluate_second_leg("down", best_ask=0.585, now_ms=1200)
+        self.assertEqual(self.pair.below_dyn_since_down_ms, 1200)
+
+
 if __name__ == "__main__":
     unittest.main()
