@@ -112,3 +112,13 @@ class ScalpPair:
         if best_ask >= temp + self.cfg.reversal_delta - 1e-9:
             return {"reason": "reversal", "price": best_ask}
         return None
+
+    def check_profit_gate(
+        self, side: str, price: float, qty_other: float, cost_other: float
+    ) -> bool:
+        """Return True if existing_avg_other + price <= max_sum_avg."""
+        if qty_other <= 0:
+            other_avg = 0.0
+        else:
+            other_avg = cost_other / qty_other
+        return (other_avg + price) <= self.cfg.max_sum_avg

@@ -69,5 +69,37 @@ class TestScalpPair(unittest.TestCase):
         self.assertIsNone(sig)
 
 
+class TestProfitGate(unittest.TestCase):
+    def setUp(self):
+        self.cfg = ScalperConfig()
+        self.pair = ScalpPair(slug="s", period_ts=1, up_token="u",
+                               down_token="d", cfg=self.cfg)
+
+    def test_gate_allows_when_no_other_side_yet(self):
+        self.assertTrue(self.pair.check_profit_gate(side="up", price=0.45,
+                                                       qty_other=0, cost_other=0))
+        self.assertTrue(self.pair.check_profit_gate(side="up", price=0.97,
+                                                       qty_other=0, cost_other=0))
+
+    def test_gate_blocks_when_sum_exceeds_max(self):
+        # other_avg = 0.50, candidate price = 0.49 → sum = 0.99 > 0.98 → block
+        self.assertFalse(self.pair.check_profit_gate(side="up", price=0.49,
+                                                        qty_other=10, cost_other=5.0))
+
+    def test_gate_allows_when_sum_at_boundary(self):
+        # other_avg = 0.50, candidate = 0.48 → sum = 0.98 == max → allow (<=)
+        self.assertTrue(self.pair.check_profit_gate(side="up", price=0.48,
+                                                       qty_other=10, cost_other=5.0))
+
+    def test_gate_with_partial_other_fills(self):
+        # 5 shares filled at avg cost 0.40 → other_avg = 0.40
+        # candidate 0.57 → sum = 0.97 < 0.98 → allow
+        self.assertTrue(self.pair.check_profit_gate(side="up", price=0.57,
+                                                       qty_other=5, cost_other=2.0))
+        # candidate 0.59 → sum = 0.99 > 0.98 → block
+        self.assertFalse(self.pair.check_profit_gate(side="up", price=0.59,
+                                                        qty_other=5, cost_other=2.0))
+
+
 if __name__ == "__main__":
     unittest.main()
