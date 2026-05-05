@@ -25,7 +25,7 @@ import sqlite3
 import sys
 import time
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 POLY1_DB = Path(os.path.expanduser("~/coding/poly1/data/trade_log.db"))
@@ -85,6 +85,27 @@ def _color_pnl(value: float) -> str:
     return f"$0.00"
 
 
+def _connect_ro(path: Path) -> sqlite3.Connection:
+    """Open a SQLite DB for dashboard reads without taking file locks.
+
+    The sister swarm DB often sits outside this repo, and SQLite's normal
+    locking can fail in sandboxed/read-only contexts. immutable=1 is correct
+    for a monitor snapshot: it avoids lock files and never writes.
+    """
+    return sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+
+
+def _tail_lines(path: Path, limit: int = 8) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+    return [line.rstrip("\n") for line in lines[-limit:]]
+
+
 def poly1_state() -> dict:
     out: dict = {"name": "poly1", "db_present": POLY1_DB.exists()}
     age, age_str = _heartbeat_age(POLY1_HB)
@@ -98,7 +119,7 @@ def poly1_state() -> dict:
     midnight_iso = midnight.isoformat()
 
     try:
-        with closing(sqlite3.connect(f"file:{POLY1_DB}?mode=ro", uri=True)) as con:
+        with closing(_connect_ro(POLY1_DB)) as con:
             con.row_factory = sqlite3.Row
             cur = con.cursor()
 
@@ -154,9 +175,16 @@ def swarm_state() -> dict:
     )
 
     try:
-        with closing(sqlite3.connect(f"file:{SWARM_DB}?mode=ro", uri=True)) as con:
+        with closing(_connect_ro(SWARM_DB)) as con:
             con.row_factory = sqlite3.Row
             cur = con.cursor()
+
+            totals = {}
+            for table in ("agent_state", "fills", "pending_orders",
+                          "pnl_events", "nh_journal"):
+                row = cur.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
+                totals[table] = int(row["n"] or 0)
+            out["table_counts"] = totals
 
             # PnL by agent today
             pnl_today = {}
@@ -185,11 +213,22 @@ def swarm_state() -> dict:
                 }
             out["fills_today_by_agent"] = fills_today
 
+            pending_by_status = {}
+            for row in cur.execute(
+                "SELECT status, COUNT(*) AS n FROM pending_orders GROUP BY status"
+            ):
+                pending_by_status[row["status"]] = int(row["n"] or 0)
+            out["pending_by_status"] = pending_by_status
+
             # agent state — pull NothingHappens open positions
             nh_open = []
+            last_state_ms = None
             for row in cur.execute(
                 "SELECT agent, payload, updated_ms FROM agent_state"
             ):
+                updated_ms = row["updated_ms"]
+                if updated_ms and (last_state_ms is None or updated_ms > last_state_ms):
+                    last_state_ms = updated_ms
                 if row["agent"] == "nothing_happens":
                     try:
                         payload = json.loads(row["payload"])
@@ -205,6 +244,29 @@ def swarm_state() -> dict:
                     except (json.JSONDecodeError, AttributeError):
                         continue
             out["nh_open_positions"] = nh_open
+            out["last_state_ms"] = last_state_ms
+            out["last_state_utc"] = (
+                datetime.fromtimestamp(last_state_ms / 1000, tz=timezone.utc).isoformat()
+                if last_state_ms else None
+            )
+
+            recent_pending = []
+            for row in cur.execute(
+                "SELECT id, agent, market_id, side, outcome, price_cents, size_usd, "
+                "status, order_id, created_ms, updated_ms, note "
+                "FROM pending_orders ORDER BY id DESC LIMIT 5"
+            ):
+                recent_pending.append(dict(row))
+            out["recent_pending"] = recent_pending
+
+            recent_nh = []
+            for row in cur.execute(
+                "SELECT id, agent, market_id, slug, no_price_quoted, no_price_filled, "
+                "rejected_count, opened_at_ms, last_check_ms, unrealized_pnl "
+                "FROM nh_journal ORDER BY id DESC LIMIT 5"
+            ):
+                recent_nh.append(dict(row))
+            out["recent_nh_journal"] = recent_nh
 
             # last 5 fills
             recent = []
@@ -216,6 +278,7 @@ def swarm_state() -> dict:
             out["recent_fills"] = recent
     except sqlite3.Error as e:
         out["error"] = f"sqlite: {e}"
+    out["recent_log"] = _tail_lines(SWARM_LOG, limit=8)
     return out
 
 
@@ -268,8 +331,27 @@ def render(p1: dict, sw: dict) -> str:
     if "error" in sw:
         lines.append(f"  {C_RED}{sw['error']}{C_RESET}")
     else:
+        if sw.get("heartbeat_age_s") is None or sw.get("heartbeat_age_s", 0) > 1800:
+            lines.append(
+                f"  {C_RED}OFFLINE/STALE: no fresh swarm log in "
+                f"{_human_age(sw.get('heartbeat_age_s') or 0)}{C_RESET}"
+            )
+        if sw.get("last_state_utc"):
+            lines.append(f"  last DB state: {sw['last_state_utc']}")
+        if sw.get("table_counts"):
+            tc = sw["table_counts"]
+            lines.append(
+                f"  rows: fills={tc.get('fills', 0)} pending={tc.get('pending_orders', 0)} "
+                f"pnl_events={tc.get('pnl_events', 0)} nh_journal={tc.get('nh_journal', 0)}"
+            )
         daily = sw.get("daily_pnl", 0.0)
         lines.append(f"  daily PnL: {_color_pnl(daily)}")
+        if sw.get("pending_by_status"):
+            bits = " ".join(
+                f"{status}={count}"
+                for status, count in sorted(sw["pending_by_status"].items())
+            )
+            lines.append(f"  pending orders: {bits}")
         for agent, info in sw.get("pnl_today_by_agent", {}).items():
             lines.append(
                 f"    {agent:<20} pnl={_color_pnl(info['pnl'])}  events={info['events']}"
@@ -296,6 +378,17 @@ def render(p1: dict, sw: dict) -> str:
                 lines.append(
                     f"    {ts}  {r['agent']:<16} {r['side']:<4} {r['outcome']:<5} "
                     f"p={r['price']:.4f} sz={r['size']:.2f} fee={r['fee']:.4f}"
+                )
+        if sw.get("recent_pending"):
+            lines.append(f"  {C_DIM}recent pending/order ledger:{C_RESET}")
+            for r in sw["recent_pending"]:
+                ts = datetime.fromtimestamp(r["updated_ms"] / 1000, tz=timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                lines.append(
+                    f"    {ts}  {r['agent']:<16} {r['status']:<9} "
+                    f"{r['side']:<4} {r['outcome']:<3} "
+                    f"p={float(r['price_cents'] or 0):.4f} sz=${r['size_usd']:.2f}"
                 )
 
     lines.append("")

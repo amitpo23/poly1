@@ -185,8 +185,14 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 
 | Var | Purpose |
 |---|---|
-| `POLYGON_WALLET_PRIVATE_KEY` | Polygon EOA used for CLOB order signing and balance reads |
+| `POLYGON_WALLET_PRIVATE_KEY` | EOA private key used to sign CLOB orders and (in EOA mode) hold collateral |
 | `OPENAI_API_KEY` | LLM (ChatOpenAI) and embeddings (Chroma) |
+| `POLYMARKET_FUNDER` | Proxy address from `polymarket.com/settings`. **Required for Privy/Magic accounts** (Google/email login) — switches the bot to POLY_PROXY signing mode (`signature_type=1`), uses pUSD as collateral (`0xC011…2DFB`), reads balance from the proxy, and skips `_init_approvals` (Polymarket auto-allows on proxy deployment). Leave blank for classic EOA wallets (MetaMask). |
+| `POLYMARKET_DEPOSIT_WALLET` | Deposit wallet address for current CLOB v2 API trading. When set, the bot uses this as funder/balance holder and defaults to `signature_type=3`. |
+| `POLYMARKET_SIGNATURE_TYPE` | Optional override. Use `3` for deposit wallet (`POLY_1271`), `1` for legacy Magic/proxy, or leave blank to infer from wallet env. |
+| `POLYMARKET_CLOB_API_KEY` / `POLYMARKET_CLOB_API_SECRET` / `POLYMARKET_CLOB_API_PASSPHRASE` | Optional persisted CLOB L2 credentials. If blank, the bot derives credentials from `POLYGON_WALLET_PRIVATE_KEY` at startup. |
+| `POLYMARKET_BUILDER_CODE` / `POLYMARKET_BUILDER_ADDRESS` | Optional builder attribution config for CLOB v2 orders. |
+| `BUILDER_API_KEY` / `BUILDER_SECRET` / `BUILDER_PASS_PHRASE` | Builder relayer credentials needed by `scripts/python/setup_deposit_wallet.py` to deploy/fund/approve the deposit wallet. |
 
 ### Trader runtime
 
@@ -211,6 +217,9 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | `MIN_USDC_FLOOR` | `10.0` | Halt if balance below |
 | `MAX_DAILY_TOKEN_USD` | `5.0` | Halt if 24h LLM cost exceeds |
 | `KILL_SWITCH_FILE` | `./data/HALT` | Operator override |
+| `POLYMARKET_MAX_SLIPPAGE` | `0.03` | FOK market-buy slippage tolerance. Rejects if live ask exceeds model price by more than this fraction. |
+| `POLYMARKET_MIN_ORDER_USDC` | `1.0` | Skip orders smaller than this USDC amount. |
+| `POLYGON_RPC` | `https://polygon.drpc.org` | Polygon RPC endpoint. Override with paid Alchemy/Infura key for production. |
 
 ### Persistence
 

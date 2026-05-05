@@ -12,24 +12,28 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+MAX_MARKET_ORDER_SLIPPAGE = float(os.getenv("POLYMARKET_MAX_SLIPPAGE", "0.03"))
+MIN_MARKET_ORDER_USDC = float(os.getenv("POLYMARKET_MIN_ORDER_USDC", "1.0"))
+
 from web3 import Web3
 from web3.constants import MAX_INT
 from web3.middleware import geth_poa_middleware
 
 import httpx
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds
-from py_clob_client.constants import AMOY, POLYGON
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import ApiCreds, BuilderConfig
+from py_clob_client_v2.constants import AMOY, POLYGON
+from py_clob_client_v2.exceptions import PolyApiException
 from py_order_utils.builders import OrderBuilder
 from py_order_utils.model import OrderData
 from py_order_utils.signer import Signer
-from py_clob_client.clob_types import (
+from py_clob_client_v2.clob_types import (
     OrderArgs,
-    MarketOrderArgs,
+    MarketOrderArgsV2 as MarketOrderArgs,
     OrderType,
     OrderBookSummary,
 )
-from py_clob_client.order_builder.constants import BUY
+from py_clob_client_v2.order_builder.constants import BUY
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -54,23 +58,84 @@ class Polymarket:
 
         self.chain_id = 137  # POLYGON
         self.private_key = os.getenv("POLYGON_WALLET_PRIVATE_KEY")
-        self.polygon_rpc = "https://polygon-rpc.com"
+        # Default RPC: free public node. polygon-rpc.com used to be free but
+        # has moved to authenticated tenants only; drpc.org is currently open.
+        # Override via env if you have a paid Alchemy/Infura/QuickNode key.
+        self.polygon_rpc = os.getenv("POLYGON_RPC", "https://polygon.drpc.org")
         self.w3 = Web3(Web3.HTTPProvider(self.polygon_rpc))
 
-        self.exchange_address = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
-        self.neg_risk_exchange_address = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+        # Deposit-wallet mode: CLOB v2 now requires new API users to trade
+        # through a deposit wallet (signature_type=3). Set
+        # POLYMARKET_DEPOSIT_WALLET once it has been deployed/funded.
+        deposit_wallet_env = os.getenv("POLYMARKET_DEPOSIT_WALLET", "").strip()
+        self.deposit_wallet = (
+            Web3.to_checksum_address(deposit_wallet_env)
+            if deposit_wallet_env
+            else None
+        )
+
+        # POLY_PROXY mode: set POLYMARKET_FUNDER to the proxy address shown
+        # on polymarket.com/settings (Privy/Magic embedded wallets, e.g. Google
+        # login). When set, the bot signs orders with the EOA derived from
+        # POLYGON_WALLET_PRIVATE_KEY but uses the proxy as the order funder
+        # and balance source. Unset -> classic EOA-only mode (MetaMask).
+        funder_env = os.getenv("POLYMARKET_FUNDER", "").strip()
+        legacy_funder = Web3.to_checksum_address(funder_env) if funder_env else None
+        self.funder = self.deposit_wallet or legacy_funder
+        signature_type_env = os.getenv("POLYMARKET_SIGNATURE_TYPE", "").strip()
+        if signature_type_env:
+            self.signature_type = int(signature_type_env)
+        elif self.deposit_wallet:
+            self.signature_type = 3
+        elif self.funder:
+            self.signature_type = 1
+        else:
+            self.signature_type = None
+
+        # CLOB v2 requires every order to carry a non-zero builder_code attribution.
+        # Create one in polymarket.com/settings?tab=builder. Without it the new
+        # exchange returns "maker address not allowed, please use the deposit
+        # wallet flow" even when funder/allowances/balance are all correct.
+        self.builder_code = os.getenv("POLYMARKET_BUILDER_CODE", "").strip() or None
+        builder_addr_env = os.getenv("POLYMARKET_BUILDER_ADDRESS", "").strip()
+        if builder_addr_env:
+            self.builder_address = Web3.to_checksum_address(builder_addr_env)
+        else:
+            self.builder_address = self.funder or ""
+            if self.builder_code and self.funder:
+                logger.warning(
+                    "POLYMARKET_BUILDER_ADDRESS not set; falling back to funder=%s. "
+                    "Set POLYMARKET_BUILDER_ADDRESS explicitly for builder attribution.",
+                    self.funder,
+                )
+
+        if self.funder:
+            # Post-pUSD migration addresses (proxy/Privy users trade against
+            # these). pUSD is a 6-decimal ERC-20 wrapping USDC.e.
+            self.exchange_address = "0xE111180000d2663C0091e4f400237545B87B996B"
+            self.neg_risk_exchange_address = "0xe2222d279d744050d28e00520010520000310F59"
+        else:
+            # Legacy EOA addresses (kept for backward compat with MetaMask wallets).
+            self.exchange_address = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
+            self.neg_risk_exchange_address = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 
         self.erc20_approve = """[{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"owner","type":"address"},{"indexed":true,"internalType":"address","name":"spender","type":"address"},{"indexed":false,"internalType":"uint256","name":"value","type":"uint256"}],"name":"Approval","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"authorizer","type":"address"},{"indexed":true,"internalType":"bytes32","name":"nonce","type":"bytes32"}],"name":"AuthorizationCanceled","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"authorizer","type":"address"},{"indexed":true,"internalType":"bytes32","name":"nonce","type":"bytes32"}],"name":"AuthorizationUsed","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"account","type":"address"}],"name":"Blacklisted","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"userAddress","type":"address"},{"indexed":false,"internalType":"address payable","name":"relayerAddress","type":"address"},{"indexed":false,"internalType":"bytes","name":"functionSignature","type":"bytes"}],"name":"MetaTransactionExecuted","type":"event"},{"anonymous":false,"inputs":[],"name":"Pause","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"newRescuer","type":"address"}],"name":"RescuerChanged","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"bytes32","name":"role","type":"bytes32"},{"indexed":true,"internalType":"bytes32","name":"previousAdminRole","type":"bytes32"},{"indexed":true,"internalType":"bytes32","name":"newAdminRole","type":"bytes32"}],"name":"RoleAdminChanged","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"bytes32","name":"role","type":"bytes32"},{"indexed":true,"internalType":"address","name":"account","type":"address"},{"indexed":true,"internalType":"address","name":"sender","type":"address"}],"name":"RoleGranted","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"bytes32","name":"role","type":"bytes32"},{"indexed":true,"internalType":"address","name":"account","type":"address"},{"indexed":true,"internalType":"address","name":"sender","type":"address"}],"name":"RoleRevoked","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"from","type":"address"},{"indexed":true,"internalType":"address","name":"to","type":"address"},{"indexed":false,"internalType":"uint256","name":"value","type":"uint256"}],"name":"Transfer","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"account","type":"address"}],"name":"UnBlacklisted","type":"event"},{"anonymous":false,"inputs":[],"name":"Unpause","type":"event"},{"inputs":[],"name":"APPROVE_WITH_AUTHORIZATION_TYPEHASH","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"BLACKLISTER_ROLE","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"CANCEL_AUTHORIZATION_TYPEHASH","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"DECREASE_ALLOWANCE_WITH_AUTHORIZATION_TYPEHASH","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"DEFAULT_ADMIN_ROLE","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"DEPOSITOR_ROLE","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"DOMAIN_SEPARATOR","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"EIP712_VERSION","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"INCREASE_ALLOWANCE_WITH_AUTHORIZATION_TYPEHASH","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"META_TRANSACTION_TYPEHASH","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"PAUSER_ROLE","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"PERMIT_TYPEHASH","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"RESCUER_ROLE","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"TRANSFER_WITH_AUTHORIZATION_TYPEHASH","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"WITHDRAW_WITH_AUTHORIZATION_TYPEHASH","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"address","name":"spender","type":"address"}],"name":"allowance","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"}],"name":"approve","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"value","type":"uint256"},{"internalType":"uint256","name":"validAfter","type":"uint256"},{"internalType":"uint256","name":"validBefore","type":"uint256"},{"internalType":"bytes32","name":"nonce","type":"bytes32"},{"internalType":"uint8","name":"v","type":"uint8"},{"internalType":"bytes32","name":"r","type":"bytes32"},{"internalType":"bytes32","name":"s","type":"bytes32"}],"name":"approveWithAuthorization","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"authorizer","type":"address"},{"internalType":"bytes32","name":"nonce","type":"bytes32"}],"name":"authorizationState","outputs":[{"internalType":"enum GasAbstraction.AuthorizationState","name":"","type":"uint8"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"blacklist","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"blacklisters","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"authorizer","type":"address"},{"internalType":"bytes32","name":"nonce","type":"bytes32"},{"internalType":"uint8","name":"v","type":"uint8"},{"internalType":"bytes32","name":"r","type":"bytes32"},{"internalType":"bytes32","name":"s","type":"bytes32"}],"name":"cancelAuthorization","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"decimals","outputs":[{"internalType":"uint8","name":"","type":"uint8"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"subtractedValue","type":"uint256"}],"name":"decreaseAllowance","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"decrement","type":"uint256"},{"internalType":"uint256","name":"validAfter","type":"uint256"},{"internalType":"uint256","name":"validBefore","type":"uint256"},{"internalType":"bytes32","name":"nonce","type":"bytes32"},{"internalType":"uint8","name":"v","type":"uint8"},{"internalType":"bytes32","name":"r","type":"bytes32"},{"internalType":"bytes32","name":"s","type":"bytes32"}],"name":"decreaseAllowanceWithAuthorization","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"user","type":"address"},{"internalType":"bytes","name":"depositData","type":"bytes"}],"name":"deposit","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"userAddress","type":"address"},{"internalType":"bytes","name":"functionSignature","type":"bytes"},{"internalType":"bytes32","name":"sigR","type":"bytes32"},{"internalType":"bytes32","name":"sigS","type":"bytes32"},{"internalType":"uint8","name":"sigV","type":"uint8"}],"name":"executeMetaTransaction","outputs":[{"internalType":"bytes","name":"","type":"bytes"}],"stateMutability":"payable","type":"function"},{"inputs":[{"internalType":"bytes32","name":"role","type":"bytes32"}],"name":"getRoleAdmin","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"bytes32","name":"role","type":"bytes32"},{"internalType":"uint256","name":"index","type":"uint256"}],"name":"getRoleMember","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"bytes32","name":"role","type":"bytes32"}],"name":"getRoleMemberCount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"bytes32","name":"role","type":"bytes32"},{"internalType":"address","name":"account","type":"address"}],"name":"grantRole","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"bytes32","name":"role","type":"bytes32"},{"internalType":"address","name":"account","type":"address"}],"name":"hasRole","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"addedValue","type":"uint256"}],"name":"increaseAllowance","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"increment","type":"uint256"},{"internalType":"uint256","name":"validAfter","type":"uint256"},{"internalType":"uint256","name":"validBefore","type":"uint256"},{"internalType":"bytes32","name":"nonce","type":"bytes32"},{"internalType":"uint8","name":"v","type":"uint8"},{"internalType":"bytes32","name":"r","type":"bytes32"},{"internalType":"bytes32","name":"s","type":"bytes32"}],"name":"increaseAllowanceWithAuthorization","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"string","name":"newName","type":"string"},{"internalType":"string","name":"newSymbol","type":"string"},{"internalType":"uint8","name":"newDecimals","type":"uint8"},{"internalType":"address","name":"childChainManager","type":"address"}],"name":"initialize","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"initialized","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"isBlacklisted","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"name","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"}],"name":"nonces","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"pause","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"paused","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"pausers","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"value","type":"uint256"},{"internalType":"uint256","name":"deadline","type":"uint256"},{"internalType":"uint8","name":"v","type":"uint8"},{"internalType":"bytes32","name":"r","type":"bytes32"},{"internalType":"bytes32","name":"s","type":"bytes32"}],"name":"permit","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"bytes32","name":"role","type":"bytes32"},{"internalType":"address","name":"account","type":"address"}],"name":"renounceRole","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"contract IERC20","name":"tokenContract","type":"address"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"}],"name":"rescueERC20","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"rescuers","outputs":[{"internalType":"address[]","name":"","type":"address[]"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"bytes32","name":"role","type":"bytes32"},{"internalType":"address","name":"account","type":"address"}],"name":"revokeRole","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"symbol","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"totalSupply","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"recipient","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"sender","type":"address"},{"internalType":"address","name":"recipient","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"}],"name":"transferFrom","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"from","type":"address"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"value","type":"uint256"},{"internalType":"uint256","name":"validAfter","type":"uint256"},{"internalType":"uint256","name":"validBefore","type":"uint256"},{"internalType":"bytes32","name":"nonce","type":"bytes32"},{"internalType":"uint8","name":"v","type":"uint8"},{"internalType":"bytes32","name":"r","type":"bytes32"},{"internalType":"bytes32","name":"s","type":"bytes32"}],"name":"transferWithAuthorization","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"unBlacklist","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"unpause","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"string","name":"newName","type":"string"},{"internalType":"string","name":"newSymbol","type":"string"}],"name":"updateMetadata","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"amount","type":"uint256"}],"name":"withdraw","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"uint256","name":"value","type":"uint256"},{"internalType":"uint256","name":"validAfter","type":"uint256"},{"internalType":"uint256","name":"validBefore","type":"uint256"},{"internalType":"bytes32","name":"nonce","type":"bytes32"},{"internalType":"uint8","name":"v","type":"uint8"},{"internalType":"bytes32","name":"r","type":"bytes32"},{"internalType":"bytes32","name":"s","type":"bytes32"}],"name":"withdrawWithAuthorization","outputs":[],"stateMutability":"nonpayable","type":"function"}]"""
         self.erc1155_set_approval = """[{"inputs": [{ "internalType": "address", "name": "operator", "type": "address" },{ "internalType": "bool", "name": "approved", "type": "bool" }],"name": "setApprovalForAll","outputs": [],"stateMutability": "nonpayable","type": "function"}]"""
 
-        self.usdc_address = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+        if self.funder:
+            # pUSD ERC-20 (6 decimals) — collateral token on the new CLOB.
+            self.collateral_address = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+        else:
+            # USDC.e — legacy collateral for EOA users.
+            self.collateral_address = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+        self.usdc_address = self.collateral_address  # alias, retained for callers
         self.ctf_address = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
         self.web3 = Web3(Web3.HTTPProvider(self.polygon_rpc))
         self.web3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
         self.usdc = self.web3.eth.contract(
-            address=self.usdc_address, abi=self.erc20_approve
+            address=self.collateral_address, abi=self.erc20_approve
         )
         self.ctf = self.web3.eth.contract(
             address=self.ctf_address, abi=self.erc1155_set_approval
@@ -84,11 +149,51 @@ class Polymarket:
             self.credentials = None
 
     def _init_api_keys(self) -> None:
-        self.client = ClobClient(
-            self.clob_url, key=self.private_key, chain_id=self.chain_id
+        builder_config = (
+            BuilderConfig(
+                builder_address=self.builder_address,
+                builder_code=self.builder_code,
+            )
+            if self.builder_code
+            else None
         )
-        self.credentials = self.client.create_or_derive_api_creds()
-        self.client.set_api_creds(self.credentials)
+
+        signature_type = self.signature_type
+        funder = self.funder if self.funder else None
+
+        env_creds = self._api_creds_from_env()
+        if env_creds:
+            self.credentials = env_creds
+        else:
+            # L1 client: signs the auth request with the private key to derive
+            # existing L2 API credentials. Derive first to avoid a noisy
+            # "Could not create api key" response on accounts that already
+            # have a CLOB API key.
+            l1_client = ClobClient(
+                self.clob_url,
+                key=self.private_key,
+                chain_id=self.chain_id,
+                signature_type=signature_type,
+                funder=funder,
+                builder_config=builder_config,
+            )
+            try:
+                self.credentials = l1_client.derive_api_key()
+            except PolyApiException:
+                self.credentials = l1_client.create_api_key()
+
+        # L2 client: authenticated for order posting, cancellations, and
+        # account methods. This matches the v2 SDK examples and avoids relying
+        # on mutating client mode after construction.
+        self.client = ClobClient(
+            self.clob_url,
+            key=self.private_key,
+            chain_id=self.chain_id,
+            creds=self.credentials,
+            signature_type=signature_type,
+            funder=funder,
+            builder_config=builder_config,
+        )
         # Patch session timeout: py_clob_client uses requests with no default timeout.
         try:
             session = getattr(self.client, "session", None)
@@ -103,8 +208,24 @@ class Polymarket:
         except Exception:
             pass
 
+    def _api_creds_from_env(self) -> ApiCreds:
+        api_key = os.getenv("POLYMARKET_CLOB_API_KEY", "").strip()
+        api_secret = os.getenv("POLYMARKET_CLOB_API_SECRET", "").strip()
+        api_passphrase = os.getenv("POLYMARKET_CLOB_API_PASSPHRASE", "").strip()
+        if api_key and api_secret and api_passphrase:
+            return ApiCreds(
+                api_key=api_key,
+                api_secret=api_secret,
+                api_passphrase=api_passphrase,
+            )
+        return None
+
     def _init_approvals(self, run: bool = False) -> None:
         if not run:
+            return
+        if self.funder:
+            # POLY_PROXY: Polymarket auto-sets allowances on proxy deployment;
+            # the EOA cannot approve on behalf of the proxy anyway.
             return
 
         priv_key = self.private_key
@@ -241,21 +362,22 @@ class Polymarket:
             return self.map_api_to_market(market, token_id)
 
     def map_api_to_market(self, market, token_id: str = "") -> SimpleMarket:
+        # Some Gamma responses post-migration omit fields like outcomePrices
+        # or endDate for markets in odd states. Use .get with safe defaults
+        # rather than crash the cycle on a single bad market.
         market = {
             "id": int(market["id"]),
-            "question": market["question"],
-            "end": market["endDate"],
-            "description": market["description"],
-            "active": market["active"],
-            # "deployed": market["deployed"],
-            "funded": market["funded"],
-            "rewardsMinSize": float(market["rewardsMinSize"]),
-            "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
-            # "volume": float(market["volume"]),
-            "spread": float(market["spread"]),
-            "outcomes": str(market["outcomes"]),
-            "outcome_prices": str(market["outcomePrices"]),
-            "clob_token_ids": str(market["clobTokenIds"]),
+            "question": market.get("question", ""),
+            "end": market.get("endDate") or market.get("endDateIso", ""),
+            "description": market.get("description", ""),
+            "active": market.get("active", False),
+            "funded": market.get("funded", False),
+            "rewardsMinSize": float(market.get("rewardsMinSize") or 0),
+            "rewardsMaxSpread": float(market.get("rewardsMaxSpread") or 0),
+            "spread": float(market.get("spread") or 0),
+            "outcomes": str(market.get("outcomes", "[]")),
+            "outcome_prices": str(market.get("outcomePrices", "[]")),
+            "clob_token_ids": str(market.get("clobTokenIds", "[]")),
         }
         if token_id:
             market["clob_token_ids"] = token_id
@@ -394,6 +516,66 @@ class Polymarket:
             OrderArgs(price=price, size=size, side=side, token_id=token_id)
         )
 
+    def _book_entries(self, book, side: str) -> list:
+        entries = getattr(book, side, None)
+        if entries is None and isinstance(book, dict):
+            entries = book.get(side, [])
+        return entries or []
+
+    def _entry_price_size(self, entry) -> tuple[float, float]:
+        if hasattr(entry, "price"):
+            return float(entry.price), float(entry.size)
+        return float(entry["price"]), float(entry["size"])
+
+    def _fillable_market_buy(self, token_id: str, amount_usdc: float) -> tuple[float, float, float]:
+        """Return (limit_price, fillable_usdc, avg_price) for a FOK market buy.
+
+        CLOB market BUY amount is a USDC budget. To avoid FOK kills caused by
+        stale model prices, walk the live ask book and pick the worst ask needed
+        to fill the target amount. If liquidity is thin, fill only the available
+        amount above the configured minimum.
+        """
+        book = self.client.get_order_book(token_id)
+        asks = sorted(
+            (self._entry_price_size(a) for a in self._book_entries(book, "asks")),
+            key=lambda item: item[0],
+        )
+        if not asks:
+            raise ValueError(f"no asks available for token_id={token_id}")
+
+        remaining = amount_usdc
+        spend = 0.0
+        tokens = 0.0
+        worst_price = None
+        for price, size_tokens in asks:
+            if price <= 0:
+                continue
+            level_cost = price * size_tokens
+            take_cost = min(remaining, level_cost)
+            if take_cost <= 0:
+                continue
+            spend += take_cost
+            tokens += take_cost / price
+            worst_price = price
+            remaining -= take_cost
+            if remaining <= 1e-9:
+                break
+
+        if spend < MIN_MARKET_ORDER_USDC:
+            raise ValueError(
+                f"insufficient ask liquidity for token_id={token_id}: "
+                f"fillable_usdc={spend:.4f} < min={MIN_MARKET_ORDER_USDC:.4f}"
+            )
+
+        tick_size = 0.01
+        if isinstance(book, dict) and book.get("tick_size"):
+            tick_size = float(book["tick_size"])
+        elif hasattr(book, "tick_size") and book.tick_size:
+            tick_size = float(book.tick_size)
+        limit_price = min(1.0 - tick_size, (worst_price or asks[0][0]) + tick_size)
+        avg_price = spend / tokens if tokens else limit_price
+        return limit_price, min(amount_usdc, spend), avg_price
+
     def execute_market_order(
         self, market, recommendation: TradeRecommendation
     ) -> dict:
@@ -460,10 +642,32 @@ class Polymarket:
                 f"recommendation.amount_usdc must be set and > 0, got {amount_usdc}"
             )
 
+        live_price, fillable_usdc, avg_price = self._fillable_market_buy(
+            token_id, amount_usdc
+        )
+        if live_price > order_price + MAX_MARKET_ORDER_SLIPPAGE:
+            raise ValueError(
+                f"live ask price {live_price:.4f} exceeds recommended price "
+                f"{order_price:.4f} by more than max slippage "
+                f"{MAX_MARKET_ORDER_SLIPPAGE:.4f}; avg_price={avg_price:.4f}"
+            )
+        if fillable_usdc < amount_usdc:
+            logger.info(
+                "execute_market_order: reducing amount from %.4f to %.4f due to "
+                "available ask liquidity",
+                amount_usdc,
+                fillable_usdc,
+            )
+            amount_usdc = fillable_usdc
+
+        # CLOB market orders are BUYs of a specific token (SELL semantics are
+        # already encoded above by selecting the other token). py_clob_client
+        # 0.34+ requires `side` explicitly.
         order_args = MarketOrderArgs(
             token_id=token_id,
             amount=amount_usdc,
-            price=order_price,
+            price=live_price,
+            side=BUY,
         )
 
         @retry(
@@ -475,8 +679,10 @@ class Polymarket:
             reraise=True,
         )
         def _post():
-            signed = self.client.create_market_order(order_args)
-            return self.client.post_order(signed, orderType=OrderType.FOK)
+            return self.client.create_and_post_market_order(
+                order_args,
+                order_type=OrderType.FOK,
+            )
 
         resp = _post()
 
@@ -491,7 +697,9 @@ class Polymarket:
             "outcome_traded": outcomes[token_ids.index(token_id)],
             "amount_usdc": amount_usdc,
             "price_recommended": recommendation.price,
-            "order_price": order_price,
+            "order_price": live_price,
+            "order_price_model": order_price,
+            "order_avg_price_estimate": avg_price,
             "side_recommended": side,
             "order_id": order_id,
             "status": status,
@@ -499,9 +707,14 @@ class Polymarket:
         }
 
     def get_usdc_balance(self) -> float:
-        if not self.private_key:
+        # In POLY_PROXY mode the EOA holds nothing; the proxy holds pUSD.
+        if self.funder:
+            holder = self.funder
+        elif self.private_key:
+            holder = self.get_address_for_private_key()
+        else:
             raise RuntimeError(
-                "POLYGON_WALLET_PRIVATE_KEY missing; cannot derive address for balance lookup."
+                "Need POLYMARKET_FUNDER (proxy mode) or POLYGON_WALLET_PRIVATE_KEY (EOA mode) to read balance."
             )
 
         @retry(
@@ -510,11 +723,9 @@ class Polymarket:
             reraise=True,
         )
         def _read():
-            return self.usdc.functions.balanceOf(
-                self.get_address_for_private_key()
-            ).call()
+            return self.usdc.functions.balanceOf(holder).call()
 
-        # USDC has 6 decimals.
+        # Both USDC.e and pUSD are 6 decimals.
         return float(_read() / 1e6)
 
 

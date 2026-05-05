@@ -153,13 +153,22 @@ class TestExecuteMarketOrderSideMapping(unittest.TestCase):
         }
         return [doc]
 
+    def _book(self, asks):
+        return {
+            "asks": [{"price": str(price), "size": str(size)} for price, size in asks],
+            "tick_size": "0.01",
+        }
+
     def test_buy_picks_yes_token_with_anchor_price(self):
         from agents.polymarket.polymarket import Polymarket
 
         pm = Polymarket.__new__(Polymarket)
         pm.client = MagicMock()
-        pm.client.create_market_order.return_value = "signed"
-        pm.client.post_order.return_value = {"orderID": "ord123", "status": "submitted"}
+        pm.client.get_order_book.return_value = self._book([(0.55, 100)])
+        pm.client.create_and_post_market_order.return_value = {
+            "orderID": "ord123",
+            "status": "submitted",
+        }
 
         rec = TradeRecommendation(
             price=0.55, size_fraction=0.1, side="BUY",
@@ -173,11 +182,12 @@ class TestExecuteMarketOrderSideMapping(unittest.TestCase):
         self.assertEqual(result["outcome_traded"], "YES")
         self.assertEqual(result["amount_usdc"], 5.0)
         self.assertEqual(result["price_recommended"], 0.55)
-        self.assertEqual(result["order_price"], 0.55)
+        self.assertEqual(result["order_price_model"], 0.55)
+        self.assertEqual(result["order_price"], 0.56)
         self.assertEqual(result["side_recommended"], "BUY")
-        # Verify MarketOrderArgs received the YES token's price (no inversion).
-        args = pm.client.create_market_order.call_args[0][0]
-        self.assertEqual(args.price, 0.55)
+        # Verify MarketOrderArgs received the live-book price plus one tick.
+        args = pm.client.create_and_post_market_order.call_args[0][0]
+        self.assertEqual(args.price, 0.56)
         self.assertEqual(args.token_id, "yes_tok")
 
     def test_sell_picks_no_token_and_inverts_price(self):
@@ -185,8 +195,11 @@ class TestExecuteMarketOrderSideMapping(unittest.TestCase):
 
         pm = Polymarket.__new__(Polymarket)
         pm.client = MagicMock()
-        pm.client.create_market_order.return_value = "signed"
-        pm.client.post_order.return_value = {"orderID": "ord456", "status": "submitted"}
+        pm.client.get_order_book.return_value = self._book([(0.6, 100)])
+        pm.client.create_and_post_market_order.return_value = {
+            "orderID": "ord456",
+            "status": "submitted",
+        }
 
         # LLM thinks YES is worth 0.4 (so NO is worth 0.6) → recommends SELL at 0.4.
         rec = TradeRecommendation(
@@ -200,16 +213,58 @@ class TestExecuteMarketOrderSideMapping(unittest.TestCase):
         self.assertEqual(result["token_id"], "no_tok")
         self.assertEqual(result["outcome_traded"], "NO")
         # SELL at price=0.4 (anchored to YES) = BUY of NO at price 0.6.
-        self.assertAlmostEqual(result["order_price"], 0.6)
-        args = pm.client.create_market_order.call_args[0][0]
-        self.assertAlmostEqual(args.price, 0.6)
+        self.assertAlmostEqual(result["order_price_model"], 0.6)
+        self.assertAlmostEqual(result["order_price"], 0.61)
+        args = pm.client.create_and_post_market_order.call_args[0][0]
+        self.assertAlmostEqual(args.price, 0.61)
         self.assertEqual(args.token_id, "no_tok")
+
+    def test_rejects_live_price_above_slippage(self):
+        from agents.polymarket.polymarket import Polymarket
+
+        pm = Polymarket.__new__(Polymarket)
+        pm.client = MagicMock()
+        pm.client.get_order_book.return_value = self._book([(0.7, 100)])
+
+        rec = TradeRecommendation(
+            price=0.55, size_fraction=0.1, side="BUY",
+            confidence=0.7, amount_usdc=5.0,
+        )
+        market = self._build_market_doc(["yes_tok", "no_tok"], ["YES", "NO"])
+
+        with self.assertRaises(ValueError):
+            pm.execute_market_order(market, rec)
+        pm.client.create_and_post_market_order.assert_not_called()
+
+    def test_reduces_amount_to_available_liquidity(self):
+        from agents.polymarket.polymarket import Polymarket
+
+        pm = Polymarket.__new__(Polymarket)
+        pm.client = MagicMock()
+        pm.client.get_order_book.return_value = self._book([(0.55, 2)])
+        pm.client.create_and_post_market_order.return_value = {
+            "orderID": "ord789",
+            "status": "submitted",
+        }
+
+        rec = TradeRecommendation(
+            price=0.55, size_fraction=0.1, side="BUY",
+            confidence=0.7, amount_usdc=5.0,
+        )
+        market = self._build_market_doc(["yes_tok", "no_tok"], ["YES", "NO"])
+
+        result = pm.execute_market_order(market, rec)
+
+        self.assertAlmostEqual(result["amount_usdc"], 1.1)
+        args = pm.client.create_and_post_market_order.call_args[0][0]
+        self.assertAlmostEqual(args.amount, 1.1)
 
     def test_rejects_non_binary_market(self):
         from agents.polymarket.polymarket import Polymarket
 
         pm = Polymarket.__new__(Polymarket)
         pm.client = MagicMock()
+        pm.client.get_order_book.return_value = self._book([(0.5, 100)])
 
         rec = TradeRecommendation(
             price=0.5, size_fraction=0.1, side="BUY",

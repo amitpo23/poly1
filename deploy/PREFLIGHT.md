@@ -6,6 +6,7 @@ Run through every box. Each must be true before live trading. **If any item fail
 
 - [ ] `.env` exists at `/srv/poly1/.env` with permissions `600`
 - [ ] `POLYGON_WALLET_PRIVATE_KEY` set, wallet known to operator
+- [ ] `POLYMARKET_FUNDER` set if using a Privy/Magic (Google/email login) account — must equal the proxy address shown on `polymarket.com/settings`
 - [ ] `OPENAI_API_KEY` set, account has positive credit balance
 - [ ] `OPENAI_MODEL` set (recommended: `gpt-4o-mini` for cost, `gpt-4o` for quality)
 - [ ] `STARTING_BALANCE_USDC` set to the wallet's actual balance
@@ -19,14 +20,17 @@ Run through every box. Each must be true before live trading. **If any item fail
 
 ## Wallet & on-chain
 
-- [ ] Wallet has the intended USDC balance on Polygon mainnet (check Polygonscan)
-- [ ] Wallet has ≥ 0.5 MATIC for gas
-- [ ] **CTF / USDC approvals run once** (irreversible on-chain tx, ~$0.10 gas):
-      ```
-      docker compose run --rm trader python -c \
-        "from agents.polymarket.polymarket import Polymarket; p = Polymarket(live=True); p._init_approvals(True)"
-      ```
-      Record the resulting tx hashes in your operator notes.
+- [ ] Wallet (proxy in POLY_PROXY mode, EOA otherwise) has the intended collateral balance on Polygon mainnet:
+      pUSD `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB` for proxy mode, USDC.e `0x2791…84174` for EOA mode
+- [ ] In **EOA mode only**: wallet has ≥ 0.5 MATIC for gas. POLY_PROXY orders are gasless via Polymarket's relayer.
+- [ ] **CTF / USDC approvals** (one-time, irreversible on-chain tx, ~$0.10 gas):
+      - **POLY_PROXY mode**: SKIP. Polymarket auto-sets allowances when the proxy is deployed; `_init_approvals` is a no-op when `POLYMARKET_FUNDER` is set.
+      - **EOA mode** (legacy): run once per wallet:
+        ```
+        docker compose run --rm trader python -c \
+          "from agents.polymarket.polymarket import Polymarket; p = Polymarket(live=True); p._init_approvals(True)"
+        ```
+        Record the resulting tx hashes in your operator notes.
 
 ## End-to-end dry runs
 

@@ -202,8 +202,30 @@ class Executor:
             data = json.loads(e[0].json())
             market_ids = data["metadata"]["markets"].split(",")
             for market_id in market_ids:
-                market_data = self.gamma.get_market(market_id)
-                formatted_market_data = self.polymarket.map_api_to_market(market_data)
+                try:
+                    market_data = self.gamma.get_market(market_id)
+                    formatted_market_data = self.polymarket.map_api_to_market(market_data)
+                except Exception as exc:
+                    logger.warning("Skipping market %s: fetch/map failed: %s", market_id, exc)
+                    continue
+                # Skip markets with degenerate prices/outcomes — post-migration
+                # Gamma sometimes returns missing or zero prices, which causes
+                # the LLM to default to price=0.0 and trip pre-order validation.
+                try:
+                    prices = ast.literal_eval(formatted_market_data.get("outcome_prices") or "[]")
+                    outcomes = ast.literal_eval(formatted_market_data.get("outcomes") or "[]")
+                except (ValueError, SyntaxError):
+                    logger.warning("Skipping market %s: unparseable outcomes/prices", market_id)
+                    continue
+                if (
+                    len(prices) < 2 or len(outcomes) < 2
+                    or any(float(p) <= 0 or float(p) >= 1 for p in prices)
+                ):
+                    logger.info(
+                        "Skipping degenerate market %s: prices=%s outcomes=%s",
+                        market_id, prices, outcomes,
+                    )
+                    continue
                 markets.append(formatted_market_data)
         return markets
 

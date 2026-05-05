@@ -284,7 +284,7 @@ class Trader:
             self.trade_log.mark(trade_id, FAILED, error=str(e))
             return False
 
-        terminal = FILLED if result.get("status") == "filled" else SUBMITTED
+        terminal = FILLED if result.get("status") in ("filled", "matched") else SUBMITTED
         self.trade_log.mark(trade_id, terminal, response=result)
         logger.info("cycle %s: market %s TRADED %s", cycle_id, market_id, result)
         return True

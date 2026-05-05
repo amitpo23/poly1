@@ -45,31 +45,41 @@ def _ensure_module(name: str) -> types.ModuleType:
 def _install_gamma_stubs() -> None:
     """Install just enough stubs that ``import agents.polymarket.gamma``
     works without httpx / requests / pydantic-backed objects on the
-    Python path. Idempotent — safe to call from each test."""
-    # httpx — only the .get() callable is touched in gamma.py.
-    httpx_mod = _ensure_module("httpx")
-    if not hasattr(httpx_mod, "get"):
-        httpx_mod.get = MagicMock()
+    Python path. Idempotent — safe to call from each test.
 
-    # agents.polymarket.polymarket — gamma imports Polymarket at module
-    # top but the tests below never construct it; an empty class is
-    # enough.
-    poly_mod = _ensure_module("agents.polymarket.polymarket")
-    if not hasattr(poly_mod, "Polymarket"):
-        poly_mod.Polymarket = type("Polymarket", (), {})
+    In Docker (real deps available) the real modules are imported and no
+    stubs are installed. In stdlib-only mode imports fail and we fall
+    back to lightweight fakes."""
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        httpx_mod = _ensure_module("httpx")
+        if not hasattr(httpx_mod, "get"):
+            httpx_mod.get = MagicMock()
 
-    # agents.utils.objects — Market / PolymarketEvent / ClobReward /
-    # Tag are referenced as type hints + constructors. Replace with
-    # lightweight stand-ins that record their kwargs.
-    utils_mod = _ensure_module("agents.utils.objects")
-    for cls_name in ("Market", "PolymarketEvent", "ClobReward", "Tag"):
-        if not hasattr(utils_mod, cls_name):
-            def _make(name: str):
-                def __init__(self, **kwargs):
-                    self.__dict__.update(kwargs)
-                    self.__name__ = name
-                return type(name, (), {"__init__": __init__})
-            setattr(utils_mod, cls_name, _make(cls_name))
+    # gamma.py imports Polymarket at module top but the tests below never
+    # construct it. Use the real one if available; otherwise stub.
+    try:
+        from agents.polymarket import polymarket as _real_poly  # noqa: F401
+    except Exception:
+        poly_mod = _ensure_module("agents.polymarket.polymarket")
+        if not hasattr(poly_mod, "Polymarket"):
+            poly_mod.Polymarket = type("Polymarket", (), {})
+
+    # agents.utils.objects — Market / PolymarketEvent / ClobReward / Tag
+    # are referenced as type hints + constructors. Real deps if available.
+    try:
+        from agents.utils import objects as _real_objects  # noqa: F401
+    except Exception:
+        utils_mod = _ensure_module("agents.utils.objects")
+        for cls_name in ("Market", "PolymarketEvent", "ClobReward", "Tag"):
+            if not hasattr(utils_mod, cls_name):
+                def _make(name: str):
+                    def __init__(self, **kwargs):
+                        self.__dict__.update(kwargs)
+                        self.__name__ = name
+                    return type(name, (), {"__init__": __init__})
+                setattr(utils_mod, cls_name, _make(cls_name))
 
 
 class TestGammaParserDrift(unittest.TestCase):
@@ -133,8 +143,9 @@ class TestExecutorFilterEventsRemoval(unittest.TestCase):
         import pathlib
 
         # Static check: the source file must not define `def filter_events(`.
-        src = pathlib.Path(
-            "/Users/mymac/coding/poly1/agents/application/executor.py"
+        src = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "agents" / "application" / "executor.py"
         ).read_text()
         self.assertNotIn(
             "def filter_events(self,",
@@ -157,8 +168,9 @@ class TestGammaUsesLogger(unittest.TestCase):
         import pathlib
         import re
 
-        src = pathlib.Path(
-            "/Users/mymac/coding/poly1/agents/polymarket/gamma.py"
+        src = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "agents" / "polymarket" / "gamma.py"
         ).read_text()
         # Strip strings/comments isn't necessary — we want to catch
         # any literal `print(` in active code. False positives in
@@ -176,8 +188,9 @@ class TestGammaUsesLogger(unittest.TestCase):
     def test_logger_is_initialized(self) -> None:
         import pathlib
 
-        src = pathlib.Path(
-            "/Users/mymac/coding/poly1/agents/polymarket/gamma.py"
+        src = (
+            pathlib.Path(__file__).resolve().parent.parent
+            / "agents" / "polymarket" / "gamma.py"
         ).read_text()
         self.assertIn("import logging", src)
         self.assertIn("logger = logging.getLogger(__name__)", src)

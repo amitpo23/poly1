@@ -122,6 +122,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .kv .k { color: var(--dim); }
   .footer { margin-top: 16px; font-size: 11px; color: var(--dim); text-align: center; }
   .alert { background: #4d1212; color: #ff7b72; padding: 6px 8px; border-radius: 4px; margin: 6px 0; }
+  .warn { background: #4d3a12; color: #f0c674; padding: 6px 8px; border-radius: 4px; margin: 6px 0; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; margin: 8px 0; }
+  .metric { border: 1px solid var(--border); border-radius: 4px; padding: 6px; min-height: 48px; }
+  .metric .label { color: var(--dim); font-size: 10px; }
+  .metric .value { font-size: 15px; margin-top: 2px; }
+  .log { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+  .log-line { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
   .controls { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
   .btn {
     background: var(--panel); color: var(--text); border: 1px solid var(--border);
@@ -209,6 +216,20 @@ def _pnl_html(value):
     return f'<span class="{cls}">{sign}${abs(value):.2f}</span>'
 
 
+def _fmt_ms(ms):
+    if not ms:
+        return "-"
+    return datetime.fromtimestamp(
+        ms / 1000, tz=timezone.utc
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _fmt_num(value, digits=4):
+    if value is None:
+        return "-"
+    return f"{float(value):.{digits}f}"
+
+
 def _esc(s):
     if s is None:
         return ""
@@ -279,14 +300,57 @@ def _poly1_body(state: dict) -> str:
 
 def _swarm_body(state: dict) -> str:
     if "error" in state:
-        return f'<div class="err">{_esc(state["error"])}</div>'
+        parts = [f'<div class="err">{_esc(state["error"])}</div>']
+        recent_log = state.get("recent_log") or []
+        if recent_log:
+            parts.append('<div class="log"><b>recent log</b>')
+            for line in recent_log[-5:]:
+                parts.append(f'<div class="log-line">{_esc(line)}</div>')
+            parts.append("</div>")
+        return "".join(parts)
 
     parts = []
+    age = state.get("heartbeat_age_s")
+    if age is None:
+        parts.append('<div class="alert">No swarm log found. The bot is not observable.</div>')
+    elif age > 1800:
+        parts.append(
+            f'<div class="alert">Swarm appears offline/stale. Last log update: '
+            f'{_esc(_human_age(age))}.</div>'
+        )
+    elif age > 90:
+        parts.append(
+            f'<div class="warn">Swarm log is delayed: {_esc(_human_age(age))}.</div>'
+        )
+
     daily = float(state.get("daily_pnl", 0.0) or 0.0)
-    parts.append(
-        f'<div class="row"><div class="kv">'
-        f'<span class="k">daily PnL:</span>{_pnl_html(daily)}</div></div>'
+    counts = state.get("table_counts") or {}
+    pending_counts = state.get("pending_by_status") or {}
+    open_count = len(state.get("nh_open_positions") or [])
+    pending_active = sum(
+        pending_counts.get(k, 0) for k in ("pending", "submitted")
     )
+    parts.append('<div class="metrics">')
+    for label, value in (
+        ("daily PnL", _pnl_html(daily)),
+        ("open NH", str(open_count)),
+        ("active orders", str(pending_active)),
+        ("fills", str(counts.get("fills", 0))),
+        ("NH journal", str(counts.get("nh_journal", 0))),
+        ("last DB state", _esc((state.get("last_state_utc") or "-")[:19].replace("T", " "))),
+    ):
+        parts.append(
+            f'<div class="metric"><div class="label">{_esc(label)}</div>'
+            f'<div class="value">{value}</div></div>'
+        )
+    parts.append("</div>")
+
+    if pending_counts:
+        bits = [
+            f'<div class="kv"><span class="k">{_esc(status)}:</span><span>{count}</span></div>'
+            for status, count in sorted(pending_counts.items())
+        ]
+        parts.append(f'<div class="row">{"".join(bits)}</div>')
 
     by_agent = state.get("pnl_today_by_agent") or {}
     fills = state.get("fills_today_by_agent") or {}
@@ -305,6 +369,26 @@ def _swarm_body(state: dict) -> str:
             )
         parts.append("</tbody></table>")
 
+    rp = state.get("recent_pending") or []
+    if rp:
+        parts.append('<div style="margin-top:8px"><b>order ledger</b></div>')
+        parts.append('<table><thead><tr><th>updated</th><th>agent</th>'
+                     '<th>status</th><th>side</th><th>outcome</th><th>price</th>'
+                     '<th>size</th><th>note</th></tr></thead><tbody>')
+        for r in rp:
+            price = r.get("price_cents")
+            price_s = f"{float(price):.4f}" if price is not None else "-"
+            parts.append(
+                f'<tr><td>{_esc(_fmt_ms(r.get("updated_ms")))}</td>'
+                f'<td>{_esc(r.get("agent"))}</td>'
+                f'<td>{_esc(r.get("status"))}</td>'
+                f'<td>{_esc(r.get("side"))}</td>'
+                f'<td>{_esc(r.get("outcome"))}</td>'
+                f'<td>{price_s}</td><td>${float(r.get("size_usd") or 0):.2f}</td>'
+                f'<td class="dim">{_esc((r.get("note") or "")[:36])}</td></tr>'
+            )
+        parts.append("</tbody></table>")
+
     nh = state.get("nh_open_positions") or []
     if nh:
         parts.append(f'<div style="margin-top:8px"><b>NothingHappens open ({len(nh)})</b></div>')
@@ -317,6 +401,26 @@ def _swarm_body(state: dict) -> str:
                 f'<td>{p.get("no_entry"):.4f}</td>'
                 f'<td>{"FILLED" if p.get("filled") else "pending"}</td>'
                 f'<td>{_esc(p.get("end"))}</td></tr>'
+            )
+        parts.append("</tbody></table>")
+
+    nhj = state.get("recent_nh_journal") or []
+    if nhj:
+        parts.append('<div style="margin-top:8px"><b>NothingHappens decisions</b></div>')
+        parts.append('<table><thead><tr><th>opened</th><th>slug</th>'
+                     '<th>NO quote</th><th>NO fill</th><th>rejected</th>'
+                     '<th>unrealized</th></tr></thead><tbody>')
+        for r in nhj:
+            quote = r.get("no_price_quoted")
+            fill = r.get("no_price_filled")
+            unrl = r.get("unrealized_pnl")
+            parts.append(
+                f'<tr><td>{_esc(_fmt_ms(r.get("opened_at_ms")))}</td>'
+                f'<td>{_esc((r.get("slug") or "")[:50])}</td>'
+                f'<td>{_fmt_num(quote)}</td>'
+                f'<td>{_fmt_num(fill)}</td>'
+                f'<td>{int(r.get("rejected_count") or 0)}</td>'
+                f'<td>{_pnl_html(float(unrl or 0.0))}</td></tr>'
             )
         parts.append("</tbody></table>")
 
@@ -337,6 +441,13 @@ def _swarm_body(state: dict) -> str:
                 f'<td>${r.get("fee"):.4f}</td></tr>'
             )
         parts.append("</tbody></table>")
+
+    recent_log = state.get("recent_log") or []
+    if recent_log:
+        parts.append('<div class="log"><b>recent log</b>')
+        for line in recent_log[-5:]:
+            parts.append(f'<div class="log-line">{_esc(line)}</div>')
+        parts.append("</div>")
 
     return "".join(parts)
 
