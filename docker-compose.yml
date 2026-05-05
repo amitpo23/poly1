@@ -21,6 +21,34 @@ services:
     cpus: "1.0"
     stop_grace_period: 60s
 
+  scalper:
+    build: .
+    image: poly1:local
+    container_name: poly1-scalper
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+    command: ["python", "-m", "agents.application.scalper"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/scalper_heartbeat') < 30"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 512m
+    cpus: "0.5"
+    stop_grace_period: 30s
+    profiles: ["scalper"]
+
   dashboard:
     build: .
     image: poly1:local
