@@ -167,5 +167,72 @@ class TestTickLoop(unittest.TestCase):
         self.assertEqual(self.client.execute_market_order.call_count, 4)
 
 
+class TestScalperRateLimit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.log = TradeLog(db_path=self.tmp.name)
+        self.dao = ScalperPairsDAO(self.log)
+        self.client = MagicMock()
+        self.cfg = ScalperConfig()
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            p = self.tmp.name + suffix
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_rate_limit_blocks_after_max(self):
+        # Pre-fill 60 SCALPER_LEG rows in last hour
+        for i in range(60):
+            self.log.insert_terminal(
+                cycle_id=f"c{i}", market_id=f"m{i}", status=SCALPER_LEG)
+        engine = ScalperEngine(client=self.client, log=self.log,
+                                  dao=self.dao, cfg=self.cfg, execute=False,
+                                  max_legs_per_hour=60)
+        self.assertFalse(engine._has_rate_capacity())
+
+    def test_rate_limit_allows_below_max(self):
+        engine = ScalperEngine(client=self.client, log=self.log,
+                                  dao=self.dao, cfg=self.cfg, execute=False,
+                                  max_legs_per_hour=60)
+        self.assertTrue(engine._has_rate_capacity())
+
+
+class TestRestartReconcile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.log = TradeLog(db_path=self.tmp.name)
+        self.dao = ScalperPairsDAO(self.log)
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            p = self.tmp.name + suffix
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_leg1_filled_at_startup_flagged_reconcile(self):
+        self.dao.create("s1", 1, "u", "d")
+        self.dao.set_state("s1", ScalperState.LEG1_FILLED)
+        engine = ScalperEngine(client=MagicMock(), log=self.log,
+                                  dao=self.dao, cfg=ScalperConfig(),
+                                  execute=False)
+        engine.reconcile_at_startup()
+        self.assertEqual(self.dao.get_by_slug("s1")["state"],
+                          ScalperState.RECONCILE_NEEDED)
+
+    def test_reconcile_blocks_new_entries_for_pair(self):
+        self.dao.create("s1", 1, "u", "d")
+        self.dao.set_state("s1", ScalperState.RECONCILE_NEEDED)
+        engine = ScalperEngine(client=MagicMock(), log=self.log,
+                                  dao=self.dao, cfg=ScalperConfig(),
+                                  execute=False)
+        engine.add_pair(ScalpPair(slug="s1", period_ts=1, up_token="u",
+                                     down_token="d", cfg=ScalperConfig()))
+        engine.tick("s1", up_ask=0.45, down_ask=0.50, now_ms=1000)
+        engine.client.execute_market_order.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
