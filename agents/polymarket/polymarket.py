@@ -577,8 +577,11 @@ class Polymarket:
         return limit_price, min(amount_usdc, spend), avg_price
 
     def execute_market_order(
-        self, market, recommendation: TradeRecommendation
+        self, market, recommendation: TradeRecommendation, order_type=None
     ) -> dict:
+        if order_type is None:
+            order_type = OrderType.FOK
+
         if self.client is None:
             raise RuntimeError(
                 "Polymarket initialized in read-only mode (live=False); "
@@ -681,7 +684,7 @@ class Polymarket:
         def _post():
             return self.client.create_and_post_market_order(
                 order_args,
-                order_type=OrderType.FOK,
+                order_type=order_type,
             )
 
         resp = _post()
