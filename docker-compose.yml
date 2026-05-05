@@ -20,3 +20,23 @@ services:
     mem_limit: 1g
     cpus: "1.0"
     stop_grace_period: 60s
+
+  dashboard:
+    build: .
+    image: poly1:local
+    profiles: ["dashboard"]
+    command: >
+      streamlit run scripts/python/dashboard.py
+      --server.port 8050
+      --server.address 0.0.0.0
+      --server.headless true
+    ports:
+      - "8050:8050"
+    env_file: .env
+    environment:
+      TZ: UTC
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.5"

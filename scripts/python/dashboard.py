@@ -52,6 +52,11 @@ def _age_label(age: float | None) -> str:
 # ── Live tab ──────────────────────────────────────────────────────────────────
 
 with TAB_LIVE:
+    # Auto-refresh every 30 s (browser-side meta refresh)
+    st.markdown(
+        '<meta http-equiv="refresh" content="30">',
+        unsafe_allow_html=True,
+    )
     if st.button("🔄 Refresh now"):
         st.rerun()
 
@@ -91,7 +96,7 @@ with TAB_LIVE:
     st.subheader("Log tail (last 80 lines)")
     st.code(db.log_tail(80), language=None)
 
-    st.caption("Page refreshes automatically every 30 s — or click Refresh now above.")
+    st.caption("Auto-refreshes every 30 s via meta refresh (applies to all tabs).")
 
 # ── Placeholder stubs for other tabs (filled in subsequent tasks) ─────────────
 
