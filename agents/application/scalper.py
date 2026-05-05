@@ -92,3 +92,23 @@ class ScalpPair:
         if cur is None or best_ask < cur:
             setattr(self, attr, best_ask)
         setattr(self, ts_attr, now_ms)
+
+    def evaluate_entry(
+        self, side: str, best_ask: float, now_ms: int
+    ) -> Optional[dict]:
+        """Return {'reason': str, 'price': float} or None.
+
+        Call AFTER apply_tick for the same (side, best_ask, now_ms).
+        """
+        if best_ask > self.cfg.threshold:
+            return None
+        temp_attr = "temp_price_up" if side == "up" else "temp_price_down"
+        temp = getattr(self, temp_attr)
+        if temp is None:
+            return None
+        if best_ask <= temp * (1.0 - self.cfg.depth_buy_discount):
+            return {"reason": "depth", "price": best_ask}
+        # Use small epsilon for floating point comparison
+        if best_ask >= temp + self.cfg.reversal_delta - 1e-9:
+            return {"reason": "reversal", "price": best_ask}
+        return None
