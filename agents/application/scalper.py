@@ -498,14 +498,28 @@ class ScalperDaemon:
             client=self.client, log=self.tl, dao=self.dao,
             cfg=self.cfg, gamma=self.gamma, execute=self.execute,
         )
+        # Public client for order book reads — no credentials required.
+        # ClobClient with only host+chain_id works for GET endpoints.
+        try:
+            from py_clob_client_v2.client import ClobClient as _ClobClient
+            self._book_client = _ClobClient(
+                host="https://clob.polymarket.com",
+                chain_id=137,
+            )
+        except (ImportError, Exception) as e:
+            logger.warning("ScalperDaemon: ClobClient unavailable for book reads: %s", e)
+            self._book_client = None
         self._stop = threading.Event()
-        signal.signal(signal.SIGTERM, lambda *_: self.stop())
-        signal.signal(signal.SIGINT, lambda *_: self.stop())
 
     def stop(self) -> None:
         self._stop.set()
 
     def run(self) -> None:
+        try:
+            signal.signal(signal.SIGTERM, lambda *_: self.stop())
+            signal.signal(signal.SIGINT, lambda *_: self.stop())
+        except (ValueError, OSError):
+            pass  # not the main thread — SIGTERM won't reach us anyway
         logger.info("ScalperDaemon: starting (execute=%s)", self.execute)
         self.engine.reconcile_at_startup()
         last_discover = 0.0
@@ -517,7 +531,10 @@ class ScalperDaemon:
                         self.engine.discover_markets()
                     except Exception:
                         logger.exception("discover_markets failed")
-                    self.engine.reap_expired(now_ts=int(now))
+                    try:
+                        self.engine.reap_expired(now_ts=int(now))
+                    except Exception:
+                        logger.exception("reap_expired failed")
                     last_discover = now
                 for row in self.dao.list_open():
                     slug = row["slug"]
@@ -528,8 +545,10 @@ class ScalperDaemon:
                             cfg=self.cfg,
                         ))
                     try:
-                        book_up = self.client.client.get_order_book(row["up_token"])
-                        book_dn = self.client.client.get_order_book(row["down_token"])
+                        if self._book_client is None:
+                            continue
+                        book_up = self._book_client.get_order_book(row["up_token"])
+                        book_dn = self._book_client.get_order_book(row["down_token"])
                         ask_up = self._best_ask(book_up)
                         ask_dn = self._best_ask(book_dn)
                         if ask_up and ask_dn:
@@ -541,7 +560,7 @@ class ScalperDaemon:
                     self.heartbeat.parent.mkdir(parents=True, exist_ok=True)
                     self.heartbeat.touch()
                 except Exception:
-                    pass
+                    logger.warning("ScalperDaemon: heartbeat touch failed")
                 self._stop.wait(self.cfg.poll_ms / 1000.0)
         finally:
             logger.info("ScalperDaemon: exited")
