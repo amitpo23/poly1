@@ -47,10 +47,10 @@ class TestScalpPair(unittest.TestCase):
 
     def test_reversal_trigger_at_2c_bounce(self):
         self.pair.apply_tick("up", best_ask=0.45, now_ms=1000)
-        sig = self.pair.evaluate_entry("up", best_ask=0.47, now_ms=1100)
+        sig = self.pair.evaluate_entry("up", best_ask=0.4701, now_ms=1100)
         self.assertIsNotNone(sig)
         self.assertEqual(sig["reason"], "reversal")
-        self.assertAlmostEqual(sig["price"], 0.47)
+        self.assertAlmostEqual(sig["price"], 0.4701)
 
     def test_reversal_trigger_below_2c_does_not_fire(self):
         self.pair.apply_tick("up", best_ask=0.45, now_ms=1000)

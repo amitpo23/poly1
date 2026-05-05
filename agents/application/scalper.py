@@ -102,14 +102,15 @@ class ScalpPair:
         """
         if best_ask > self.cfg.threshold:
             return None
+        if side not in ("up", "down"):
+            raise ValueError(f"side must be 'up' or 'down', got {side}")
         temp_attr = "temp_price_up" if side == "up" else "temp_price_down"
         temp = getattr(self, temp_attr)
         if temp is None:
             return None
         if best_ask <= temp * (1.0 - self.cfg.depth_buy_discount):
             return {"reason": "depth", "price": best_ask}
-        # Use small epsilon for floating point comparison
-        if best_ask >= temp + self.cfg.reversal_delta - 1e-9:
+        if best_ask >= temp + self.cfg.reversal_delta:
             return {"reason": "reversal", "price": best_ask}
         return None
 
