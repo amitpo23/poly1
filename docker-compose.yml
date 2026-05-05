@@ -82,7 +82,8 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
+      - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/swarm/data
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
       - grafana_storage:/var/lib/grafana
