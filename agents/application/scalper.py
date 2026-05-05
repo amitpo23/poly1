@@ -333,10 +333,26 @@ class ScalperEngine:
     def reap_expired(self, now_ts: int) -> int:
         n = 0
         for row in self.dao.list_open():
-            if row["period_ts"] and row["period_ts"] < now_ts:
-                self.dao.set_state(row["slug"], ScalperState.EXPIRED)
-                self.pairs.pop(row["slug"], None)
-                n += 1
+            if not row["period_ts"] or row["period_ts"] >= now_ts:
+                continue
+            slug = row["slug"]
+            state = row["state"]
+            if state == ScalperState.RECONCILE_NEEDED:
+                # Operator must clear this manually — do not overwrite
+                continue
+            if state == ScalperState.LEG1_FILLED:
+                # On-chain position exists; flag for operator review
+                self.dao.set_state(slug, ScalperState.RECONCILE_NEEDED,
+                                   error="period_expired_while_leg1_filled")
+                logger.warning(
+                    "scalper: %s expired with LEG1_FILLED — moved to RECONCILE_NEEDED",
+                    slug,
+                )
+            else:
+                # TRACKING, BOTH_FILLED: safe to expire
+                self.dao.set_state(slug, ScalperState.EXPIRED)
+            self.pairs.pop(slug, None)
+            n += 1
         return n
 
     def reconcile_at_startup(self) -> int:

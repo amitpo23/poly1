@@ -262,6 +262,22 @@ class TestReapPeriod(unittest.TestCase):
         self.assertEqual(self.dao.get_by_slug("new")["state"],
                           ScalperState.TRACKING)
 
+    def test_reap_leg1_filled_moves_to_reconcile(self):
+        """An expired LEG1_FILLED pair must move to RECONCILE_NEEDED, not EXPIRED."""
+        self.dao.create("leg1", period_ts=100, up_token="u", down_token="d")
+        self.dao.set_state("leg1", ScalperState.LEG1_FILLED)
+        self.engine.reap_expired(now_ts=1000)
+        self.assertEqual(self.dao.get_by_slug("leg1")["state"],
+                         ScalperState.RECONCILE_NEEDED)
+
+    def test_reap_skips_reconcile_needed(self):
+        """A RECONCILE_NEEDED pair must not be overwritten — operator controls it."""
+        self.dao.create("rec", period_ts=100, up_token="u", down_token="d")
+        self.dao.set_state("rec", ScalperState.RECONCILE_NEEDED)
+        self.engine.reap_expired(now_ts=1000)
+        self.assertEqual(self.dao.get_by_slug("rec")["state"],
+                         ScalperState.RECONCILE_NEEDED)
+
 
 class TestShadowMode(unittest.TestCase):
     def setUp(self):
@@ -287,6 +303,9 @@ class TestShadowMode(unittest.TestCase):
     def test_shadow_does_not_call_execute(self):
         self.engine.tick(slug="s1", up_ask=0.45, down_ask=0.50, now_ms=1000)
         self.engine.tick(slug="s1", up_ask=0.471, down_ask=0.50, now_ms=1100)
+        # Confirm entry fired (shadow leg written) before asserting CLOB not called
+        recent = [r for r in self.log.recent(limit=5) if r["status"] == SCALPER_LEG]
+        self.assertGreaterEqual(len(recent), 1, "shadow leg must have been logged")
         self.client.execute_market_order.assert_not_called()
 
     def test_shadow_logs_hypothetical_leg(self):
