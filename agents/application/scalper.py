@@ -330,6 +330,23 @@ class ScalperEngine:
         recent = self.log.count_recent(SCALPER_LEG, hours=1)
         return recent < self.max_legs_per_hour
 
+    def reconcile_at_startup(self) -> int:
+        """Find any LEG1_FILLED rows from prior process, mark RECONCILE_NEEDED.
+        Operator must verify on-chain before clearing."""
+        flipped = 0
+        for row in self.dao.list_open():
+            if row["state"] == ScalperState.LEG1_FILLED:
+                self.dao.set_state(row["slug"],
+                                     ScalperState.RECONCILE_NEEDED,
+                                     error="restart_found_leg1_filled")
+                flipped += 1
+        if flipped:
+            logger.warning(
+                "scalper: %d pair(s) flipped to RECONCILE_NEEDED — "
+                "verify on-chain positions before resuming", flipped
+            )
+        return flipped
+
     def tick(self, slug: str, up_ask: float, down_ask: float, now_ms: int) -> None:
         """One scheduling tick per slug. Apply ticks → maybe fire legs."""
         if not self._has_rate_capacity():
