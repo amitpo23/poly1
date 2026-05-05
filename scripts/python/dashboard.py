@@ -6,9 +6,10 @@ Run:
 Reads data from TRADE_LOG_DB, LLM_USAGE_FILE, LOG_DIR (env vars).
 Writes to KILL_SWITCH_FILE (Control tab only).
 """
+from __future__ import annotations
+
 import os
 import sys
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -38,7 +39,7 @@ TAB_LIVE, TAB_PNL, TAB_CAPITAL, TAB_TRADES, TAB_SCALPER, TAB_LLM, TAB_CTRL = st.
 ])
 
 
-def _age_label(age: "float | None") -> str:
+def _age_label(age: float | None) -> str:
     if age is None:
         return "⛔ no file"
     if age < 120:
