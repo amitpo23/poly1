@@ -95,8 +95,78 @@ with TAB_LIVE:
 
 # ── Placeholder stubs for other tabs (filled in subsequent tasks) ─────────────
 
+# ── P&L tab ───────────────────────────────────────────────────────────────────
+
 with TAB_PNL:
-    st.info("P&L tab — coming soon (Task 4)")
+    st.info(
+        "⚠️ P&L is approximate. We track capital deployed (USDC paid per filled trade). "
+        "Actual settlement profit requires outcome data — not yet tracked in DB."
+    )
+
+    filled = db.trades_filled()
+    daily = db.daily_capital_deployed()
+
+    if not filled:
+        st.warning("No filled trades yet.")
+    else:
+        df_daily = pd.DataFrame(daily)
+        df_daily["day"] = pd.to_datetime(df_daily["day"])
+        df_daily["cumulative_usdc"] = df_daily["total_usdc"].cumsum()
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Cumulative capital deployed")
+            fig = px.area(
+                df_daily,
+                x="day",
+                y="cumulative_usdc",
+                labels={"day": "Date", "cumulative_usdc": "USDC deployed"},
+            )
+            fig.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.subheader("Daily capital deployed")
+            fig2 = px.bar(
+                df_daily,
+                x="day",
+                y="total_usdc",
+                labels={"day": "Date", "total_usdc": "USDC"},
+            )
+            fig2.update_layout(margin=dict(l=0, r=0, t=30, b=0))
+            st.plotly_chart(fig2, use_container_width=True)
+
+        st.divider()
+
+        df_filled = pd.DataFrame(filled)
+        total_deployed = df_filled["size_usdc"].sum()
+        avg_price = df_filled["price"].mean()
+        avg_confidence = df_filled["confidence"].mean()
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total USDC deployed", f"${total_deployed:.2f}")
+        c2.metric("Filled trade count", len(filled))
+        c3.metric("Avg entry price", f"{avg_price:.3f}" if pd.notna(avg_price) else "n/a")
+        c4.metric(
+            "Avg LLM confidence",
+            f"{avg_confidence:.1%}" if pd.notna(avg_confidence) else "n/a"
+        )
+
+        st.subheader("Filled trades detail")
+        display_cols = ["ts", "market_id", "side", "price", "size_usdc", "confidence"]
+        st.dataframe(
+            df_filled[display_cols].rename(columns={
+                "ts": "Timestamp",
+                "market_id": "Market",
+                "side": "Side",
+                "price": "Entry price",
+                "size_usdc": "USDC paid",
+                "confidence": "Confidence",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 with TAB_CAPITAL:
     st.info("Capital tab — coming soon (Task 5)")
