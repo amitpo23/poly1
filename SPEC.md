@@ -339,3 +339,41 @@ Backup:
    limits.
 5. **Single point of failure.** Single VPS, single container. A host outage
    pauses trading until restored. Not high-availability.
+
+## 15. Scalper (Strategy C — short-duration crypto Up/Down)
+
+Independent module that runs in its own container alongside Trader.
+Targets `*-updown-15m-*` markets via FAK market BUYs. No LLM. See
+`docs/STRATEGY_C_SCALPING_SPEC.md` for the algorithm reference and
+`docs/superpowers/plans/2026-05-05-scalper-strategy-c.md` for the build
+log.
+
+### Modules
+
+| Module | Responsibility |
+|---|---|
+| `agents/application/scalper.py` | `ScalpPair`, `ScalperEngine`, `ScalperDaemon`, `__main__` |
+| `agents/application/scalper_pairs.py` | `ScalperPairsDAO` — `scalper_pairs` CRUD |
+
+### Storage
+
+New `scalper_pairs` table in the existing `trade_log.db` (WAL mode).
+Each FAK attempt also writes a `SCALPER_LEG` row to the existing
+`trades` table for audit/PnL.
+
+### Capital isolation
+
+`SCALPER_RESERVE_USDC` reserves a fixed sub-balance for the scalper.
+`RiskGate.available_for_trader()` returns `balance - reserve`. The
+scalper itself reads the wallet balance directly and refuses to enter
+new pairs when `balance < leg_cost × 2`.
+
+### Operational stages
+
+Stage 0 (shadow): `EXECUTE_SCALPER=false`, 2-3 days. Sanity check that
+triggers fire and pair counts are non-trivial.
+
+Stage 1 (live small): `EXECUTE_SCALPER=true`, leg=$2.50, **min 2 weeks**.
+Abort if cumulative PnL < -$15 at any point.
+
+Stage 2 (scale): leg=$5+ only after Stage 1 ends positive.

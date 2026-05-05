@@ -119,11 +119,27 @@ NEVER without going through `deploy/PREFLIGHT.md`. Specifically:
 ## What's intentionally NOT in scope (don't add without discussion)
 
 - Position close / `maintain_positions` (stub).
-- Multi-strategy plug-in framework.
 - Kubernetes / Helm.
 - Prometheus / Grafana / structured-metrics export.
 - Adaptive position sizing.
 - Multi-wallet operation.
+
+## Scalper module (Strategy C)
+
+The scalper is a SECOND, INDEPENDENT trading agent in this repo. It runs
+in its own container (`profiles: scalper` in docker-compose) and shares
+only the SQLite ledger and the Polymarket wallet with the Trader. Capital
+isolation is enforced by `SCALPER_RESERVE_USDC`.
+
+When working on scalper code:
+
+- Do not couple scalper logic to the Trader's LLM pipeline. The whole
+  point of the scalper is that it runs without LLM calls.
+- The dedupe contract for the scalper is `scalper_pairs.state`, NOT
+  `ACTIVE_STATUSES`. Adding `SCALPER_LEG` to `ACTIVE_STATUSES` would
+  break the Trader's dedupe of unrelated markets.
+- `RECONCILE_NEEDED` is to the scalper what `MAY_HAVE_FIRED` is to the
+  Trader: do not auto-clear it; the operator must verify on-chain.
 
 ## Versioning
 
