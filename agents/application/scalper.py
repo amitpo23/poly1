@@ -200,6 +200,10 @@ class ScalperEngine:
         self.cfg = cfg
         self.gamma = gamma
         self.execute = execute
+        if self.execute and _FAK_TYPE == "FAK":
+            raise RuntimeError(
+                "py_clob_client_v2 not installed; cannot run with execute=True"
+            )
         self.max_legs_per_hour = (
             max_legs_per_hour if max_legs_per_hour is not None
             else _env_int("MAX_SCALP_TRADES_PER_HOUR", 60)
@@ -239,37 +243,41 @@ class ScalperEngine:
             confidence=None,
             amount_usdc=usdc,
         )
+        # Read canonical tokens from DAO for the metadata
+        pair_row = self.dao.get_by_slug(slug)
+        up_tok = pair_row["up_token"] if pair_row else token
+        dn_tok = pair_row["down_token"] if pair_row else token
         market = (_Document(page_content="", metadata={
             "outcomes": "['Up', 'Down']",
-            "clob_token_ids": f"['{token}', '{token}']",
+            "clob_token_ids": f"['{up_tok}', '{dn_tok}']",
             "outcome_prices": f"['{intended_price}', '{1.0 - intended_price}']",
             "id": slug,
         }), 0.0)
 
+        order_exc = None
+        response = None
         try:
             response = self.client.execute_market_order(
                 market, rec, order_type=_FAK_TYPE,
             )
-            filled_usdc = float(response.get("amount_usdc", 0.0))
-            avg_price = float(response.get("order_avg_price_estimate", intended_price))
-            qty = filled_usdc / avg_price if avg_price > 0 else 0.0
-            self.dao.record_fill(slug, side, qty=qty,
-                                 cost_usdc=filled_usdc,
-                                 fill_price=avg_price)
-            self.log.insert_terminal(
-                cycle_id=cycle_id, market_id=slug, status=SCALPER_LEG,
-                token_id=token, side=rec.side, price=avg_price,
-                size_usdc=filled_usdc, response=response,
-            )
-            return {"filled": True, "qty": qty, "avg_price": avg_price}
         except Exception as e:
-            self.dao.record_fill(slug, side, qty=0.0, cost_usdc=0.0)
-            self.log.insert_terminal(
-                cycle_id=cycle_id, market_id=slug, status=SCALPER_LEG,
-                token_id=token, side="BUY" if side == "up" else "SELL",
-                price=intended_price, size_usdc=0.0, error=str(e),
-            )
-            return {"filled": False, "error": str(e)}
+            order_exc = e
+
+        filled_usdc = float(response.get("amount_usdc", 0.0)) if response else 0.0
+        avg_price = float(response.get("order_avg_price_estimate", intended_price)) if response else intended_price
+        qty = filled_usdc / avg_price if avg_price > 0 else 0.0
+        self.dao.record_fill(slug, side, qty=qty, cost_usdc=filled_usdc,
+                             fill_price=avg_price if qty > 0 else None)
+        self.log.insert_terminal(
+            cycle_id=cycle_id, market_id=slug, status=SCALPER_LEG,
+            token_id=token, side=rec.side if not order_exc else ("BUY" if side == "up" else "SELL"),
+            price=avg_price, size_usdc=filled_usdc,
+            response=response if not order_exc else None,
+            error=str(order_exc) if order_exc else None,
+        )
+        if order_exc:
+            return {"filled": False, "error": str(order_exc)}
+        return {"filled": qty > 0, "qty": qty, "avg_price": avg_price}
 
     def discover_markets(self) -> list:
         """Scan gamma for *-updown-15m-* events. Create scalper_pairs rows for new ones."""

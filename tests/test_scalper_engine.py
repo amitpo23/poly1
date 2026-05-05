@@ -1,8 +1,9 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import agents.application.scalper as _scalper_mod
 from agents.application.scalper import ScalperEngine, ScalperConfig, ScalpPair
 from agents.application.scalper_pairs import ScalperPairsDAO, ScalperState
 from agents.application.trade_log import TradeLog, SCALPER_LEG
@@ -10,6 +11,9 @@ from agents.application.trade_log import TradeLog, SCALPER_LEG
 
 class TestPlaceLeg(unittest.TestCase):
     def setUp(self):
+        # Patch _FAK_TYPE so the execute=True guard doesn't block mock-client tests
+        self._fak_patcher = patch.object(_scalper_mod, "_FAK_TYPE", "MOCK_FAK")
+        self._fak_patcher.start()
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.tmp.close()
         self.log = TradeLog(db_path=self.tmp.name)
@@ -21,6 +25,7 @@ class TestPlaceLeg(unittest.TestCase):
         self.dao.create("s1", 100, "tok_up", "tok_dn")
 
     def tearDown(self):
+        self._fak_patcher.stop()
         for suffix in ("", "-wal", "-shm"):
             p = self.tmp.name + suffix
             if os.path.exists(p):
@@ -112,6 +117,9 @@ class TestMarketDiscovery(unittest.TestCase):
 
 class TestTickLoop(unittest.TestCase):
     def setUp(self):
+        # Patch _FAK_TYPE so the execute=True guard doesn't block mock-client tests
+        self._fak_patcher = patch.object(_scalper_mod, "_FAK_TYPE", "MOCK_FAK")
+        self._fak_patcher.start()
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.tmp.close()
         self.log = TradeLog(db_path=self.tmp.name)
@@ -126,6 +134,7 @@ class TestTickLoop(unittest.TestCase):
                                           cfg=self.cfg))
 
     def tearDown(self):
+        self._fak_patcher.stop()
         for suffix in ("", "-wal", "-shm"):
             p = self.tmp.name + suffix
             if os.path.exists(p):
