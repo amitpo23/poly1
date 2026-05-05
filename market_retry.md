@@ -1,0 +1,1182 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - link "Skip to main content" [ref=e5] [cursor=pointer]:
+        - /url: "#__pm_main"
+      - navigation "Main" [ref=e6]:
+        - generic [ref=e7]:
+          - generic [ref=e8] [cursor=pointer]:
+            - link "Polymarket Logo" [ref=e9]:
+              - /url: /
+              - img "Polymarket" [ref=e10]
+            - img "isr" [ref=e13]
+          - generic [ref=e16]:
+            - img [ref=e18]
+            - textbox "Search polymarkets..." [ref=e21]
+          - generic [ref=e23]:
+            - generic [ref=e24]:
+              - generic [ref=e25]:
+                - link "Portfolio $80.87" [ref=e26] [cursor=pointer]:
+                  - /url: /portfolio
+                  - generic [ref=e27]:
+                    - generic [ref=e28]: Portfolio
+                    - generic [ref=e29]: $80.87
+                - link "Cash $80.87" [ref=e30] [cursor=pointer]:
+                  - /url: /portfolio
+                  - button "Cash $80.87" [ref=e31]:
+                    - generic [ref=e32]:
+                      - generic [ref=e35]: Cash
+                      - generic [ref=e36]: $80.87
+              - button "Deposit" [ref=e38] [cursor=pointer]
+              - link [ref=e39] [cursor=pointer]:
+                - /url: /refer
+                - img
+              - button [ref=e40] [cursor=pointer]:
+                - img
+            - button "Open user menu" [ref=e43] [cursor=pointer]:
+              - img [ref=e46]
+        - generic [ref=e50]:
+          - link "Trending" [ref=e51] [cursor=pointer]:
+            - /url: /
+            - img [ref=e52]
+            - generic [ref=e55]: Trending
+          - link "Breaking" [ref=e56] [cursor=pointer]:
+            - /url: /breaking
+          - link "New" [ref=e57] [cursor=pointer]:
+            - /url: /new
+          - link "Politics" [ref=e59] [cursor=pointer]:
+            - /url: /politics
+          - link "Sports" [ref=e60] [cursor=pointer]:
+            - /url: /sports/live
+          - link "Crypto" [ref=e61] [cursor=pointer]:
+            - /url: /crypto
+          - link "Esports" [ref=e62] [cursor=pointer]:
+            - /url: /esports/live
+          - link "Iran" [ref=e63] [cursor=pointer]:
+            - /url: /iran
+          - link "Finance" [ref=e64] [cursor=pointer]:
+            - /url: /finance
+          - link "Geopolitics" [ref=e65] [cursor=pointer]:
+            - /url: /geopolitics
+          - link "Tech" [ref=e66] [cursor=pointer]:
+            - /url: /tech
+          - link "Culture" [ref=e67] [cursor=pointer]:
+            - /url: /pop-culture
+          - link "Economy" [ref=e68] [cursor=pointer]:
+            - /url: /economy
+          - link "Weather" [ref=e69] [cursor=pointer]:
+            - /url: /weather
+          - link "Mentions" [ref=e70] [cursor=pointer]:
+            - /url: /mentions
+          - link "Elections" [ref=e71] [cursor=pointer]:
+            - /url: /elections
+          - button "Open more navigation links" [ref=e72] [cursor=pointer]:
+            - text: More
+            - img [ref=e73]
+      - generic [ref=e75]:
+        - generic [ref=e77]:
+          - main [ref=e78]:
+            - generic [ref=e82]:
+              - generic [ref=e86]:
+                - generic [ref=e87]:
+                  - img "icon for What will WTI Crude Oil (WTI) hit in May 2026?" [ref=e91]
+                  - generic [ref=e92]:
+                    - generic [ref=e94]:
+                      - link "Finance" [ref=e95] [cursor=pointer]:
+                        - /url: /finance
+                      - generic [ref=e96]: ·
+                      - link "Monthly" [ref=e97] [cursor=pointer]:
+                        - /url: /predictions/monthly
+                    - heading "What will WTI Crude Oil (WTI) hit in May 2026?" [level=1] [ref=e98]
+                - generic [ref=e101]:
+                  - button [ref=e102] [cursor=pointer]:
+                    - img
+                  - button [ref=e103] [cursor=pointer]:
+                    - img
+                  - button "Add to favorites" [ref=e104] [cursor=pointer]
+              - generic [ref=e108]:
+                - button "View past events" [ref=e109] [cursor=pointer]:
+                  - generic [ref=e110]: Past
+                  - img [ref=e111]
+                - link "May 31" [ref=e113] [cursor=pointer]:
+                  - /url: /event/what-price-will-wti-hit-in-may-2026
+                  - paragraph [ref=e116]: May 31
+                - link "Jun 30" [ref=e117] [cursor=pointer]:
+                  - /url: /event/cl-hit-jun-2026
+                  - paragraph [ref=e120]: Jun 30
+              - generic [ref=e122]:
+                - generic [ref=e123]:
+                  - generic [ref=e125]:
+                    - generic [ref=e126]:
+                      - paragraph [ref=e128]: $6,158,072 Vol.
+                      - generic [ref=e130]:
+                        - img [ref=e131]
+                        - generic [ref=e134]: Jun 1, 2026
+                    - img "Polymarket" [ref=e136]
+                  - generic [ref=e139]:
+                    - generic [ref=e144] [cursor=pointer]:
+                      - generic [ref=e147]:
+                        - paragraph [ref=e149]: ↑ $200
+                        - paragraph [ref=e151]: $766,604 Vol.
+                      - paragraph [ref=e154]: 2%
+                      - generic [ref=e155]:
+                        - button "Buy Yes 1.9¢" [ref=e156]:
+                          - generic [ref=e157]:
+                            - generic [ref=e158]: Buy Yes
+                            - generic [ref=e159]: 1.9¢
+                        - button "Buy No 98.2¢" [ref=e160]:
+                          - generic [ref=e161]:
+                            - generic [ref=e162]: Buy No
+                            - generic [ref=e163]: 98.2¢
+                    - generic [ref=e168] [cursor=pointer]:
+                      - generic [ref=e171]:
+                        - paragraph [ref=e173]: ↑ $150
+                        - generic [ref=e174]:
+                          - paragraph [ref=e175]: $949,711 Vol.
+                          - button "Rewards" [ref=e177]:
+                            - img
+                      - paragraph [ref=e180]: 8%
+                      - generic [ref=e181]:
+                        - button "Buy Yes 8¢" [ref=e182]:
+                          - generic [ref=e183]:
+                            - generic [ref=e184]: Buy Yes
+                            - generic [ref=e185]: 8¢
+                        - button "Buy No 93¢" [ref=e186]:
+                          - generic [ref=e187]:
+                            - generic [ref=e188]: Buy No
+                            - generic [ref=e189]: 93¢
+                    - generic [ref=e194] [cursor=pointer]:
+                      - generic [ref=e197]:
+                        - paragraph [ref=e199]: ↑ $140
+                        - generic [ref=e200]:
+                          - paragraph [ref=e201]: $497,777 Vol.
+                          - button "Rewards" [ref=e203]:
+                            - img
+                      - paragraph [ref=e206]: 14%
+                      - generic [ref=e207]:
+                        - button "Buy Yes 13.6¢" [ref=e208]:
+                          - generic [ref=e209]:
+                            - generic [ref=e210]: Buy Yes
+                            - generic [ref=e211]: 13.6¢
+                        - button "Buy No 86.5¢" [ref=e212]:
+                          - generic [ref=e213]:
+                            - generic [ref=e214]: Buy No
+                            - generic [ref=e215]: 86.5¢
+                    - generic [ref=e220] [cursor=pointer]:
+                      - generic [ref=e223]:
+                        - paragraph [ref=e225]: ↑ $130
+                        - generic [ref=e226]:
+                          - paragraph [ref=e227]: $538,314 Vol.
+                          - button "Rewards" [ref=e229]:
+                            - img
+                      - paragraph [ref=e232]: 30%
+                      - generic [ref=e233]:
+                        - button "Buy Yes 30¢" [ref=e234]:
+                          - generic [ref=e235]:
+                            - generic [ref=e236]: Buy Yes
+                            - generic [ref=e237]: 30¢
+                        - button "Buy No 71¢" [ref=e238]:
+                          - generic [ref=e239]:
+                            - generic [ref=e240]: Buy No
+                            - generic [ref=e241]: 71¢
+                    - generic [ref=e246] [cursor=pointer]:
+                      - generic [ref=e249]:
+                        - paragraph [ref=e251]: ↑ $120
+                        - generic [ref=e252]:
+                          - paragraph [ref=e253]: $580,966 Vol.
+                          - button "Rewards" [ref=e255]:
+                            - img
+                      - paragraph [ref=e258]: 46%
+                      - generic [ref=e259]:
+                        - button "Buy Yes 47¢" [ref=e1334]:
+                          - generic [ref=e261]:
+                            - generic [ref=e262]: Buy Yes
+                            - generic [ref=e263]: 47¢
+                        - button "Buy No 55¢" [ref=e264]:
+                          - generic [ref=e265]:
+                            - generic [ref=e266]: Buy No
+                            - generic [ref=e267]: 55¢
+                    - generic [ref=e272] [cursor=pointer]:
+                      - generic [ref=e275]:
+                        - paragraph [ref=e277]: ↑ $115
+                        - generic [ref=e278]:
+                          - paragraph [ref=e279]: $156,594 Vol.
+                          - button "Rewards" [ref=e281]:
+                            - img
+                      - generic [ref=e283]:
+                        - paragraph [ref=e284]: 70%
+                        - generic [ref=e286]:
+                          - img [ref=e288]
+                          - generic [ref=e291]:
+                            - generic [ref=e292]:
+                              - generic [ref=e293]: "0"
+                              - generic [ref=e294]: "1"
+                              - generic [ref=e295]: "2"
+                              - generic [ref=e296]: "3"
+                              - generic [ref=e297]: "4"
+                              - generic [ref=e298]: "5"
+                              - generic [ref=e299]: "6"
+                              - generic [ref=e300]: "7"
+                              - generic [ref=e301]: "8"
+                              - generic [ref=e302]: "9"
+                            - generic [ref=e303]: "%"
+                      - generic [ref=e304]:
+                        - button "Buy Yes 70¢" [ref=e1335]:
+                          - generic [ref=e306]:
+                            - generic [ref=e307]: Buy Yes
+                            - generic [ref=e308]: 70¢
+                        - button "Buy No 31¢" [ref=e1336]:
+                          - generic [ref=e310]:
+                            - generic [ref=e311]: Buy No
+                            - generic [ref=e312]: 31¢
+                    - generic [ref=e317] [cursor=pointer]:
+                      - generic [ref=e320]:
+                        - paragraph [ref=e322]: ↑ $110
+                        - generic [ref=e323]:
+                          - paragraph [ref=e324]: $794,342 Vol.
+                          - button "Rewards" [ref=e326]:
+                            - img
+                      - generic [ref=e328]:
+                        - paragraph [ref=e329]: 84%
+                        - generic [ref=e331]:
+                          - img [ref=e333]
+                          - generic [ref=e336]:
+                            - generic [ref=e337]:
+                              - generic [ref=e338]: "0"
+                              - generic [ref=e339]: "1"
+                              - generic [ref=e340]: "2"
+                              - generic [ref=e341]: "3"
+                              - generic [ref=e342]: "4"
+                              - generic [ref=e343]: "5"
+                              - generic [ref=e344]: "6"
+                              - generic [ref=e345]: "7"
+                              - generic [ref=e346]: "8"
+                              - generic [ref=e347]: "9"
+                            - generic [ref=e348]:
+                              - generic [ref=e349]: "0"
+                              - generic [ref=e350]: "1"
+                              - generic [ref=e351]: "2"
+                              - generic [ref=e352]: "3"
+                              - generic [ref=e353]: "4"
+                              - generic [ref=e354]: "5"
+                              - generic [ref=e355]: "6"
+                              - generic [ref=e356]: "7"
+                              - generic [ref=e357]: "8"
+                              - generic [ref=e358]: "9"
+                            - generic [ref=e359]: "%"
+                      - generic [ref=e360]:
+                        - button "Buy Yes 84¢" [ref=e1337]:
+                          - generic [ref=e362]:
+                            - generic [ref=e363]: Buy Yes
+                            - generic [ref=e364]: 84¢
+                        - button "Buy No 17¢" [ref=e1338]:
+                          - generic [ref=e366]:
+                            - generic [ref=e367]: Buy No
+                            - generic [ref=e368]: 17¢
+                    - generic [ref=e373] [cursor=pointer]:
+                      - generic [ref=e376]:
+                        - paragraph [ref=e378]: ↓ $95
+                        - generic [ref=e379]:
+                          - paragraph [ref=e380]: $87,314 Vol.
+                          - button "Rewards" [ref=e382]:
+                            - img
+                      - generic [ref=e384]:
+                        - paragraph [ref=e385]: 75%
+                        - generic [ref=e387]:
+                          - img [ref=e389]
+                          - generic [ref=e392]:
+                            - generic [ref=e393]:
+                              - generic [ref=e394]: "0"
+                              - generic [ref=e395]: "1"
+                              - generic [ref=e396]: "2"
+                              - generic [ref=e397]: "3"
+                              - generic [ref=e398]: "4"
+                              - generic [ref=e399]: "5"
+                              - generic [ref=e400]: "6"
+                              - generic [ref=e401]: "7"
+                              - generic [ref=e402]: "8"
+                              - generic [ref=e403]: "9"
+                            - generic [ref=e404]: "%"
+                      - generic [ref=e405]:
+                        - button "Buy Yes 76¢" [ref=e406]:
+                          - generic [ref=e407]:
+                            - generic [ref=e408]: Buy Yes
+                            - generic [ref=e409]: 76¢
+                        - button "Buy No 26¢" [ref=e410]:
+                          - generic [ref=e411]:
+                            - generic [ref=e412]: Buy No
+                            - generic [ref=e413]: 26¢
+                    - generic [ref=e418] [cursor=pointer]:
+                      - generic [ref=e421]:
+                        - paragraph [ref=e423]: ↓ $90
+                        - generic [ref=e424]:
+                          - paragraph [ref=e425]: $60,734 Vol.
+                          - button "Rewards" [ref=e427]:
+                            - img
+                      - generic [ref=e429]:
+                        - paragraph [ref=e430]: 58%
+                        - generic [ref=e432]:
+                          - img [ref=e434]
+                          - generic [ref=e437]:
+                            - generic [ref=e438]:
+                              - generic [ref=e439]: "0"
+                              - generic [ref=e440]: "1"
+                              - generic [ref=e441]: "2"
+                              - generic [ref=e442]: "3"
+                              - generic [ref=e443]: "4"
+                              - generic [ref=e444]: "5"
+                              - generic [ref=e445]: "6"
+                              - generic [ref=e446]: "7"
+                              - generic [ref=e447]: "8"
+                              - generic [ref=e448]: "9"
+                            - generic [ref=e449]:
+                              - generic [ref=e450]: "0"
+                              - generic [ref=e451]: "1"
+                              - generic [ref=e452]: "2"
+                              - generic [ref=e453]: "3"
+                              - generic [ref=e454]: "4"
+                              - generic [ref=e455]: "5"
+                              - generic [ref=e456]: "6"
+                              - generic [ref=e457]: "7"
+                              - generic [ref=e458]: "8"
+                              - generic [ref=e459]: "9"
+                            - generic [ref=e460]: "%"
+                      - generic [ref=e461]:
+                        - button "Buy Yes 59¢" [ref=e1339]:
+                          - generic [ref=e463]:
+                            - generic [ref=e464]: Buy Yes
+                            - generic [ref=e465]: 59¢
+                        - button "Buy No 43¢" [ref=e1340]:
+                          - generic [ref=e467]:
+                            - generic [ref=e468]: Buy No
+                            - generic [ref=e469]: 43¢
+                    - generic [ref=e474] [cursor=pointer]:
+                      - generic [ref=e477]:
+                        - paragraph [ref=e479]: ↓ $85
+                        - generic [ref=e480]:
+                          - paragraph [ref=e481]: $80,478 Vol.
+                          - button "Rewards" [ref=e483]:
+                            - img
+                      - paragraph [ref=e486]: 43%
+                      - generic [ref=e487]:
+                        - button "Buy Yes 43¢" [ref=e1341]:
+                          - generic [ref=e489]:
+                            - generic [ref=e490]: Buy Yes
+                            - generic [ref=e491]: 43¢
+                        - button "Buy No 58¢" [ref=e492]:
+                          - generic [ref=e493]:
+                            - generic [ref=e494]: Buy No
+                            - generic [ref=e495]: 58¢
+                    - generic [ref=e500] [cursor=pointer]:
+                      - generic [ref=e503]:
+                        - paragraph [ref=e505]: ↓ $80
+                        - generic [ref=e506]:
+                          - paragraph [ref=e507]: $206,255 Vol.
+                          - button "Rewards" [ref=e509]:
+                            - img
+                      - paragraph [ref=e512]: 26%
+                      - generic [ref=e513]:
+                        - button "Buy Yes 27¢" [ref=e514]:
+                          - generic [ref=e515]:
+                            - generic [ref=e516]: Buy Yes
+                            - generic [ref=e517]: 27¢
+                        - button "Buy No 75¢" [ref=e518]:
+                          - generic [ref=e519]:
+                            - generic [ref=e520]: Buy No
+                            - generic [ref=e521]: 75¢
+                    - generic [ref=e526] [cursor=pointer]:
+                      - generic [ref=e529]:
+                        - paragraph [ref=e531]: ↓ $70
+                        - generic [ref=e532]:
+                          - paragraph [ref=e533]: $174,158 Vol.
+                          - button "Rewards" [ref=e535]:
+                            - img
+                      - paragraph [ref=e538]: 7%
+                      - generic [ref=e539]:
+                        - button "Buy Yes 7¢" [ref=e540]:
+                          - generic [ref=e541]:
+                            - generic [ref=e542]: Buy Yes
+                            - generic [ref=e543]: 7¢
+                        - button "Buy No 94¢" [ref=e544]:
+                          - generic [ref=e545]:
+                            - generic [ref=e546]: Buy No
+                            - generic [ref=e547]: 94¢
+                    - generic [ref=e552] [cursor=pointer]:
+                      - generic [ref=e555]:
+                        - paragraph [ref=e557]: ↓ $60
+                        - generic [ref=e558]:
+                          - paragraph [ref=e559]: $160,519 Vol.
+                          - button "Rewards" [ref=e561]:
+                            - img
+                      - paragraph [ref=e564]: 2%
+                      - generic [ref=e565]:
+                        - button "Buy Yes 1.9¢" [ref=e566]:
+                          - generic [ref=e567]:
+                            - generic [ref=e568]: Buy Yes
+                            - generic [ref=e569]: 1.9¢
+                        - button "Buy No 98.2¢" [ref=e570]:
+                          - generic [ref=e571]:
+                            - generic [ref=e572]: Buy No
+                            - generic [ref=e573]: 98.2¢
+                    - generic [ref=e578] [cursor=pointer]:
+                      - generic [ref=e581]:
+                        - paragraph [ref=e583]: ↓ $50
+                        - paragraph [ref=e585]: $8,919 Vol.
+                      - paragraph [ref=e588]: 1%
+                      - generic [ref=e589]:
+                        - button "Buy Yes 0.8¢" [ref=e590]:
+                          - generic [ref=e591]:
+                            - generic [ref=e592]: Buy Yes
+                            - generic [ref=e593]: 0.8¢
+                        - button "Buy No 99.4¢" [ref=e594]:
+                          - generic [ref=e595]:
+                            - generic [ref=e596]: Buy No
+                            - generic [ref=e597]: 99.4¢
+                    - generic [ref=e602] [cursor=pointer]:
+                      - generic [ref=e605]:
+                        - paragraph [ref=e607]: ↓ $40
+                        - paragraph [ref=e609]: $5,359 Vol.
+                      - paragraph [ref=e612]: <1%
+                      - generic [ref=e613]:
+                        - button "Buy Yes 0.5¢" [ref=e614]:
+                          - generic [ref=e615]:
+                            - generic [ref=e616]: Buy Yes
+                            - generic [ref=e617]: 0.5¢
+                        - button "Buy No 99.7¢" [ref=e618]:
+                          - generic [ref=e619]:
+                            - generic [ref=e620]: Buy No
+                            - generic [ref=e621]: 99.7¢
+                    - generic [ref=e626] [cursor=pointer]:
+                      - generic [ref=e629]:
+                        - paragraph [ref=e631]: ↓ $20
+                        - paragraph [ref=e633]: $34,568 Vol.
+                      - paragraph [ref=e636]: <1%
+                      - generic [ref=e637]:
+                        - button "Buy Yes 0.4¢" [ref=e638]:
+                          - generic [ref=e639]:
+                            - generic [ref=e640]: Buy Yes
+                            - generic [ref=e641]: 0.4¢
+                        - button "Buy No 99.7¢" [ref=e642]:
+                          - generic [ref=e643]:
+                            - generic [ref=e644]: Buy No
+                            - generic [ref=e645]: 99.7¢
+                    - generic [ref=e650] [cursor=pointer]:
+                      - generic [ref=e653]:
+                        - paragraph [ref=e655]: ↓ $30
+                        - paragraph [ref=e657]: $5,342 Vol.
+                      - paragraph [ref=e660]: <1%
+                      - generic [ref=e661]:
+                        - button "Buy Yes 0.3¢" [ref=e662]:
+                          - generic [ref=e663]:
+                            - generic [ref=e664]: Buy Yes
+                            - generic [ref=e665]: 0.3¢
+                        - button "Buy No 99.8¢" [ref=e666]:
+                          - generic [ref=e667]:
+                            - generic [ref=e668]: Buy No
+                            - generic [ref=e669]: 99.8¢
+                - button "View resolved" [ref=e671] [cursor=pointer]:
+                  - text: View resolved
+                  - img
+              - generic [ref=e673]:
+                - generic [ref=e674]: This market will resolve to "Yes" if, at any point after market creation during May 2026, any 1-minute candle for the Active Month of WTI Crude Oil futures has a final "High" price equal to or above the listed price. Otherwise, this market will resolve to "No". Prices will be used exactly as published by Pyth, without rounding. If the Active Month contract does not trade at all during the listed time frame, this market will resolve to "No". Only prices achieved during the applicable trading session for the underlying market will be considered. Under the standard schedule, trading is open from 6:00:00 PM ET Sunday through 5:00:00 PM ET Friday, with a daily break from 5:00:00 PM ET to 6:00:00 PM ET, except where modified by holiday or special-session hours. Per CME contract specifications for WTI Crude Oil (CL) futures, a contract’s last trading day is three business days prior to the 25th calendar day of the month preceding the contract's delivery month (or four business days prior if the 25th calendar day is not a business day). The active month changes at the start of the second trading session prior to the nearest listed contract’s last trading session. At that point, the next listed contract becomes the active month (i.e., for the final three trading sessions of the nearest listed contract, the contract for the next month is the active month). The trading session for a given business day typically begins at 6:00 PM ET on the prior calendar date. For example, if the 25th of the month is a Saturday, the last trading session for the nearest listed contract is the session for Tuesday the 21st, and the next listed contract becomes the active month at the start of the trading session for Friday the 17th (6:00 PM ET on Thursday), assuming a standard trading calendar. If the relevant Pyth data is unavailable due to a system outage, data failure, or other technical disruption that prevents verification of the required 1-minute candle data, the official daily high price published for the Active Month WTI Crude Oil (CL) futures contract by CME Group may be used to determine whether the listed price was reached during the applicable trading session. In the event of a contract specification change, feed change, or similar structural modification affecting the underlying market during the listed time frame, this market will resolve based on adjusted prices as displayed on Pyth. The resolution source for this market is Pyth — specifically, the Active Month WTI Crude Oil futures "High" prices available at https://pythdata.app/explore?search=WTI, with the chart settings configured for 1-minute candles. Historical 1-minute candles may be accessed by appending a Unix timestamp (seconds) to the Pyth chart URL using the "t=" parameter.
+                - generic [ref=e675]: This market will resolve to "Yes" if, at any point after market creation during May 2026, any 1-minute candle for the Active Month of WTI Crude Oil futures has a final "Low" price equal to or above the listed price. Otherwise, this market will resolve to "No". Prices will be used exactly as published by Pyth, without rounding. If the Active Month contract does not trade at all during the listed time frame, this market will resolve to "No". Only prices achieved during the applicable trading session for the underlying market will be considered. Under the standard schedule, trading is open from 6:00:00 PM ET Sunday through 5:00:00 PM ET Friday, with a daily break from 5:00:00 PM ET to 6:00:00 PM ET, except where modified by holiday or special-session hours. Per CME contract specifications for WTI Crude Oil (CL) futures, a contract’s last trading day is three business days prior to the 25th calendar day of the month preceding the contract's delivery month (or four business days prior if the 25th calendar day is not a business day). The active month changes at the start of the second trading session prior to the nearest listed contract’s last trading session. At that point, the next listed contract becomes the active month (i.e., for the final three trading sessions of the nearest listed contract, the contract for the next month is the active month). The trading session for a given business day typically begins at 6:00 PM ET on the prior calendar date. For example, if the 25th of the month is a Saturday, the last trading session for the nearest listed contract is the session for Tuesday the 21st, and the next listed contract becomes the active month at the start of the trading session for Friday the 17th (6:00 PM ET on Thursday), assuming a standard trading calendar. If the relevant Pyth data is unavailable due to a system outage, data failure, or other technical disruption that prevents verification of the required 1-minute candle data, the official daily low price published for the Active Month WTI Crude Oil (CL) futures contract by CME Group may be used to determine whether the listed price was reached during the applicable trading session. In the event of a contract specification change, feed change, or similar structural modification affecting the underlying market during the listed time frame, this market will resolve based on adjusted prices as displayed on Pyth. The resolution source for this market is Pyth — specifically, the Active Month WTI Crude Oil futures "Low" prices available at https://pythdata.app/explore?search=WTI, with the chart settings configured for 1-minute candles. Historical 1-minute candles may be accessed by appending a Unix timestamp (seconds) to the Pyth chart URL using the "t=" parameter.
+                - generic [ref=e676]: WTI crude oil spot prices hover around $102 per barrel amid heightened geopolitical risks from Middle East tensions, including Strait of Hormuz disruptions tied to Iran-related conflicts, which have spurred a risk premium and backwardated futures curve. Recent U.S. EIA data shows commercial crude inventories dropping 6.2 million barrels to 459.5 million for the week ended April 24, signaling tighter supply amid robust refinery demand. OPEC+ decisions post-UAE exit have approved gradual output hikes by seven members starting June, tempering upside while U.S. production plateaus near 13.2 million barrels per day. Traders eye weekly EIA reports Wednesdays and the next OPEC+ meeting for catalysts, with EIA forecasting Brent peaks at $115 in Q2 2026 before easing on demand slowdowns.
+                - tablist "Market information" [ref=e677]:
+                  - generic [ref=e680]:
+                    - heading "Rules" [level=2] [ref=e681]:
+                      - button "Rules" [ref=e682] [cursor=pointer]
+                    - heading "Market Context" [level=2] [ref=e683]:
+                      - button "Market Context" [ref=e684] [cursor=pointer]
+                - tabpanel "Rules" [ref=e686]:
+                  - generic [ref=e689]:
+                    - generic [ref=e690]:
+                      - text: This market will resolve to "Yes" if, at any point after market creation during May 2026, any 1-minute candle for the Active Month of WTI Crude Oil futures has a final "High" price equal to or above the listed price. Otherwise, this market will resolve to "No".
+                      - text: Prices will be used exactly as published by Pyth, without rounding.
+                      - text: If the Active Month contract does not trade at all during the listed time frame, this market will resolve to "No".
+                      - text: Only prices achieved during the applicable trading session for the underlying market will be considered. Under the standard schedule, trading is open from 6:00:00 PM ET Sunday through 5:00:00 PM ET Friday, with a daily break from 5:00:00 PM ET to 6:00:00 PM ET, except where modified by holiday or special-session hours.
+                      - text: Per CME contract specifications for WTI Crude Oil (CL) futures, a contract’s last trading day is three business days prior to the 25th calendar day of the month preceding the contract's delivery month (or four business days prior if the 25th calendar day is not a business day).
+                      - text: The active month changes at the start of the second trading session prior to the nearest listed contract’s last trading session. At that point, the next listed contract becomes the active month (i.e., for the final three trading sessions of the nearest listed contract, the contract for the next month is the active month). The trading session for a given business day typically begins at 6:00 PM ET on the prior calendar date.
+                      - text: For example, if the 25th of the month is a Saturday, the last trading session for the nearest listed contract is the session for Tuesday the 21st, and the next listed contract becomes the active month at the start of the trading session for Friday the 17th (6:00 PM ET on Thursday), assuming a standard trading calendar.
+                      - text: If the relevant Pyth data is unavailable due to a system outage, data failure, or other technical disruption that prevents verification of the required 1-minute candle data, the official daily high price published for the Active Month WTI Crude Oil (CL) futures contract by CME Group may be used to determine whether the listed price was reached during the applicable trading session.
+                      - text: In the event of a contract specification change, feed change, or similar structural modification affecting the underlying market during the listed time frame, this market will resolve based on adjusted prices as displayed on Pyth.
+                      - text: The resolution source for this market is Pyth — specifically, the Active Month WTI Crude Oil futures "High" prices available at
+                      - link "https://pythdata.app/explore?search=WTI" [ref=e691] [cursor=pointer]:
+                        - /url: https://pythdata.app/explore?search=WTI
+                      - text: ", with the chart settings configured for 1-minute candles. Historical 1-minute candles may be accessed by appending a Unix timestamp (seconds) to the Pyth chart URL using the \"t=\" parameter."
+                      - paragraph [ref=e693]: "Market Opened: Apr 30, 2026, 6:39 PM ET"
+                      - generic [ref=e695]:
+                        - generic [ref=e696]:
+                          - img [ref=e698]
+                          - generic:
+                            - paragraph: Resolution Source
+                            - link "https://pythdata.app/explore?search=WTI":
+                              - /url: https://pythdata.app/explore?search=WTI
+                        - generic [ref=e702]:
+                          - img [ref=e704]
+                          - generic:
+                            - paragraph: Resolver
+                            - link "0x65070BE91...":
+                              - /url: https://polygonscan.com/address/0x65070BE91477460D8A7AeEb94ef92fe056C2f2A7
+                      - link "Propose resolution" [ref=e712] [cursor=pointer]:
+                        - /url: https://oracle.uma.xyz/propose?project=Polymarket&transactionHash=0x641ebb674f8f46e22ebfe29b4537fa2ca5401391de896fba85433311b1c1d5fa&eventIndex=14
+                        - button "Propose resolution" [ref=e713]
+                    - generic [ref=e714]:
+                      - text: This market will resolve to "Yes" if, at any point after market creation during May 2026, any 1-minute candle for the Active Month of WTI Crude Oil futures has a final "High" price equal to or above the listed price. Otherwise, this market will resolve to "No". Prices will be used exactly as published by Pyth, without rounding. If the Active Month contract does not trade at all during the listed time frame, this market will resolve to...
+                      - button "Show more" [ref=e715] [cursor=pointer]
+              - generic [ref=e718]:
+                - heading "Comments (4,118)" [level=2] [ref=e719]:
+                  - button "Comments (4,118)" [ref=e720] [cursor=pointer]:
+                    - text: Comments
+                    - generic [ref=e721]: (4,118)
+                - heading "Top Holders" [level=2] [ref=e722]:
+                  - button "Top Holders" [ref=e723] [cursor=pointer]
+                - heading "Positions" [level=2] [ref=e724]:
+                  - button "Positions" [ref=e725] [cursor=pointer]
+                - heading "Activity" [level=2] [ref=e726]:
+                  - button "Activity" [ref=e727] [cursor=pointer]
+              - generic [ref=e732]:
+                - generic [ref=e735]:
+                  - textbox "Add a comment..." [ref=e736]
+                  - generic [ref=e737]:
+                    - button [ref=e738] [cursor=pointer]:
+                      - img [ref=e739]
+                    - button [ref=e744] [cursor=pointer]:
+                      - img [ref=e745]
+                    - button "Post" [disabled]
+                - generic [ref=e751]:
+                  - generic [ref=e752]:
+                    - button "sort-comments-by" [ref=e753] [cursor=pointer]:
+                      - generic [ref=e754]: Newest
+                      - img [ref=e755]
+                    - generic [ref=e757] [cursor=pointer]:
+                      - checkbox "Holders" [ref=e758]
+                      - paragraph [ref=e759]: Holders
+                  - generic [ref=e762]:
+                    - img [ref=e763]
+                    - paragraph [ref=e765]: Beware of external links.
+                - generic [ref=e766]:
+                  - article [ref=e767]:
+                    - generic [ref=e768]:
+                      - link [ref=e769] [cursor=pointer]:
+                        - /url: /profile/0xa0fc75f6614c50f91e9fef09cea1b0918b678020
+                        - generic "CalebInnominate89" [ref=e770]
+                      - generic [ref=e772]:
+                        - generic [ref=e773]:
+                          - generic [ref=e774]:
+                            - link "CalebInnominate8..." [ref=e776] [cursor=pointer]:
+                              - /url: /profile/0xa0fc75f6614c50f91e9fef09cea1b0918b678020
+                            - time [ref=e777]: 12m ago
+                          - button [ref=e779] [cursor=pointer]:
+                            - img [ref=e780]
+                        - generic [ref=e786]: Looks like Iran is firing missiles at Dubai... Reporting is still on going. This is just Breaking.
+                        - generic [ref=e787]:
+                          - button "0" [ref=e788] [cursor=pointer]:
+                            - img
+                            - generic [ref=e789]: "0"
+                          - button "Reply" [ref=e790] [cursor=pointer]:
+                            - img
+                            - generic [ref=e791]: Reply
+                  - article [ref=e792]:
+                    - generic [ref=e793]:
+                      - link "Catler" [ref=e794] [cursor=pointer]:
+                        - /url: /profile/0x92f6adc8a78f64317cb205fa1745814a9d9a3784
+                        - generic "Catler" [ref=e795]:
+                          - img "Catler" [ref=e797]
+                      - generic [ref=e798]:
+                        - generic [ref=e799]:
+                          - generic [ref=e800]:
+                            - generic [ref=e801]:
+                              - link "Catler" [ref=e802] [cursor=pointer]:
+                                - /url: /profile/0x92f6adc8a78f64317cb205fa1745814a9d9a3784
+                              - button "sort-markets-by" [ref=e803] [cursor=pointer]:
+                                - paragraph [ref=e804]: 5.8K ↑ $120
+                                - img
+                            - time [ref=e805]: 2h ago
+                          - button [ref=e807] [cursor=pointer]:
+                            - img [ref=e808]
+                        - generic [ref=e814]: 🔴 South Korea's state news agency reported that the IRGC had launched a missile attack on a South Korean ship in the Strait of Hormuz.
+                        - generic [ref=e815]:
+                          - button "0" [ref=e816] [cursor=pointer]:
+                            - img
+                            - generic [ref=e817]: "0"
+                          - button "Reply" [ref=e818] [cursor=pointer]:
+                            - img
+                            - generic [ref=e819]: Reply
+                  - article [ref=e820]:
+                    - generic [ref=e821]:
+                      - link [ref=e822] [cursor=pointer]:
+                        - /url: /profile/0xaa692d596614bf964ac151277b65841fc4433b00
+                        - generic "0xaA692D596614BF964AC151277b65841fc4433b00-1766187024973" [ref=e823]
+                      - generic [ref=e825]:
+                        - generic [ref=e826]:
+                          - generic [ref=e827]:
+                            - generic [ref=e828]:
+                              - link "Forthright-Galle..." [ref=e829] [cursor=pointer]:
+                                - /url: /profile/0xaa692d596614bf964ac151277b65841fc4433b00
+                              - button "sort-markets-by" [ref=e830] [cursor=pointer]:
+                                - paragraph [ref=e831]: 55 ↑ $150
+                                - img
+                            - time [ref=e832]: 3h ago
+                          - button [ref=e834] [cursor=pointer]:
+                            - img [ref=e835]
+                        - generic [ref=e840]:
+                          - generic [ref=e841]: "🇮🇷🇺🇸| ❗️BREAKING: Iran targeted US warship with 2 missiles after it ignored Iran’s warnings — Fars Iran fired 2 missiles at an American patrol boat following Iran's warning. The US patrol boat was moving near Jask Island violating security and navigation rules intending to pass through the Strait of Hormuz. Iranian Navy issued warnings which the boat ignored, thus got targeted by a missile attack. As of the time of this report, no further details about the extent of damages or possible casualties have been released."
+                          - button "Read more" [ref=e843] [cursor=pointer]
+                        - generic [ref=e844]:
+                          - button "1" [ref=e845] [cursor=pointer]:
+                            - img
+                            - generic [ref=e846]: "1"
+                          - button "Reply" [ref=e847] [cursor=pointer]:
+                            - img
+                            - generic [ref=e848]: Reply
+                  - article [ref=e849]:
+                    - generic [ref=e850]:
+                      - link [ref=e851] [cursor=pointer]:
+                        - /url: /profile/0xaa692d596614bf964ac151277b65841fc4433b00
+                        - generic "0xaA692D596614BF964AC151277b65841fc4433b00-1766187024973" [ref=e852]
+                      - generic [ref=e854]:
+                        - generic [ref=e855]:
+                          - generic [ref=e856]:
+                            - generic [ref=e857]:
+                              - link "Forthright-Galle..." [ref=e858] [cursor=pointer]:
+                                - /url: /profile/0xaa692d596614bf964ac151277b65841fc4433b00
+                              - button "sort-markets-by" [ref=e859] [cursor=pointer]:
+                                - paragraph [ref=e860]: 55 ↑ $150
+                                - img
+                            - time [ref=e861]: 3h ago
+                          - button [ref=e863] [cursor=pointer]:
+                            - img [ref=e864]
+                        - generic [ref=e869]:
+                          - generic [ref=e870]: "— 🇮🇷/🇦🇪 NEW: Iran has expanded the blockade of the Strait of Hormuz to also include the UAE’s eastern ports of Khor Fakkan and Fujairah Any ship departing from these ports and attempting to head into the Gulf of Oman will be targeted if they do not obtain permission from Iran."
+                          - button "Read more" [ref=e872] [cursor=pointer]
+                        - generic [ref=e873]:
+                          - button "0" [ref=e874] [cursor=pointer]:
+                            - img
+                            - generic [ref=e875]: "0"
+                          - button "Reply" [ref=e876] [cursor=pointer]:
+                            - img
+                            - generic [ref=e877]: Reply
+                  - article [ref=e878]:
+                    - generic [ref=e879]:
+                      - link "MrVarma" [ref=e880] [cursor=pointer]:
+                        - /url: /profile/0x1748b273b3b6c02038448951a917c29894735e9e
+                        - generic "MrVarma" [ref=e881]:
+                          - img "MrVarma" [ref=e883]
+                      - generic [ref=e884]:
+                        - generic [ref=e885]:
+                          - generic [ref=e886]:
+                            - link "MrVarma" [ref=e888] [cursor=pointer]:
+                              - /url: /profile/0x1748b273b3b6c02038448951a917c29894735e9e
+                            - time [ref=e889]: 4h ago
+                          - button [ref=e891] [cursor=pointer]:
+                            - img [ref=e892]
+                        - generic [ref=e897]:
+                          - generic [ref=e898]: Man this market is so confusing, Nothing is clear. Current month and next contract switch, in whiever contract the prices hit will used for resolution? if so why last month i seen prices hit so many levels and they are not even close to 90% then someone said it is based on final contracts 1min candles price not previous contracts 1min candles. If so why now its already being resolved lol.
+                          - button "Read more" [ref=e900] [cursor=pointer]
+                        - generic [ref=e901]:
+                          - button "0" [ref=e902] [cursor=pointer]:
+                            - img
+                            - generic [ref=e903]: "0"
+                          - button "Reply" [ref=e904] [cursor=pointer]:
+                            - img
+                            - generic [ref=e905]: Reply
+                        - button "1 Replies" [ref=e906] [cursor=pointer]:
+                          - text: 1 Replies
+                          - img
+                        - article [ref=e907]:
+                          - generic [ref=e908]:
+                            - link [ref=e909] [cursor=pointer]:
+                              - /url: /profile/0x25db6ca5935ae858a5c1f2dcd5c62939805328de
+                              - generic "0x25db6cA5935ae858A5c1F2dCD5c62939805328dE-1770665598557" [ref=e910]
+                            - generic [ref=e912]:
+                              - generic [ref=e913]:
+                                - generic [ref=e914]:
+                                  - generic [ref=e915]:
+                                    - link "Shiny-Mark" [ref=e916] [cursor=pointer]:
+                                      - /url: /profile/0x25db6ca5935ae858a5c1f2dcd5c62939805328de
+                                    - button "sort-markets-by" [ref=e917] [cursor=pointer]:
+                                      - paragraph [ref=e918]: 1.9K ↑ $120
+                                      - img
+                                  - time [ref=e919]: 4h ago
+                                - button [ref=e921] [cursor=pointer]:
+                                  - img [ref=e922]
+                              - generic [ref=e927]:
+                                - link "@MrVarma" [ref=e928] [cursor=pointer]:
+                                  - /url: /profile/0x1748b273b3b6c02038448951a917c29894735e9e
+                                - generic [ref=e929]: It's always the current contract. Next contract becomes current contract on May 15.
+                              - generic [ref=e930]:
+                                - button "0" [ref=e931] [cursor=pointer]:
+                                  - img
+                                  - generic [ref=e932]: "0"
+                                - button "Reply" [ref=e933] [cursor=pointer]:
+                                  - img
+                                  - generic [ref=e934]: Reply
+                  - article [ref=e935]:
+                    - generic [ref=e936]:
+                      - link "VoidEclipse" [ref=e937] [cursor=pointer]:
+                        - /url: /profile/0x8c9233e5b93bdc9ddc202079a426bc4a6f2bebd9
+                        - generic "VoidEclipse" [ref=e938]:
+                          - img "VoidEclipse" [ref=e940]
+                      - generic [ref=e941]:
+                        - generic [ref=e942]:
+                          - generic [ref=e943]:
+                            - link "VoidEclipse" [ref=e945] [cursor=pointer]:
+                              - /url: /profile/0x8c9233e5b93bdc9ddc202079a426bc4a6f2bebd9
+                            - time [ref=e946]: 5h ago
+                          - button [ref=e948] [cursor=pointer]:
+                            - img [ref=e949]
+                        - generic [ref=e954]:
+                          - img "Jujutsu Kaisen Jjk GIF"
+                        - generic [ref=e955]:
+                          - button "4" [ref=e956] [cursor=pointer]:
+                            - img
+                            - generic [ref=e957]: "4"
+                          - button "Reply" [ref=e958] [cursor=pointer]:
+                            - img
+                            - generic [ref=e959]: Reply
+                  - article [ref=e960]:
+                    - generic [ref=e961]:
+                      - link [ref=e962] [cursor=pointer]:
+                        - /url: /profile/0xb66d20bea38e293b44846c9bec5f208f98f6cb0d
+                        - generic "GRIFONESPERANTO" [ref=e963]
+                      - generic [ref=e965]:
+                        - generic [ref=e966]:
+                          - generic [ref=e967]:
+                            - generic [ref=e968]:
+                              - link "GRIFONESPERANTO" [ref=e969] [cursor=pointer]:
+                                - /url: /profile/0xb66d20bea38e293b44846c9bec5f208f98f6cb0d
+                              - button "sort-markets-by" [ref=e970] [cursor=pointer]:
+                                - paragraph [ref=e971]: 6 ↓ $80
+                                - img
+                            - time [ref=e972]: 5h ago
+                          - button [ref=e974] [cursor=pointer]:
+                            - img [ref=e975]
+                        - generic [ref=e981]: There is information about the launch of missiles from the Khuzestan province (Iran) towards the Persian Gulf.
+                        - generic [ref=e982]:
+                          - button "1" [ref=e983] [cursor=pointer]:
+                            - img
+                            - generic [ref=e984]: "1"
+                          - button "Reply" [ref=e985] [cursor=pointer]:
+                            - img
+                            - generic [ref=e986]: Reply
+                  - article [ref=e987]:
+                    - generic [ref=e988]:
+                      - link [ref=e989] [cursor=pointer]:
+                        - /url: /profile/0xbfc9e1806433acc77bea5599eb70edeca960a0a3
+                        - generic "betpro3" [ref=e990]
+                      - generic [ref=e992]:
+                        - generic [ref=e993]:
+                          - generic [ref=e994]:
+                            - generic [ref=e995]:
+                              - link "betpro3" [ref=e996] [cursor=pointer]:
+                                - /url: /profile/0xbfc9e1806433acc77bea5599eb70edeca960a0a3
+                              - button "sort-markets-by" [disabled]:
+                                - paragraph: 125 ↑ $110
+                            - time [ref=e997]: 6h ago
+                          - button [ref=e999] [cursor=pointer]:
+                            - img [ref=e1000]
+                        - generic [ref=e1006]: 105$ resolution please
+                        - generic [ref=e1007]:
+                          - button "0" [ref=e1008] [cursor=pointer]:
+                            - img
+                            - generic [ref=e1009]: "0"
+                          - button "Reply" [ref=e1010] [cursor=pointer]:
+                            - img
+                            - generic [ref=e1011]: Reply
+                  - article [ref=e1012]:
+                    - generic [ref=e1013]:
+                      - link "FermentedGoblin" [ref=e1014] [cursor=pointer]:
+                        - /url: /profile/0xb358f5b3d438afd8309a53a99ab52db9b00feb11
+                        - generic "FermentedGoblin" [ref=e1015]:
+                          - img "FermentedGoblin" [ref=e1017]
+                      - generic [ref=e1018]:
+                        - generic [ref=e1019]:
+                          - generic [ref=e1020]:
+                            - generic [ref=e1021]:
+                              - link "FermentedGoblin" [ref=e1022] [cursor=pointer]:
+                                - /url: /profile/0xb358f5b3d438afd8309a53a99ab52db9b00feb11
+                              - button "sort-markets-by" [disabled]:
+                                - paragraph: 400 ↑ $130
+                            - time [ref=e1023]: 6h ago
+                          - button [ref=e1025] [cursor=pointer]:
+                            - img [ref=e1026]
+                        - generic [ref=e1032]: something is happening
+                        - generic [ref=e1033]:
+                          - button "1" [ref=e1034] [cursor=pointer]:
+                            - img
+                            - generic [ref=e1035]: "1"
+                          - button "Reply" [ref=e1036] [cursor=pointer]:
+                            - img
+                            - generic [ref=e1037]: Reply
+                  - article [ref=e1038]:
+                    - generic [ref=e1039]:
+                      - link [ref=e1040] [cursor=pointer]:
+                        - /url: /profile/0xb66d20bea38e293b44846c9bec5f208f98f6cb0d
+                        - generic "GRIFONESPERANTO" [ref=e1041]
+                      - generic [ref=e1043]:
+                        - generic [ref=e1044]:
+                          - generic [ref=e1045]:
+                            - generic [ref=e1046]:
+                              - link "GRIFONESPERANTO" [ref=e1047] [cursor=pointer]:
+                                - /url: /profile/0xb66d20bea38e293b44846c9bec5f208f98f6cb0d
+                              - button "sort-markets-by" [ref=e1048] [cursor=pointer]:
+                                - paragraph [ref=e1049]: 6 ↓ $80
+                                - img
+                            - time [ref=e1050]: 8h ago
+                          - button [ref=e1052] [cursor=pointer]:
+                            - img [ref=e1053]
+                        - generic [ref=e1059]: This is a huge mess... We are living in an alternative reality.....
+                        - generic [ref=e1060]:
+                          - button "0" [ref=e1061] [cursor=pointer]:
+                            - img
+                            - generic [ref=e1062]: "0"
+                          - button "Reply" [ref=e1063] [cursor=pointer]:
+                            - img
+                            - generic [ref=e1064]: Reply
+          - generic [ref=e1069]:
+            - generic [ref=e1070]:
+              - generic [ref=e1071]:
+                - generic [ref=e1072]:
+                  - img "icon for ↑ $200" [ref=e1075]
+                  - generic [ref=e1077]: ↑ $200
+                - generic [ref=e1078]:
+                  - radiogroup [ref=e1079]:
+                    - radio "Buy" [checked] [ref=e1080] [cursor=pointer]: Buy
+                    - radio "Sell" [ref=e1082] [cursor=pointer]
+                  - button "Market" [ref=e1083] [cursor=pointer]:
+                    - text: Market
+                    - img [ref=e1084]
+              - radiogroup [ref=e1088]:
+                - radio "Yes 1.9¢" [checked] [ref=e1090] [cursor=pointer]:
+                  - generic:
+                    - generic:
+                      - generic: "Yes"
+                      - generic: 1.9¢
+                - radio "No 98.2¢" [ref=e1092] [cursor=pointer]:
+                  - generic:
+                    - generic:
+                      - generic: "No"
+                      - generic: 98.2¢
+              - generic [ref=e1093]:
+                - generic [ref=e1099]:
+                  - generic [ref=e1100]:
+                    - generic [ref=e1101]:
+                      - paragraph [ref=e1103]: Amount
+                      - paragraph [ref=e1106]: $80.87 cash
+                    - generic [ref=e1109]:
+                      - generic:
+                        - generic: $
+                      - textbox "$0" [active] [ref=e1110]
+                  - generic [ref=e1113]:
+                    - button "+$1" [ref=e1114] [cursor=pointer]
+                    - button "+$5" [ref=e1115] [cursor=pointer]
+                    - button "+$10" [ref=e1116] [cursor=pointer]
+                    - button "+$100" [ref=e1117] [cursor=pointer]
+                - button "B u y Y e s" [ref=e1121] [cursor=pointer]:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic:
+                            - generic: B
+                            - generic: u
+                            - generic: "y"
+                            - generic: "Y"
+                            - generic: e
+                            - generic: s
+            - button "By trading, you agree to the Terms of Use." [ref=e1123]:
+              - text: By trading, you agree to the
+              - link "Terms of Use" [ref=e1124] [cursor=pointer]:
+                - /url: /tos
+              - text: .
+            - generic [ref=e1126]:
+              - generic [ref=e1131]:
+                - button "All" [ref=e1132] [cursor=pointer]
+                - button "Monthly" [ref=e1133] [cursor=pointer]
+                - button "Finance" [ref=e1134] [cursor=pointer]
+              - generic [ref=e1135]:
+                - link "icon for Will Natural Gas (NG) hit (HIGH) $3.00 in May? Will Natural Gas (NG) hit (HIGH) $3.00 in May? 59%" [ref=e1136] [cursor=pointer]:
+                  - /url: /event/what-price-will-ng-hit-in-may-2026
+                  - generic [ref=e1137]:
+                    - img "icon for Will Natural Gas (NG) hit (HIGH) $3.00 in May?" [ref=e1140]
+                    - paragraph [ref=e1142]: Will Natural Gas (NG) hit (HIGH) $3.00 in May?
+                    - generic [ref=e1145]: 59%
+                - link "icon for Will S&P 500 (SPY) hit (LOW) $710 in May? Will S&P 500 (SPY) hit (LOW) $710 in May? 80%" [ref=e1146] [cursor=pointer]:
+                  - /url: /event/what-price-will-spy-hit-in-may-2026
+                  - generic [ref=e1147]:
+                    - img "icon for Will S&P 500 (SPY) hit (LOW) $710 in May?" [ref=e1150]
+                    - paragraph [ref=e1152]: Will S&P 500 (SPY) hit (LOW) $710 in May?
+                    - generic [ref=e1155]: 80%
+                - link "icon for Will Coinbase Global, Inc. (COIN) hit (HIGH) $205 in May? Will Coinbase Global, Inc. (COIN) hit (HIGH) $205 in May? 100%" [ref=e1156] [cursor=pointer]:
+                  - /url: /event/what-price-will-coin-hit-in-may-2026
+                  - generic [ref=e1157]:
+                    - img "icon for Will Coinbase Global, Inc. (COIN) hit (HIGH) $205 in May?" [ref=e1160]
+                    - paragraph [ref=e1162]: Will Coinbase Global, Inc. (COIN) hit (HIGH) $205 in May?
+                    - generic [ref=e1165]: 100%
+        - contentinfo [ref=e1166]:
+          - generic [ref=e1168]:
+            - generic [ref=e1169]:
+              - link "Polymarket" [ref=e1170] [cursor=pointer]:
+                - /url: /
+                - img "Polymarket" [ref=e1171]
+              - paragraph [ref=e1172]: The World's Largest Prediction Market™
+            - generic [ref=e1173]:
+              - generic [ref=e1175]:
+                - heading "Related topics" [level=3] [ref=e1176]
+                - generic [ref=e1177]:
+                  - link "Oil Predictions & odds" [ref=e1178] [cursor=pointer]:
+                    - /url: /predictions/oil
+                    - text: Oil
+                    - generic [ref=e1179]: Predictions & odds
+                  - link "Fed Predictions & odds" [ref=e1180] [cursor=pointer]:
+                    - /url: /predictions/fed
+                    - text: Fed
+                    - generic [ref=e1181]: Predictions & odds
+                  - link "Fomc Predictions & odds" [ref=e1182] [cursor=pointer]:
+                    - /url: /predictions/fomc
+                    - text: Fomc
+                    - generic [ref=e1183]: Predictions & odds
+                  - link "Commodities Predictions & odds" [ref=e1184] [cursor=pointer]:
+                    - /url: /predictions/commodities
+                    - text: Commodities
+                    - generic [ref=e1185]: Predictions & odds
+                  - link "Equities Predictions & odds" [ref=e1186] [cursor=pointer]:
+                    - /url: /predictions/equities
+                    - text: Equities
+                    - generic [ref=e1187]: Predictions & odds
+                  - link "Stocks Predictions & odds" [ref=e1188] [cursor=pointer]:
+                    - /url: /predictions/stocks
+                    - text: Stocks
+                    - generic [ref=e1189]: Predictions & odds
+                  - link "Indicies Predictions & odds" [ref=e1190] [cursor=pointer]:
+                    - /url: /predictions/indicies
+                    - text: Indicies
+                    - generic [ref=e1191]: Predictions & odds
+                  - link "SPX Predictions & odds" [ref=e1192] [cursor=pointer]:
+                    - /url: /predictions/spx
+                    - text: SPX
+                    - generic [ref=e1193]: Predictions & odds
+                  - link "SPY Predictions & odds" [ref=e1194] [cursor=pointer]:
+                    - /url: /predictions/spy
+                    - text: SPY
+                    - generic [ref=e1195]: Predictions & odds
+                  - link "IPO Predictions & odds" [ref=e1196] [cursor=pointer]:
+                    - /url: /predictions/ipo
+                    - text: IPO
+                    - generic [ref=e1197]: Predictions & odds
+                  - generic [ref=e1198]:
+                    - generic [ref=e1200]:
+                      - link [ref=e1201] [cursor=pointer]:
+                        - /url: /predictions/gold
+                        - text: Gold
+                        - generic [ref=e1202]: Predictions & odds
+                      - link [ref=e1203] [cursor=pointer]:
+                        - /url: /predictions/uranium
+                        - text: Uranium
+                        - generic [ref=e1204]: Predictions & odds
+                      - link [ref=e1205] [cursor=pointer]:
+                        - /url: /predictions/powell
+                        - text: Powell
+                        - generic [ref=e1206]: Predictions & odds
+                      - link [ref=e1207] [cursor=pointer]:
+                        - /url: /predictions/googl
+                        - text: GOOGL
+                        - generic [ref=e1208]: Predictions & odds
+                      - link [ref=e1209] [cursor=pointer]:
+                        - /url: /predictions/nvda
+                        - text: NVDA
+                        - generic [ref=e1210]: Predictions & odds
+                      - link [ref=e1211] [cursor=pointer]:
+                        - /url: /predictions/amzn
+                        - text: AMZN
+                        - generic [ref=e1212]: Predictions & odds
+                      - link [ref=e1213] [cursor=pointer]:
+                        - /url: /predictions/meta
+                        - text: Meta
+                        - generic [ref=e1214]: Predictions & odds
+                      - link [ref=e1215] [cursor=pointer]:
+                        - /url: /predictions/aapl
+                        - text: AAPL
+                        - generic [ref=e1216]: Predictions & odds
+                      - link [ref=e1217] [cursor=pointer]:
+                        - /url: /predictions/ath
+                        - text: ATH
+                        - generic [ref=e1218]: Predictions & odds
+                      - link [ref=e1219] [cursor=pointer]:
+                        - /url: /predictions/tsla
+                        - text: TSLA
+                        - generic [ref=e1220]: Predictions & odds
+                    - button "View more" [ref=e1221] [cursor=pointer]:
+                      - generic [ref=e1222]: View more
+                      - img [ref=e1223]
+              - generic [ref=e1226]:
+                - heading "Popular Finance markets" [level=3] [ref=e1227]
+                - generic [ref=e1228]:
+                  - link "Largest Company end of May?" [ref=e1229] [cursor=pointer]:
+                    - /url: /event/largest-company-end-of-may-167
+                  - link "How many Fed rate cuts in 2026?" [ref=e1230] [cursor=pointer]:
+                    - /url: /event/how-many-fed-rate-cuts-in-2026
+                  - link "Largest Company end of June?" [ref=e1231] [cursor=pointer]:
+                    - /url: /event/largest-company-end-of-june-712
+                  - link "S&P 500 (SPX) Up or Down on May 4?" [ref=e1232] [cursor=pointer]:
+                    - /url: /event/spx-up-or-down-on-may-4-2026
+                  - link "WTI Crude Oil (WTI) Up or Down on May 4?" [ref=e1233] [cursor=pointer]:
+                    - /url: /event/wti-up-or-down-on-may-4-2026
+                  - link "SPY (SPY) Up or Down on May 4?" [ref=e1234] [cursor=pointer]:
+                    - /url: /event/spy-up-or-down-on-may-4-2026
+                  - link "S&P 500 (SPX) Opens Up or Down on May 4?" [ref=e1235] [cursor=pointer]:
+                    - /url: /event/spx-opens-up-or-down-on-may-4-2026
+                  - link "SpaceX IPO by ___ ?" [ref=e1236] [cursor=pointer]:
+                    - /url: /event/spacex-ipo-by
+                  - link "What will Gold (XAUUSD) hit in May 2026?" [ref=e1237] [cursor=pointer]:
+                    - /url: /event/what-price-will-xauusd-hit-in-may-2026
+                  - link "S&P 500 (SPY) closes above ___ on May 4?" [ref=e1238] [cursor=pointer]:
+                    - /url: /event/spy-closes-above-on-may-4-2026
+                  - generic [ref=e1239]:
+                    - generic [ref=e1241]:
+                      - link [ref=e1242] [cursor=pointer]:
+                        - /url: /event/will-gas-hit-by-end-of-may
+                        - text: Will gas hit __ by end of May?
+                      - link [ref=e1243] [cursor=pointer]:
+                        - /url: /event/wti-closes-above-on-may-4-2026
+                        - text: WTI Crude Oil (WTI) closes above ___ on May 4?
+                      - link [ref=e1244] [cursor=pointer]:
+                        - /url: /event/crude-oil-all-time-high-by
+                        - text: Crude Oil all time high by...?
+                      - link [ref=e1245] [cursor=pointer]:
+                        - /url: /event/gc-hit-jun-2026
+                        - text: What will Gold (GC) hit__ by end of June?
+                      - link [ref=e1246] [cursor=pointer]:
+                        - /url: /event/largest-company-end-of-december-2026
+                        - text: Largest Company end of December 2026?
+                      - link [ref=e1247] [cursor=pointer]:
+                        - /url: /event/will-xauusd-hit-week-of-may-4-2026
+                        - text: What will Gold (XAUUSD) hit Week of May 4 2026?
+                      - link [ref=e1248] [cursor=pointer]:
+                        - /url: /event/what-price-will-xagusd-hit-in-may-2026
+                        - text: What will Silver (XAGUSD) hit in May 2026?
+                      - link [ref=e1249] [cursor=pointer]:
+                        - /url: /event/will-spy-hit-week-of-may-4-2026
+                        - text: What will S&P 500 (SPY) hit Week of May 4 2026?
+                      - link [ref=e1250] [cursor=pointer]:
+                        - /url: /event/will-wti-hit-week-of-may-4-2026
+                        - text: What will WTI Crude Oil (WTI) hit Week of May 4 2026?
+                      - link [ref=e1251] [cursor=pointer]:
+                        - /url: /event/will-coin-hit-week-of-may-4-2026
+                        - text: What will Coinbase Global, Inc. (COIN) hit Week of May 4 2026?
+                    - button "View more" [ref=e1252] [cursor=pointer]:
+                      - generic [ref=e1253]: View more
+                      - img [ref=e1254]
+              - generic [ref=e1257]:
+                - heading "New Finance markets" [level=3] [ref=e1258]
+                - generic [ref=e1259]:
+                  - link "Will GameStop acquire eBay?" [ref=e1260] [cursor=pointer]:
+                    - /url: /event/will-gamestop-acquire-ebay
+                  - link "Apple (AAPL) closes week of May 4 at ___?" [ref=e1261] [cursor=pointer]:
+                    - /url: /event/aapl-week-may-8-2026
+                  - link "Amazon (AMZN) closes week of May 4 at ___?" [ref=e1262] [cursor=pointer]:
+                    - /url: /event/amzn-week-may-8-2026
+                  - link "Google (GOOGL) closes week of May 4 at ___?" [ref=e1263] [cursor=pointer]:
+                    - /url: /event/googl-week-may-8-2026
+                  - link "Netflix (NFLX) closes week of May 4 at ___?" [ref=e1264] [cursor=pointer]:
+                    - /url: /event/nflx-week-may-8-2026
+                  - link "Palantir (PLTR) closes week of May 4 at ___?" [ref=e1265] [cursor=pointer]:
+                    - /url: /event/pltr-week-may-8-2026
+                  - link "Meta (META) closes week of May 4 at ___?" [ref=e1266] [cursor=pointer]:
+                    - /url: /event/meta-week-may-8-2026
+                  - link "Microsoft (MSFT) closes week of May 4 at ___?" [ref=e1267] [cursor=pointer]:
+                    - /url: /event/msft-week-may-8-2026
+                  - link "Tesla (TSLA) closes week of May 4 at ___?" [ref=e1268] [cursor=pointer]:
+                    - /url: /event/tsla-week-may-8-2026
+                  - link "Opendoor (OPEN) closes week of May 4 at ___?" [ref=e1269] [cursor=pointer]:
+                    - /url: /event/open-week-may-8-2026
+                  - generic [ref=e1270]:
+                    - generic [ref=e1272]:
+                      - link [ref=e1273] [cursor=pointer]:
+                        - /url: /event/nvda-week-may-8-2026
+                        - text: NVIDIA (NVDA) closes week of May 4 at ___?
+                      - link [ref=e1274] [cursor=pointer]:
+                        - /url: /event/will-ng-hit-week-of-may-4-2026
+                        - text: What will Natural Gas (NG) hit Week of May 4 2026?
+                      - link [ref=e1275] [cursor=pointer]:
+                        - /url: /event/will-wti-hit-week-of-may-4-2026
+                        - text: What will WTI Crude Oil (WTI) hit Week of May 4 2026?
+                      - link [ref=e1276] [cursor=pointer]:
+                        - /url: /event/will-xagusd-hit-week-of-may-4-2026
+                        - text: What will Silver (XAGUSD) hit Week of May 4 2026?
+                      - link [ref=e1277] [cursor=pointer]:
+                        - /url: /event/will-xauusd-hit-week-of-may-4-2026
+                        - text: What will Gold (XAUUSD) hit Week of May 4 2026?
+                      - link [ref=e1278] [cursor=pointer]:
+                        - /url: /event/will-ewy-hit-week-of-may-4-2026
+                        - text: What will South Korea ETF (EWY) hit Week of May 4 2026?
+                      - link [ref=e1279] [cursor=pointer]:
+                        - /url: /event/will-spy-hit-week-of-may-4-2026
+                        - text: What will S&P 500 (SPY) hit Week of May 4 2026?
+                      - link [ref=e1280] [cursor=pointer]:
+                        - /url: /event/will-hood-hit-week-of-may-4-2026
+                        - text: What will Robinhood Markets, Inc. (HOOD) hit Week of May 4 2026?
+                      - link [ref=e1281] [cursor=pointer]:
+                        - /url: /event/will-coin-hit-week-of-may-4-2026
+                        - text: What will Coinbase Global, Inc. (COIN) hit Week of May 4 2026?
+                      - link [ref=e1282] [cursor=pointer]:
+                        - /url: /event/will-abnb-hit-week-of-may-4-2026
+                        - text: What will Airbnb, Inc. (ABNB) hit Week of May 4 2026?
+                    - button "View more" [ref=e1283] [cursor=pointer]:
+                      - generic [ref=e1284]: View more
+                      - img [ref=e1285]
+            - generic [ref=e1287]:
+              - generic [ref=e1288]:
+                - generic [ref=e1289]:
+                  - link "Email" [ref=e1290] [cursor=pointer]:
+                    - /url: mailto:hello@polymarket.com
+                    - img [ref=e1291]
+                  - link "X (Twitter)" [ref=e1295] [cursor=pointer]:
+                    - /url: https://x.com/Polymarket
+                    - img [ref=e1296]
+                  - link "Instagram" [ref=e1298] [cursor=pointer]:
+                    - /url: https://www.instagram.com/polymarket
+                    - img [ref=e1299]
+                  - link "Discord" [ref=e1304] [cursor=pointer]:
+                    - /url: https://discord.gg/Polymarket
+                    - img [ref=e1305]
+                  - link "TikTok" [ref=e1307] [cursor=pointer]:
+                    - /url: https://www.tiktok.com/@polymarket
+                    - img [ref=e1308]
+                - generic [ref=e1310]:
+                  - generic [ref=e1311]: Adventure One QSS Inc. © 2026
+                  - generic [ref=e1312]: ·
+                  - link "Privacy" [ref=e1313] [cursor=pointer]:
+                    - /url: /privacy
+                  - generic [ref=e1314]: ·
+                  - link "Terms of Use" [ref=e1315] [cursor=pointer]:
+                    - /url: https://polymarket.com/tos
+                  - generic [ref=e1316]: ·
+                  - link "Market Integrity" [ref=e1317] [cursor=pointer]:
+                    - /url: /market-integrity
+                  - generic [ref=e1318]: ·
+                  - link "Help Center" [ref=e1319] [cursor=pointer]:
+                    - /url: https://help.polymarket.com
+                  - generic [ref=e1320]: ·
+                  - link "Docs" [ref=e1321] [cursor=pointer]:
+                    - /url: https://docs.polymarket.com
+                - button "English" [ref=e1322] [cursor=pointer]:
+                  - img [ref=e1323]
+                  - generic [ref=e1326]: English
+                  - img [ref=e1327]
+              - paragraph [ref=e1329]:
+                - text: Polymarket operates globally through separate legal entities.
+                - link "Polymarket US" [ref=e1330] [cursor=pointer]:
+                  - /url: https://polymarket.us/
+                - text: is operated by QCX LLC d/b/a Polymarket US, a CFTC-regulated Designated Contract Market. This international platform is not regulated by the CFTC and operates independently. Trading involves substantial risk of loss. See our
+                - link "Terms of Service" [ref=e1331] [cursor=pointer]:
+                  - /url: https://polymarket.com/tos
+                - text: "&"
+                - link "Privacy Policy" [ref=e1332] [cursor=pointer]:
+                  - /url: https://polymarket.com/privacy
+                - text: .
+    - region "Notifications (F8)":
+      - list
+  - alert [ref=e1333]
+  - iframe [ref=e1342]:
+    
