@@ -330,6 +330,15 @@ class ScalperEngine:
         recent = self.log.count_recent(SCALPER_LEG, hours=1)
         return recent < self.max_legs_per_hour
 
+    def reap_expired(self, now_ts: int) -> int:
+        n = 0
+        for row in self.dao.list_open():
+            if row["period_ts"] and row["period_ts"] < now_ts:
+                self.dao.set_state(row["slug"], ScalperState.EXPIRED)
+                self.pairs.pop(row["slug"], None)
+                n += 1
+        return n
+
     def reconcile_at_startup(self) -> int:
         """Find any LEG1_FILLED rows from prior process, mark RECONCILE_NEEDED.
         Operator must verify on-chain before clearing."""

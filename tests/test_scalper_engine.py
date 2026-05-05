@@ -231,7 +231,72 @@ class TestRestartReconcile(unittest.TestCase):
         engine.add_pair(ScalpPair(slug="s1", period_ts=1, up_token="u",
                                      down_token="d", cfg=ScalperConfig()))
         engine.tick("s1", up_ask=0.45, down_ask=0.50, now_ms=1000)
-        engine.client.execute_market_order.assert_not_called()
+        self.assertIsNone(engine.pairs["s1"].temp_price_up)
+
+
+class TestReapPeriod(unittest.TestCase):
+    def setUp(self):
+        self._fak_patcher = patch.object(_scalper_mod, "_FAK_TYPE", "MOCK_FAK")
+        self._fak_patcher.start()
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.log = TradeLog(db_path=self.tmp.name)
+        self.dao = ScalperPairsDAO(self.log)
+        self.engine = ScalperEngine(client=MagicMock(), log=self.log,
+                                      dao=self.dao, cfg=ScalperConfig(),
+                                      execute=True)
+
+    def tearDown(self):
+        self._fak_patcher.stop()
+        for suffix in ("", "-wal", "-shm"):
+            p = self.tmp.name + suffix
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_reap_marks_expired_pairs(self):
+        self.dao.create("old", period_ts=100, up_token="u", down_token="d")
+        self.dao.create("new", period_ts=10**12, up_token="u", down_token="d")
+        self.engine.reap_expired(now_ts=1000)
+        self.assertEqual(self.dao.get_by_slug("old")["state"],
+                          ScalperState.EXPIRED)
+        self.assertEqual(self.dao.get_by_slug("new")["state"],
+                          ScalperState.TRACKING)
+
+
+class TestShadowMode(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.log = TradeLog(db_path=self.tmp.name)
+        self.dao = ScalperPairsDAO(self.log)
+        self.client = MagicMock()
+        self.cfg = ScalperConfig()
+        self.engine = ScalperEngine(client=self.client, log=self.log,
+                                      dao=self.dao, cfg=self.cfg, execute=False)
+        self.dao.create("s1", 100, "tok_up", "tok_dn")
+        self.engine.add_pair(ScalpPair(slug="s1", period_ts=100,
+                                          up_token="tok_up", down_token="tok_dn",
+                                          cfg=self.cfg))
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            p = self.tmp.name + suffix
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_shadow_does_not_call_execute(self):
+        self.engine.tick(slug="s1", up_ask=0.45, down_ask=0.50, now_ms=1000)
+        self.engine.tick(slug="s1", up_ask=0.471, down_ask=0.50, now_ms=1100)
+        self.client.execute_market_order.assert_not_called()
+
+    def test_shadow_logs_hypothetical_leg(self):
+        from agents.application.trade_log import SCALPER_LEG
+        self.engine.tick(slug="s1", up_ask=0.45, down_ask=0.50, now_ms=1000)
+        self.engine.tick(slug="s1", up_ask=0.471, down_ask=0.50, now_ms=1100)
+        recent = [r for r in self.log.recent(limit=5)
+                  if r["status"] == SCALPER_LEG]
+        self.assertGreaterEqual(len(recent), 1)
+        self.assertIn("SHADOW", recent[0]["error"] or "")
 
 
 if __name__ == "__main__":
