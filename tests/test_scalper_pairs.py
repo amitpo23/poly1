@@ -57,6 +57,31 @@ class TestScalperPairsDAO(unittest.TestCase):
         self.assertIn("s1", slugs)
         self.assertNotIn("s2", slugs)
 
+    def test_record_fill_accumulates(self):
+        self.dao.create("s1", 1, "u", "d")
+        self.dao.record_fill("s1", "up", qty=5.0, cost_usdc=2.50)
+        self.dao.record_fill("s1", "up", qty=3.0, cost_usdc=1.50)
+        row = self.dao.get_by_slug("s1")
+        self.assertAlmostEqual(row["qty_up"], 8.0)
+        self.assertAlmostEqual(row["cost_up"], 4.00)
+        self.assertEqual(row["attempts_up"], 2)
+
+    def test_set_state_terminal_sets_closed_ts(self):
+        self.dao.create("s1", 1, "u", "d")
+        self.dao.set_state("s1", ScalperState.REDEEMED)
+        row = self.dao.get_by_slug("s1")
+        self.assertIsNotNone(row["closed_ts"])
+        self.assertGreater(row["closed_ts"], 0)
+
+    def test_list_recent_returns_pairs_newest_first(self):
+        self.dao.create("s1", 1, "u", "d")
+        self.dao.create("s2", 2, "u", "d")
+        rows = self.dao.list_recent(limit=10)
+        self.assertGreaterEqual(len(rows), 2)
+        slugs = [r["slug"] for r in rows]
+        self.assertIn("s1", slugs)
+        self.assertIn("s2", slugs)
+
 
 if __name__ == "__main__":
     unittest.main()

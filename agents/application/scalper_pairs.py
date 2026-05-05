@@ -18,6 +18,8 @@ class ScalperState:
     RECONCILE_NEEDED = "reconcile_needed"
 
 
+# Not in TERMINAL_STATES intentionally: RECONCILE_NEEDED pairs remain in list_open()
+# until an operator verifies on-chain positions and manually clears the row.
 TERMINAL_STATES = (ScalperState.EXPIRED, ScalperState.REDEEMED, ScalperState.SHADOW)
 
 
@@ -57,7 +59,7 @@ class ScalperPairsDAO:
             return [dict(r) for r in conn.execute(sql, TERMINAL_STATES).fetchall()]
 
     def record_fill(
-        self, slug: str, side: str, qty: float, cost_usdc: float, fill_price: float = None
+        self, slug: str, side: str, qty: float, cost_usdc: float, fill_price: Optional[float] = None
     ) -> None:
         if side not in ("up", "down"):
             raise ValueError(f"side must be 'up' or 'down', got {side}")
@@ -74,16 +76,20 @@ class ScalperPairsDAO:
             f"WHERE slug = ?"
         )
         with self._tl._lock, self._tl._connect() as conn:
-            conn.execute(sql, (qty, cost_usdc, fill_price, slug))
+            cur = conn.execute(sql, (qty, cost_usdc, fill_price, slug))
+            if cur.rowcount == 0:
+                raise ValueError(f"record_fill: slug '{slug}' not found")
 
     def set_state(self, slug: str, state: str, error: Optional[str] = None) -> None:
         closed_ts = _now_ts() if state in TERMINAL_STATES else None
         with self._tl._lock, self._tl._connect() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE scalper_pairs SET state = ?, error = ?, "
                 "closed_ts = COALESCE(?, closed_ts) WHERE slug = ?",
                 (state, error, closed_ts, slug),
             )
+            if cur.rowcount == 0:
+                raise ValueError(f"set_state: slug '{slug}' not found")
 
     def list_recent(self, limit: int = 50) -> list:
         with self._tl._lock, self._tl._connect() as conn:
