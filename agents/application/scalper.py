@@ -155,3 +155,118 @@ class ScalpPair:
         if (now_ms - cur) >= self.cfg.second_side_time_ms:
             return {"reason": "dyn_threshold_continuous", "price": best_ask}
         return None
+
+
+# ---------------------------------------------------------------------------
+# Optional heavy deps — fall back to lightweight sentinels for stdlib test runs.
+# ---------------------------------------------------------------------------
+import uuid  # noqa: E402
+
+from agents.application.trade_log import SCALPER_LEG, TradeLog  # noqa: E402
+from agents.application.scalper_pairs import ScalperPairsDAO, ScalperState  # noqa: E402
+from agents.utils.objects import TradeRecommendation  # noqa: E402
+
+try:
+    from py_clob_client_v2.clob_types import OrderType as _ClobOrderType
+    _FAK_TYPE = _ClobOrderType.FAK
+except ImportError:
+    _FAK_TYPE = "FAK"
+
+try:
+    from langchain_core.documents import Document as _Document
+except ImportError:
+    from collections import namedtuple as _nt
+    _Document = _nt("_FakeDoc", ["page_content", "metadata"])
+
+
+class ScalperEngine:
+    """Top-level scalper engine. Owns the running pairs and the I/O loop."""
+
+    SLUG_FILTER = "-updown-15m-"
+
+    def __init__(
+        self,
+        client,
+        log: TradeLog,
+        dao: ScalperPairsDAO,
+        cfg: ScalperConfig,
+        gamma=None,
+        execute: bool = False,
+        max_legs_per_hour: int = None,
+    ):
+        self.client = client
+        self.log = log
+        self.dao = dao
+        self.cfg = cfg
+        self.gamma = gamma
+        self.execute = execute
+        self.max_legs_per_hour = (
+            max_legs_per_hour if max_legs_per_hour is not None
+            else _env_int("MAX_SCALP_TRADES_PER_HOUR", 60)
+        )
+        self.pairs: dict = {}
+
+    def add_pair(self, pair: ScalpPair) -> None:
+        self.pairs[pair.slug] = pair
+
+    def place_leg(
+        self,
+        slug: str,
+        side: str,
+        token: str,
+        usdc: float,
+        intended_price: float,
+    ) -> dict:
+        """Attempt one FAK leg. Always increments attempts; only increments qty/cost on success."""
+        if not self.execute:
+            # Shadow mode: log hypothetical leg, don't call CLOB
+            cycle_id = f"scalp:{slug}:{side}"
+            self.log.insert_terminal(
+                cycle_id=cycle_id, market_id=slug, status=SCALPER_LEG,
+                token_id=token, side="BUY",
+                price=intended_price, size_usdc=usdc,
+                error=f"SHADOW: would have fired at {intended_price:.4f}",
+            )
+            self.dao.record_fill(slug, side, qty=0.0, cost_usdc=0.0,
+                                 fill_price=intended_price)
+            return {"filled": False, "shadow": True}
+
+        cycle_id = f"scalp:{slug}:{side}:{str(uuid.uuid4())[:8]}"
+        rec = TradeRecommendation(
+            price=intended_price if side == "up" else (1.0 - intended_price),
+            size_fraction=0.0,
+            side="BUY" if side == "up" else "SELL",
+            confidence=None,
+            amount_usdc=usdc,
+        )
+        market = (_Document(page_content="", metadata={
+            "outcomes": "['Up', 'Down']",
+            "clob_token_ids": f"['{token}', '{token}']",
+            "outcome_prices": f"['{intended_price}', '{1.0 - intended_price}']",
+            "id": slug,
+        }), 0.0)
+
+        try:
+            response = self.client.execute_market_order(
+                market, rec, order_type=_FAK_TYPE,
+            )
+            filled_usdc = float(response.get("amount_usdc", 0.0))
+            avg_price = float(response.get("order_avg_price_estimate", intended_price))
+            qty = filled_usdc / avg_price if avg_price > 0 else 0.0
+            self.dao.record_fill(slug, side, qty=qty,
+                                 cost_usdc=filled_usdc,
+                                 fill_price=avg_price)
+            self.log.insert_terminal(
+                cycle_id=cycle_id, market_id=slug, status=SCALPER_LEG,
+                token_id=token, side=rec.side, price=avg_price,
+                size_usdc=filled_usdc, response=response,
+            )
+            return {"filled": True, "qty": qty, "avg_price": avg_price}
+        except Exception as e:
+            self.dao.record_fill(slug, side, qty=0.0, cost_usdc=0.0)
+            self.log.insert_terminal(
+                cycle_id=cycle_id, market_id=slug, status=SCALPER_LEG,
+                token_id=token, side="BUY" if side == "up" else "SELL",
+                price=intended_price, size_usdc=0.0, error=str(e),
+            )
+            return {"filled": False, "error": str(e)}
