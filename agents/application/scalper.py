@@ -439,3 +439,129 @@ class ScalperEngine:
                                       intended_price=sig["price"])
             if result.get("filled"):
                 self.dao.set_state(slug, ScalperState.BOTH_FILLED)
+
+
+# ---------------------------------------------------------------------------
+# Daemon — long-running loop.  SIGTERM-aware.  One process per replica.
+# ---------------------------------------------------------------------------
+import signal  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+try:
+    from agents.polymarket.polymarket import Polymarket as _Polymarket
+    Polymarket = _Polymarket
+except ImportError:
+    Polymarket = None  # type: ignore
+
+try:
+    from agents.polymarket.gamma import GammaMarketClient as _GammaMarketClient
+    GammaMarketClient = _GammaMarketClient
+except ImportError:
+    GammaMarketClient = None  # type: ignore
+
+
+class ScalperDaemon:
+    """Long-running loop. SIGTERM-aware. One process per replica.
+
+    Cadence:
+      - poll_ms          -> re-fetch order books for tracked tokens, run tick()
+      - discover_every_sec -> re-scan gamma for new -updown-15m- markets
+    """
+
+    def __init__(
+        self,
+        heartbeat_path: str = None,
+        db_path: str = None,
+        poll_ms: int = None,
+        discover_every_sec: int = None,
+        execute: bool = None,
+    ):
+        self.heartbeat = Path(heartbeat_path or
+                              os.getenv("SCALPER_HEARTBEAT_PATH",
+                                        "/app/data/scalper_heartbeat"))
+        self.cfg = ScalperConfig.from_env()
+        if poll_ms is not None:
+            self.cfg.poll_ms = poll_ms
+        if discover_every_sec is not None:
+            self.cfg.discover_every_sec = discover_every_sec
+        self.execute = (
+            execute if execute is not None
+            else os.getenv("EXECUTE_SCALPER", "false").lower() == "true"
+        )
+        self.tl = TradeLog(db_path=db_path)
+        self.dao = ScalperPairsDAO(self.tl)
+        self.client = Polymarket(live=self.execute)
+        self.gamma = GammaMarketClient()
+        self.engine = ScalperEngine(
+            client=self.client, log=self.tl, dao=self.dao,
+            cfg=self.cfg, gamma=self.gamma, execute=self.execute,
+        )
+        self._stop = threading.Event()
+        signal.signal(signal.SIGTERM, lambda *_: self.stop())
+        signal.signal(signal.SIGINT, lambda *_: self.stop())
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        logger.info("ScalperDaemon: starting (execute=%s)", self.execute)
+        self.engine.reconcile_at_startup()
+        last_discover = 0.0
+        try:
+            while not self._stop.is_set():
+                now = time.time()
+                if now - last_discover >= self.cfg.discover_every_sec:
+                    try:
+                        self.engine.discover_markets()
+                    except Exception:
+                        logger.exception("discover_markets failed")
+                    self.engine.reap_expired(now_ts=int(now))
+                    last_discover = now
+                for row in self.dao.list_open():
+                    slug = row["slug"]
+                    if slug not in self.engine.pairs:
+                        self.engine.add_pair(ScalpPair(
+                            slug=slug, period_ts=row["period_ts"],
+                            up_token=row["up_token"], down_token=row["down_token"],
+                            cfg=self.cfg,
+                        ))
+                    try:
+                        book_up = self.client.client.get_order_book(row["up_token"])
+                        book_dn = self.client.client.get_order_book(row["down_token"])
+                        ask_up = self._best_ask(book_up)
+                        ask_dn = self._best_ask(book_dn)
+                        if ask_up and ask_dn:
+                            self.engine.tick(slug, up_ask=ask_up, down_ask=ask_dn,
+                                             now_ms=int(now * 1000))
+                    except Exception:
+                        logger.exception("tick failed for %s", slug)
+                try:
+                    self.heartbeat.parent.mkdir(parents=True, exist_ok=True)
+                    self.heartbeat.touch()
+                except Exception:
+                    pass
+                self._stop.wait(self.cfg.poll_ms / 1000.0)
+        finally:
+            logger.info("ScalperDaemon: exited")
+
+    @staticmethod
+    def _best_ask(book) -> Optional[float]:
+        asks = (getattr(book, "asks", None) if not isinstance(book, dict)
+                else book.get("asks", []))
+        if not asks:
+            return None
+        prices = []
+        for a in asks:
+            if hasattr(a, "price"):
+                prices.append(float(a.price))
+            else:
+                prices.append(float(a["price"]))
+        return min(prices) if prices else None
+
+
+if __name__ == "__main__":
+    import logging as _logging
+    _logging.basicConfig(level=_logging.INFO)
+    ScalperDaemon().run()
