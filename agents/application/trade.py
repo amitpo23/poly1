@@ -227,7 +227,7 @@ class Trader:
 
         size_fraction = min(recommendation.size_fraction, self.max_position_fraction)
         try:
-            usdc_balance = self.polymarket.get_usdc_balance()
+            usdc_balance = self.risk_gate.available_for_trader()
         except Exception as e:
             logger.exception("cycle %s: balance read failed", cycle_id)
             self.trade_log.insert_terminal(

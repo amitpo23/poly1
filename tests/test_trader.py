@@ -153,6 +153,35 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
         gate = self._gate(polymarket=pm)
         self.assertTrue(gate.ok())
 
+    def test_available_for_trader_subtracts_scalper_reserve(self):
+        log = TradeLog(db_path=self.db_path)
+        poly = MagicMock()
+        poly.get_usdc_balance = MagicMock(return_value=80.0)
+        gate = RiskGate(trade_log=log, polymarket=poly,
+                         starting_balance_usdc=80.0,
+                         scalper_reserve_usdc=20.0)
+        self.assertEqual(gate.available_for_trader(), 60.0)
+
+    def test_available_for_trader_zero_reserve_default(self):
+        log = TradeLog(db_path=self.db_path)
+        poly = MagicMock()
+        poly.get_usdc_balance = MagicMock(return_value=80.0)
+        gate = RiskGate(trade_log=log, polymarket=poly,
+                         starting_balance_usdc=80.0)  # default reserve=0
+        self.assertEqual(gate.available_for_trader(), 80.0)
+
+    def test_min_floor_uses_available_after_reserve(self):
+        """If reserve makes available drop below min_usdc_floor, gate blocks."""
+        log = TradeLog(db_path=self.db_path)
+        poly = MagicMock()
+        poly.get_usdc_balance = MagicMock(return_value=25.0)
+        gate = RiskGate(trade_log=log, polymarket=poly,
+                         starting_balance_usdc=80.0,
+                         scalper_reserve_usdc=20.0,
+                         min_usdc_floor=10.0)
+        # available = 25 - 20 = 5 < 10 → block
+        self.assertIsNotNone(gate.reason())
+
 
 class TestPolymarketDryRun(unittest.TestCase):
     def test_polymarket_live_false_no_private_key(self):

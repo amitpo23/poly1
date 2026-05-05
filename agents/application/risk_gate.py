@@ -47,6 +47,7 @@ class RiskGate:
         max_daily_token_usd: Optional[float] = None,
         kill_switch_file: Optional[str] = None,
         llm_usage_file: Optional[str] = None,
+        scalper_reserve_usdc: Optional[float] = None,   # NEW
     ):
         self.trade_log = trade_log
         self.polymarket = polymarket
@@ -81,6 +82,16 @@ class RiskGate:
         self.llm_usage_file = Path(
             llm_usage_file or os.getenv("LLM_USAGE_FILE", "./data/llm_usage.jsonl")
         )
+        self.scalper_reserve = (
+            scalper_reserve_usdc if scalper_reserve_usdc is not None
+            else _env_float("SCALPER_RESERVE_USDC", 0.0)
+        )
+
+    def available_for_trader(self) -> float:
+        if self.polymarket is None:
+            return 0.0
+        bal = self.polymarket.get_usdc_balance()
+        return max(0.0, bal - self.scalper_reserve)
 
     def reason(self) -> Optional[str]:
         """Return None if all gates pass, else a short string describing the first failure."""
@@ -92,9 +103,13 @@ class RiskGate:
                 bal = self.polymarket.get_usdc_balance()
             except Exception as e:
                 return f"balance read failed: {e}"
-            if bal < self.min_usdc_floor:
-                return f"balance {bal:.4f} below floor {self.min_usdc_floor}"
-            if self.starting_balance > 0:
+            available = max(0.0, bal - self.scalper_reserve)
+            if available < self.min_usdc_floor:
+                return (
+                    f"available {available:.4f} (after scalper reserve "
+                    f"{self.scalper_reserve:.4f}) below floor {self.min_usdc_floor}"
+                )
+            if self.starting_balance > 0:  # keep drawdown check on raw bal
                 drawdown = (self.starting_balance - bal) / self.starting_balance
                 if drawdown > self.max_daily_loss_pct:
                     return (
