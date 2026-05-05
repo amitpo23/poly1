@@ -317,3 +317,75 @@ class ScalperEngine:
             except Exception:
                 pass
         return 0
+
+    def _has_rate_capacity(self) -> bool:
+        recent = self.log.count_recent(SCALPER_LEG, hours=1)
+        return recent < self.max_legs_per_hour
+
+    def tick(self, slug: str, up_ask: float, down_ask: float, now_ms: int) -> None:
+        """One scheduling tick per slug. Apply ticks → maybe fire legs."""
+        if not self._has_rate_capacity():
+            return
+        pair = self.pairs.get(slug)
+        if pair is None:
+            return
+        row = self.dao.get_by_slug(slug)
+        if row is None:
+            return
+        if row["state"] in (ScalperState.BOTH_FILLED, ScalperState.EXPIRED,
+                              ScalperState.REDEEMED, ScalperState.SHADOW,
+                              ScalperState.RECONCILE_NEEDED):
+            return
+
+        pair.apply_tick("up", up_ask, now_ms)
+        pair.apply_tick("down", down_ask, now_ms)
+
+        if row["state"] == ScalperState.TRACKING:
+            for side, ask in (("up", up_ask), ("down", down_ask)):
+                row = self.dao.get_by_slug(slug)  # re-read after potential write
+                if row is None:
+                    return
+                attempts = row[f"attempts_{side}"]
+                if attempts >= self.cfg.max_buys_per_side:
+                    continue
+                sig = pair.evaluate_entry(side, ask, now_ms)
+                if sig is None:
+                    continue
+                if not pair.check_profit_gate(side, sig["price"],
+                                                qty_other=0, cost_other=0):
+                    continue
+                token = pair.up_token if side == "up" else pair.down_token
+                result = self.place_leg(slug=slug, side=side, token=token,
+                                          usdc=self.cfg.leg_usdc_cap,
+                                          intended_price=sig["price"])
+                if result.get("filled"):
+                    self.dao.set_state(slug, ScalperState.LEG1_FILLED)
+                    other = "down" if side == "up" else "up"
+                    setattr(pair, f"dynamic_threshold_{other}",
+                            1.0 - result["avg_price"] + self.cfg.dynamic_threshold_boost)
+                    return
+
+        elif row["state"] == ScalperState.LEG1_FILLED:
+            second = "up" if row["qty_up"] == 0 else "down"
+            ask = up_ask if second == "up" else down_ask
+            row = self.dao.get_by_slug(slug)
+            if row is None:
+                return
+            attempts = row[f"attempts_{second}"]
+            if attempts >= self.cfg.max_buys_per_side:
+                return
+            sig = pair.evaluate_second_leg(second, ask, now_ms)
+            if sig is None:
+                return
+            qty_other = row["qty_up" if second == "down" else "qty_down"]
+            cost_other = row["cost_up" if second == "down" else "cost_down"]
+            if not pair.check_profit_gate(second, sig["price"],
+                                             qty_other=qty_other,
+                                             cost_other=cost_other):
+                return
+            token = pair.up_token if second == "up" else pair.down_token
+            result = self.place_leg(slug=slug, side=second, token=token,
+                                      usdc=self.cfg.leg_usdc_cap,
+                                      intended_price=sig["price"])
+            if result.get("filled"):
+                self.dao.set_state(slug, ScalperState.BOTH_FILLED)
