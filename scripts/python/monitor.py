@@ -220,6 +220,23 @@ def swarm_state() -> dict:
                 pending_by_status[row["status"]] = int(row["n"] or 0)
             out["pending_by_status"] = pending_by_status
 
+            unreconciled = []
+            for row in cur.execute(
+                "SELECT p.id, p.agent, p.market_id, p.side, p.outcome, "
+                "p.price_cents, p.size_usd, p.order_id, p.updated_ms, p.note "
+                "FROM pending_orders p "
+                "LEFT JOIN fills f ON f.order_id = p.order_id "
+                "WHERE p.status='submitted' AND f.order_id IS NULL "
+                "AND COALESCE(p.order_id,'') NOT LIKE 'dry_%' "
+                "ORDER BY p.updated_ms DESC LIMIT 10"
+            ):
+                unreconciled.append(dict(row))
+            out["submitted_unreconciled"] = unreconciled
+            out["submitted_unreconciled_count"] = len(unreconciled)
+            out["submitted_unreconciled_usd"] = sum(
+                float(r.get("size_usd") or 0.0) for r in unreconciled
+            )
+
             # agent state — pull NothingHappens open positions
             nh_open = []
             last_state_ms = None

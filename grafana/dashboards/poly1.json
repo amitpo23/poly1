@@ -534,7 +534,8 @@
     {
       "id": 51,
       "type": "table",
-      "title": "Swarm — Pending Orders by Agent (in-flight)",
+      "title": "Swarm — Order Ledger by Agent",
+      "description": "Submitted and filled rows are restart-safety brakes. Submitted rows need CLOB reconciliation; filled rows represent matched local positions until exit or settlement tracking releases them.",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 71},
       "datasource": {"type": "frser-sqlite-datasource", "uid": "swarm-sqlite"},
       "options": {},
@@ -546,6 +547,7 @@
             {"id": "mappings", "value": [
               {"type": "value", "options": {"pending": {"color": "orange", "text": "PENDING"}}},
               {"type": "value", "options": {"submitted": {"color": "blue", "text": "SUBMITTED"}}},
+              {"type": "value", "options": {"filled": {"color": "green", "text": "FILLED"}}},
               {"type": "value", "options": {"failed": {"color": "red", "text": "FAILED"}}},
               {"type": "value", "options": {"cleared": {"color": "green", "text": "CLEARED"}}}
             ]}
@@ -590,7 +592,7 @@
       },
       "targets": [{
         "datasource": {"type": "frser-sqlite-datasource", "uid": "tradelog-sqlite"},
-        "rawQueryText": "SELECT 'poly1 main (STARTING_BALANCE_USDC)' as slice, 40.00 as amount_usd, 'sees its own positions only; uses journal-based drawdown' as note UNION ALL SELECT 'swarm (SWARM_RESERVE_USDC, TOTAL_CAPITAL)', 40.00, 'split across 5 agents — 35% MR / 30% MM / 15% NH / 15% AI / 5% ARB' UNION ALL SELECT 'scalper (SCALPER_RESERVE_USDC)', 0.00, 'shadow only ($2.50/leg config); no live reserve until Stage 1 flip' UNION ALL SELECT 'TOTAL allocated', 80.00, 'combined slice budget across all strategies'",
+        "rawQueryText": "SELECT 'poly1 main (STARTING_BALANCE_USDC)' as slice, 40.00 as amount_usd, 'sees its own positions only; uses journal-based drawdown' as note UNION ALL SELECT 'swarm (SWARM_RESERVE_USDC, TOTAL_CAPITAL)', 20.00, 'four funded agents at $5 each: MM / MR / NH / AI; arbitrage observational at $0' UNION ALL SELECT 'scalper (SCALPER_RESERVE_USDC)', 0.00, 'shadow only ($2.50/leg config); no live reserve until Stage 1 flip' UNION ALL SELECT 'TOTAL allocated', 60.00, 'combined slice budget across all strategies'",
         "queryType": "table", "timeColumns": []
       }]
     },
@@ -608,6 +610,26 @@
       "targets": [{
         "datasource": {"type": "frser-sqlite-datasource", "uid": "tradelog-sqlite"},
         "rawQueryText": "SELECT COALESCE(SUM(size_usdc),0) as poly1_deployed_today FROM trades WHERE status='filled' AND date(ts)=date('now')",
+        "queryType": "table", "timeColumns": []
+      }]
+    },
+    {
+      "id": 55,
+      "type": "table",
+      "title": "Swarm — Submitted Orders Needing Reconciliation",
+      "description": "Submitted rows with no local fill. These can be matched, canceled, or still in-flight on CLOB. They intentionally block duplicate quotes until verified.",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 85},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "swarm-sqlite"},
+      "options": {},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "size_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}]}
+        ]
+      },
+      "targets": [{
+        "datasource": {"type": "frser-sqlite-datasource", "uid": "swarm-sqlite"},
+        "rawQueryText": "SELECT p.id, datetime(p.updated_ms/1000,'unixepoch') as updated_utc, p.agent, p.side, p.outcome, ROUND(p.price_cents,3) as price_cents, ROUND(p.size_usd,2) as size_usd, substr(p.order_id,1,14) as order_id, p.note FROM pending_orders p LEFT JOIN fills f ON f.order_id = p.order_id WHERE p.status='submitted' AND f.order_id IS NULL AND COALESCE(p.order_id,'') NOT LIKE 'dry_%' ORDER BY p.updated_ms DESC",
         "queryType": "table", "timeColumns": []
       }]
     }

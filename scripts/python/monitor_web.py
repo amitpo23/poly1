@@ -326,15 +326,17 @@ def _swarm_body(state: dict) -> str:
     daily = float(state.get("daily_pnl", 0.0) or 0.0)
     counts = state.get("table_counts") or {}
     pending_counts = state.get("pending_by_status") or {}
+    unreconciled = state.get("submitted_unreconciled") or []
     open_count = len(state.get("nh_open_positions") or [])
     pending_active = sum(
-        pending_counts.get(k, 0) for k in ("pending", "submitted")
+        pending_counts.get(k, 0) for k in ("pending", "submitted", "filled")
     )
     parts.append('<div class="metrics">')
     for label, value in (
         ("daily PnL", _pnl_html(daily)),
         ("open NH", str(open_count)),
         ("active orders", str(pending_active)),
+        ("needs reconcile", str(len(unreconciled))),
         ("fills", str(counts.get("fills", 0))),
         ("NH journal", str(counts.get("nh_journal", 0))),
         ("last DB state", _esc((state.get("last_state_utc") or "-")[:19].replace("T", " "))),
@@ -351,6 +353,30 @@ def _swarm_body(state: dict) -> str:
             for status, count in sorted(pending_counts.items())
         ]
         parts.append(f'<div class="row">{"".join(bits)}</div>')
+
+    if unreconciled:
+        parts.append(
+            '<div class="warn">Submitted order rows are not reconciled into '
+            'local fills yet. They block duplicate MM quotes until the '
+            'swarm reconciliation script verifies CLOB status.</div>'
+        )
+        parts.append('<table><thead><tr><th>updated</th><th>agent</th>'
+                     '<th>side</th><th>price</th><th>size</th><th>order</th>'
+                     '<th>note</th></tr></thead><tbody>')
+        for r in unreconciled[:6]:
+            oid = (r.get("order_id") or "")[:12]
+            price = r.get("price_cents")
+            price_s = f"{float(price):.4f}" if price is not None else "-"
+            parts.append(
+                f'<tr><td>{_esc(_fmt_ms(r.get("updated_ms")))}</td>'
+                f'<td>{_esc(r.get("agent"))}</td>'
+                f'<td>{_esc(r.get("side"))} {_esc(r.get("outcome"))}</td>'
+                f'<td>{price_s}</td>'
+                f'<td>${float(r.get("size_usd") or 0):.2f}</td>'
+                f'<td>{_esc(oid)}</td>'
+                f'<td class="dim">{_esc((r.get("note") or "")[:34])}</td></tr>'
+            )
+        parts.append("</tbody></table>")
 
     by_agent = state.get("pnl_today_by_agent") or {}
     fills = state.get("fills_today_by_agent") or {}

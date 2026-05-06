@@ -63,8 +63,10 @@ services:
     env_file: .env
     environment:
       TZ: UTC
+      SWARM_DB: /swarm/data/swarm.db
     volumes:
       - ./data:/app/data
+      - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/swarm/data:ro
     restart: unless-stopped
     mem_limit: 512m
     cpus: "0.5"

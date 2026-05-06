@@ -336,14 +336,31 @@ Triggered by the post-migration risk review. Summary of follow-up work:
 - Final service status: `polymarket-swarm` healthy, live, capital `$20`,
   shared deposit wallet, all expected agents registered.
 
-**Remaining gap:** local DB reconciliation still needs a proper
-order-status sweep to convert submitted rows into filled/canceled local
-state. For now, submitted rows intentionally block duplicate market-maker
-quotes after restart. The runtime risk summary currently reports
-`Open positions: 0` even though two CLOB orders matched, because this
-reconciliation layer is still missing.
+**Reconciliation follow-up completed:** added
+`~/Desktop/poly/bot/scripts/reconcile_orders.py` and extended
+`StateStore` with `filled` as a restart-safety brake. The verified live
+market-maker rows were reconciled:
 
+- `0xe8fab314...` → `MATCHED` → local fill recorded, pending row moved
+  to `filled`.
+- `0xcdc2e0c...` → `MATCHED` → local fill recorded, pending row moved
+  to `filled`.
+- `0x4bdeb2...` → `CANCELED` → pending row moved to `cleared`.
+- Nine stale `dry_*` submitted rows were moved to `cleared`.
 
+Post-run state: `submitted_unreconciled_count=0`, swarm `fills=2`,
+`pending_by_status={cleared:10, failed:229, filled:2}`. The swarm
+runtime risk summary can still print `Open positions: 0`; until risk
+state is restored from SQLite, the dashboard/DB ledger is the reliable
+source for reconciled swarm positions.
+
+**Dashboard follow-up:** Streamlit now mounts the swarm DB and has a
+Swarm tab for submitted/pending/filled/failed rows, unreconciled live
+CLOB rows, local fills, and NothingHappens journal. Grafana now shows
+the corrected `$60` allocation ledger and a
+"Swarm — Submitted Orders Needing Reconciliation" table, currently
+empty. `monitor_web.py` and `/data.json` expose the same
+`submitted_unreconciled_*` fields, filtering out old `dry_*` IDs.
 
 
 
