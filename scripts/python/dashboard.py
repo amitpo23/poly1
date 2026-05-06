@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -28,12 +29,13 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-TAB_LIVE, TAB_PNL, TAB_CAPITAL, TAB_TRADES, TAB_SCALPER, TAB_LLM, TAB_CTRL = st.tabs([
+TAB_LIVE, TAB_PNL, TAB_CAPITAL, TAB_TRADES, TAB_SCALPER, TAB_SWARM, TAB_LLM, TAB_CTRL = st.tabs([
     "🟢 Live",
     "📈 P&L",
     "💰 Capital",
     "📋 Trades",
     "🔪 Scalper",
+    "🐝 Swarm",
     "🤖 LLM Cost",
     "⚙️ Control",
 ])
@@ -47,6 +49,44 @@ def _age_label(age: float | None) -> str:
     if age < 300:
         return f"🟡 {age:.0f}s ago"
     return f"🔴 {age:.0f}s ago — stale"
+
+
+def _ms_to_utc(ms) -> str:
+    if not ms:
+        return "-"
+    return pd.to_datetime(ms, unit="ms", utc=True).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _swarm_allocations() -> dict[str, float]:
+    """Configured per-agent swarm allocation in USD.
+
+    Uses SWARM_AGENT_ALLOCATIONS_JSON when present. Falls back to the
+    current live policy: four funded agents at $5 and arbitrage at $0.
+    """
+    raw = os.getenv(
+        "SWARM_AGENT_ALLOCATIONS_JSON",
+        '{"market_maker":5,"mean_reversion":5,"nothing_happens":5,'
+        '"ai_decision":5,"arbitrage":0}',
+    )
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("allocation must be a JSON object")
+        out: dict[str, float] = {}
+        for k, v in parsed.items():
+            name = str(k).strip()
+            if not name:
+                continue
+            out[name] = float(v)
+        return out
+    except Exception:
+        return {
+            "market_maker": 5.0,
+            "mean_reversion": 5.0,
+            "nothing_happens": 5.0,
+            "ai_decision": 5.0,
+            "arbitrage": 0.0,
+        }
 
 
 # ── Live tab ──────────────────────────────────────────────────────────────────
@@ -361,6 +401,175 @@ with TAB_SCALPER:
                 "opened_ts", "closed_ts", "error"
             ] if c in df_recent.columns]
             st.dataframe(df_recent[show_cols], use_container_width=True, hide_index=True)
+
+# ── Swarm tab ────────────────────────────────────────────────────────────────
+
+with TAB_SWARM:
+    st.info(
+        "Swarm reads are local DB snapshots. Submitted rows are reconciled "
+        "against CLOB by the swarm reconciliation script; filled rows remain "
+        "a safety brake until exit or settlement tracking releases them."
+    )
+
+    if not db.swarm_db_present():
+        st.warning("Swarm DB not found at SWARM_DB / ~/Desktop/poly/bot/data/swarm.db")
+    else:
+        pending_by_status = db.swarm_pending_by_status()
+        agent_summary = db.swarm_agent_summary()
+        unreconciled = db.swarm_submitted_unreconciled()
+        recent_fills = db.swarm_recent_fills()
+        nh_journal = db.swarm_nh_journal()
+
+        submitted = pending_by_status.get("submitted", {"count": 0, "size_usd": 0.0})
+        filled_brake = pending_by_status.get("filled", {"count": 0, "size_usd": 0.0})
+        pending = pending_by_status.get("pending", {"count": 0, "size_usd": 0.0})
+        failed = pending_by_status.get("failed", {"count": 0, "size_usd": 0.0})
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Submitted brake", submitted["count"], f"${submitted['size_usd']:.2f}")
+        c2.metric("Filled brake", filled_brake["count"], f"${filled_brake['size_usd']:.2f}")
+        c3.metric("Pending crash-window", pending["count"], f"${pending['size_usd']:.2f}")
+        c4.metric("Recorded fills", len(recent_fills))
+        st.caption(
+            f"Failed order rows: {failed['count']} (${failed['size_usd']:.2f})"
+        )
+
+        if unreconciled:
+            st.warning(
+                "Submitted rows without local fills exist. They may be matched, "
+                "canceled, or still in-flight on CLOB. They intentionally block "
+                "duplicate market-maker quotes until reconciliation is done."
+            )
+            df_unrec = pd.DataFrame(unreconciled)
+            df_unrec["updated_utc"] = df_unrec["updated_ms"].apply(_ms_to_utc)
+            df_unrec["order_id_short"] = df_unrec["order_id"].fillna("").str.slice(0, 12)
+            st.dataframe(
+                df_unrec[[
+                    "id", "updated_utc", "agent", "side", "outcome",
+                    "price_cents", "size_usd", "order_id_short", "note",
+                ]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.success("No submitted rows are waiting for reconciliation.")
+
+        st.divider()
+        st.subheader("Agent money summary")
+        if agent_summary:
+            df_agents = pd.DataFrame(agent_summary)
+            alloc = _swarm_allocations()
+            df_alloc = pd.DataFrame(
+                [{"agent": k, "allocation_usd": float(v)} for k, v in alloc.items()]
+            )
+            df_agents = df_agents.merge(df_alloc, on="agent", how="outer")
+            df_agents = df_agents.fillna(0)
+            df_agents["remaining_usd"] = (
+                df_agents["allocation_usd"] - df_agents["executed_usd"]
+            ).clip(lower=0)
+            df_agents["utilization_pct"] = df_agents.apply(
+                lambda r: (100.0 * r["executed_usd"] / r["allocation_usd"])
+                if r["allocation_usd"] > 0
+                else 0.0,
+                axis=1,
+            )
+
+            total_executed = float(df_agents["executed_usd"].sum())
+            total_blocked = float(df_agents["blocked_usd"].sum())
+            active_agents = int((df_agents["ledger_rows"] > 0).sum())
+            agents_with_fills = int((df_agents["fill_count"] > 0).sum())
+            allocated_total = float(df_agents["allocation_usd"].sum())
+
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("Agents with ledger activity", active_agents)
+            s2.metric("Agents with fills", agents_with_fills)
+            s3.metric("Executed notional", f"${total_executed:.2f}")
+            s4.metric("Currently blocked capital", f"${total_blocked:.2f}")
+
+            s5, s6 = st.columns(2)
+            s5.metric("Configured allocation total", f"${allocated_total:.2f}")
+            s6.metric(
+                "Allocation consumed",
+                f"{(100.0 * total_executed / allocated_total):.1f}%"
+                if allocated_total > 0
+                else "0.0%",
+            )
+
+            st.caption(
+                "Executed notional is estimated from fills using (price_cents/100) * size. "
+                "Realized PnL remains zero until pnl_events are written by the swarm runtime."
+            )
+
+            st.dataframe(
+                df_agents.rename(columns={
+                    "agent": "Agent",
+                    "ledger_rows": "Ledger rows",
+                    "submitted_rows": "Submitted",
+                    "filled_brake_rows": "Filled brake",
+                    "failed_rows": "Failed",
+                    "cleared_rows": "Cleared",
+                    "fill_count": "Fills",
+                    "allocation_usd": "Allocation USD",
+                    "executed_usd": "Executed USD",
+                    "remaining_usd": "Remaining USD",
+                    "utilization_pct": "Utilization %",
+                    "blocked_usd": "Blocked USD",
+                    "realized_pnl_usd": "Realized PnL USD",
+                    "pnl_events": "PnL events",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No swarm agent summary rows yet.")
+
+        st.divider()
+        st.subheader("Pending order ledger")
+        pending_rows = db.swarm_pending_orders()
+        if pending_rows:
+            df_pending = pd.DataFrame(pending_rows)
+            df_pending["updated_utc"] = df_pending["updated_ms"].apply(_ms_to_utc)
+            df_pending["order_id_short"] = df_pending["order_id"].fillna("").str.slice(0, 12)
+            st.dataframe(
+                df_pending[[
+                    "id", "updated_utc", "agent", "status", "side", "outcome",
+                    "price_cents", "size_usd", "order_id_short", "note",
+                ]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No pending_orders rows.")
+
+        st.subheader("Recent swarm fills")
+        if recent_fills:
+            df_fills = pd.DataFrame(recent_fills)
+            df_fills["time_utc"] = df_fills["ts_ms"].apply(_ms_to_utc)
+            st.dataframe(
+                df_fills[[
+                    "time_utc", "agent", "side", "outcome", "price",
+                    "size", "fee", "order_id",
+                ]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No local swarm fills recorded yet.")
+
+        st.subheader("NothingHappens journal")
+        if nh_journal:
+            df_nh = pd.DataFrame(nh_journal)
+            df_nh["opened_utc"] = df_nh["opened_at_ms"].apply(_ms_to_utc)
+            st.dataframe(
+                df_nh[[
+                    "opened_utc", "slug", "no_price_quoted", "no_price_filled",
+                    "rejected_count", "unrealized_pnl",
+                ]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No NothingHappens journal rows.")
 
 # ── LLM Cost tab ─────────────────────────────────────────────────────────────
 

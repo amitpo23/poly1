@@ -30,6 +30,42 @@ Latest A/B review completion:
   hardening, arbitrage 404 fix, market-maker duplicate-order guard, and
   the final live swarm restart.
 
+Latest dashboard completion:
+
+- Streamlit dashboard (`http://localhost:8050`) now has a **Swarm** tab
+  reading `~/Desktop/poly/bot/data/swarm.db` through the Docker mount
+  `/swarm/data/swarm.db`. It shows pending/submitted/filled/failed order
+  rows, live CLOB submitted rows needing reconciliation, local swarm fills,
+  and NothingHappens journal rows.
+- Grafana (`http://localhost:3000`) capital ledger now reflects the
+  corrected allocation: poly1 `$40`, swarm `$20`, scalper `$0`, total
+  `$60`. A new "Swarm — Submitted Orders Needing Reconciliation" panel
+  is wired to the swarm DB. It is currently empty after reconciliation.
+- `monitor_web.py` / `/data.json` now exposes
+  `submitted_unreconciled_count` and renders a warning table for those
+  rows. Old `dry_*` rows are filtered out of that reconciliation count.
+  Current value: `0`.
+- Swarm tab now includes an "Agent money summary" table per agent with:
+  allocation (configured via `SWARM_AGENT_ALLOCATIONS_JSON`), executed
+  notional (from `fills`), remaining budget, utilization %, and
+  submitted/filled/failed/cleared ledger counts.
+
+Latest swarm reconciliation completion:
+
+- Added `~/Desktop/poly/bot/scripts/reconcile_orders.py`.
+- Swarm-side handoff for other agents:
+  `~/Desktop/poly/bot/docs/ORDER_RECONCILIATION_2026-05-06.md`.
+- Reconciled the verified live market-maker rows:
+  - two CLOB `MATCHED` orders were recorded in local `fills` and moved
+    to `pending_orders.status='filled'`;
+  - one CLOB `CANCELED` order was moved to `cleared`;
+  - nine stale `dry_*` submitted rows were cleared.
+- `filled` is now a restart-safety brake in swarm `StateStore`, so a
+  restarted agent does not layer a duplicate position on the same market
+  before exit/settlement tracking releases it.
+- Current swarm DB: `submitted_unreconciled_count=0`, `fills=2`,
+  `pending_by_status={cleared:10, failed:229, filled:2}`.
+
 Tomorrow's runbook:
 
 - `docs/RUNBOOK_2026-05-07.md` — morning health check, swarm live
@@ -42,12 +78,9 @@ Known gaps:
   logic; positions held until market resolution. Dashboard does not
   show per-position P/L. User-flagged for future work, not being
   built today.
-- Swarm local DB reconciliation is still manual: recent market-maker
-  submitted rows include two matched CLOB orders and one canceled CLOB
-  order. They intentionally remain blocking to prevent duplicate quotes
-  until an order-status sweep is implemented. The swarm runtime risk
-  summary currently reports `Open positions: 0`; that is not reliable
-  until reconciliation is automated.
+- Swarm runtime risk summary still reports `Open positions: 0`; the local
+  DB/dashboard are the reliable source for reconciled swarm fills until
+  risk-state recovery from SQLite is implemented.
 
 ## Summary
 
@@ -60,8 +93,9 @@ The swarm bot at `~/Desktop/poly/bot` is live under Docker Compose with
 ai_decision each have `$5`; arbitrage is registered but observational
 with `$0`. During the follow-up review, market_maker placed real CLOB
 orders: two matched and one canceled. There are no open CLOB orders, and
-the local submitted rows remain blocking to prevent duplicate MM quotes
-until reconciliation is automated.
+the two matched market-maker rows are now local `filled` rows and remain
+blocking to prevent duplicate MM quotes until exit/settlement tracking is
+implemented.
 
 Full handoff for future agents:
 

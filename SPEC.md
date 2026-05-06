@@ -238,6 +238,13 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | `TG_BOT_TOKEN`, `TG_CHAT_ID` | If both set, lifecycle + trade events sent to Telegram (non-blocking) |
 | `HEALTHCHECK_URL` | If set, GET'd at end of each successful cycle |
 
+### Dashboard swarm mirror
+
+| Var | Default | Notes |
+|---|---|---|
+| `SWARM_DB` | `~/Desktop/poly/bot/data/swarm.db` | Read-only path used by dashboard Swarm tab. |
+| `SWARM_AGENT_ALLOCATIONS_JSON` | `{"market_maker":5,"mean_reversion":5,"nothing_happens":5,"ai_decision":5,"arbitrage":0}` | Dashboard-only per-agent budget map (USD) used to compute allocation consumed/remaining columns. |
+
 ## 8. LLM prompt contract
 
 `prompts.py:one_best_trade` requires the LLM to return JSON of the form:

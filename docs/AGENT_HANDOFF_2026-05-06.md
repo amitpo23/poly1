@@ -40,6 +40,17 @@ poly1-dashboard-1    Up          healthy   Streamlit at port 8050
 poly1-grafana        Up          healthy   Grafana at port 3000
 ```
 
+### Dashboard visibility update (money per swarm agent)
+
+The Streamlit Swarm tab now has a dedicated per-agent money summary with:
+
+- allocation (USD) from `SWARM_AGENT_ALLOCATIONS_JSON`
+- executed notional from reconciled `fills` (`price_cents/100 * size`)
+- remaining allocation and utilization %
+- ledger counts: submitted / filled-brake / failed / cleared
+
+This is the quickest source to answer "who traded how much" during live ops.
+
 ### Capital ledger (single source of truth)
 
 | Slice | Env var | $ | Notes |
@@ -55,7 +66,7 @@ poly1-grafana        Up          healthy   Grafana at port 3000
 | Agent | % | $ | Status |
 |---|---|---|---|
 | mean_reversion | 25% | $5 | live, waiting BTC > 1% in 3 min |
-| market_maker | 25% | $5 | live; two recent CLOB orders matched; duplicate market blocked by submitted ledger rows |
+| market_maker | 25% | $5 | live; two recent CLOB orders matched and are reconciled as local `filled` brake rows |
 | nothing_happens | 25% | $5 | live, scanning Gamma |
 | ai_decision | 25% | $5 | live but skips: `no ANTHROPIC_API_KEY set` |
 | arbitrage | 0% | $0 | observational only (capital_allocation hardcoded to 0 in `main.py:141`) |
@@ -257,10 +268,8 @@ docker compose run --rm \
 
 ## Outstanding Work (deferred)
 
-- **No fills yet on swarm** — agents are waiting for triggers. Watch for
-  the first MR/MM/NH entry to validate the order-placement path
-  end-to-end. If an order fails for any V2 SDK reason, expect to patch
-  `place_limit_order` similarly to how `get_orderbook` was patched.
+- **Swarm fills exist** — two market-maker CLOB `MATCHED` rows are now
+  recorded in `~/Desktop/poly/bot/data/swarm.db` as local fills.
 - **404 noise** — `py_clob_client_v2` logs spurious 404s for token IDs
   the resolver doesn't have cached. Source unclear (likely arbitrage
   or NH probing). Doesn't block the configured markets. Investigation
@@ -336,9 +345,10 @@ ai_decision `$5`. Arbitrage remains observational at `$0`.
 
 **Live reconciliation:** after the first real swarm activity, CLOB showed
 no open orders. The DB had three recent market-maker submitted rows:
-two CLOB orders were `MATCHED`, one was `CANCELED`. The submitted rows
-remain in `pending_orders` intentionally so the restarted market maker
-does not duplicate that market until an operator reconciles/clears them.
+two CLOB orders were `MATCHED`, one was `CANCELED`. The reconciliation
+script moved the matched rows to local `filled` rows and recorded two
+fills; the canceled row was moved to `cleared`. Stale `dry_*` submitted
+rows were also cleared.
 
 **Current swarm state after restart:** `polymarket-swarm` is healthy,
 `mode=live`, `signature_type=3`, deposit wallet
@@ -350,12 +360,20 @@ because `ANTHROPIC_API_KEY` is not set.
 - poly1: `python3 -m unittest tests.test_trader.TestRiskGate tests.test_trader.TestTradeLog -v` → 18 passed.
 - swarm: Docker `pytest tests/test_client.py tests/test_config_validation.py tests/test_arbitrage_agent.py tests/test_market_maker_agent.py -q` → 34 passed.
 
-**Still open:** full DB reconciliation should be added so matched/canceled
-CLOB orders update local `pending_orders`/fills automatically. Until then,
-submitted rows are a deliberate restart-safety brake.
-The swarm runtime status panel currently shows `Open positions: 0` because
-those matched orders are not yet reconciled into the local risk state; do
-not rely on that number until the reconciliation sweep exists.
+**Still open:** swarm runtime risk-state recovery from SQLite is not
+implemented. The runtime status panel can still show `Open positions: 0`;
+use the DB/dashboard ledger for reconciled swarm fills until recovery is
+added.
+
+**Dashboard update after this review:** Streamlit now has a Swarm tab
+that reads the mounted swarm DB (`/swarm/data/swarm.db` inside the
+dashboard container) and shows the submitted-order brake, live CLOB rows
+needing reconciliation, recent local fills, and NothingHappens journal.
+Grafana's capital ledger is corrected to poly1 `$40` + swarm `$20` +
+scalper `$0` = `$60`, and it has a reconciliation-needed table for the
+live CLOB order IDs; it is currently empty after reconciliation.
+`monitor_web.py` also exposes/renders these same unreconciled live rows
+while filtering old `dry_*` IDs. Current `submitted_unreconciled_count=0`.
 
 ---
 
