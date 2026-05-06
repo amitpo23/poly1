@@ -367,6 +367,8 @@ with TAB_SCALPER:
 with TAB_LLM:
     records = db.llm_records()
     max_daily_usd = float(os.getenv("MAX_DAILY_TOKEN_USD", "5.0"))
+    news_signals = db.news_signals_recent(50)
+    news_stats = db.news_signal_stats()
 
     if not records:
         st.info("No LLM usage records found (data/llm_usage.jsonl is empty or missing).")
@@ -432,6 +434,44 @@ with TAB_LLM:
                          "prompt_tokens": "Prompt tok.", "completion_tokens": "Completion tok.",
                          "est_cost_usd": "Est. cost USD"}
             ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.divider()
+    st.subheader("Dry-run news classification signals")
+    st.caption(
+        "Analytics only: these observations do not place orders and do not affect live strategy."
+    )
+
+    if not news_signals:
+        st.info("No news classification signals logged yet.")
+    else:
+        df_news = pd.DataFrame(news_signals)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Signals logged", len(df_news))
+        c2.metric("Bullish", int((df_news["direction"] == "bullish").sum()))
+        c3.metric("Bearish", int((df_news["direction"] == "bearish").sum()))
+        c4.metric("Neutral", int((df_news["direction"] == "neutral").sum()))
+
+        st.caption(f"Status breakdown: {news_stats}")
+
+        show_cols = [c for c in [
+            "ts", "direction", "materiality", "relevance_score",
+            "market_question", "headline", "source", "latency_ms", "reasoning"
+        ] if c in df_news.columns]
+        st.dataframe(
+            df_news[show_cols].rename(columns={
+                "ts": "Timestamp",
+                "direction": "Direction",
+                "materiality": "Materiality",
+                "relevance_score": "Relevance",
+                "market_question": "Market",
+                "headline": "Headline",
+                "source": "Source",
+                "latency_ms": "Latency ms",
+                "reasoning": "Reasoning",
+            }),
             use_container_width=True,
             hide_index=True,
         )

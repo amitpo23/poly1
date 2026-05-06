@@ -28,13 +28,30 @@ Current mode is conservative live trading:
 
 ```env
 EXECUTE="true"
-MAX_POSITION_FRACTION="0.025"
+MAX_POSITION_FRACTION="0.0625"
 STARTING_BALANCE_USDC="80.0"
 MAX_TRADES_PER_HOUR="2"
 POLYMARKET_SIGNATURE_TYPE="3"
+EXECUTE_SCALPER="false"
+SCALP_LEG_USDC="5.0"
 ```
 
 Do not increase size or loosen rate limits without an explicit user request.
+
+Dashboard/swarm update, 2026-05-05:
+
+- See `docs/AGENT_HANDOFF_2026-05-05_DASHBOARD_SWARM.md`.
+- Grafana unified dashboard is available locally at `http://localhost:3000`.
+- Streamlit dashboard is available locally at `http://localhost:8050`.
+- A temporary Cloudflare quick tunnel was created for Grafana:
+  `https://certified-comparisons-efficiently-sites.trycloudflare.com`
+- `poly1` now targets about `$5` per trade via
+  `MAX_POSITION_FRACTION=0.0625` on `STARTING_BALANCE_USDC=80.0`.
+- `poly1` is still risk-gate blocked; latest observed block was
+  `drawdown 12.27% above max_daily_loss_pct 10.00%`.
+- `poly1-scalper` is running with `$5` legs but remains `EXECUTE_SCALPER=false`.
+- `polymarket-swarm` remains dry-run and was observed simulating about `$5` per
+  position (`4` open simulated positions, `$20.00` at risk).
 
 Morning update, 2026-05-05:
 

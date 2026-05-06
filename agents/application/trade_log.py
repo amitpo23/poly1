@@ -51,6 +51,26 @@ CREATE TABLE IF NOT EXISTS scalper_pairs (
 );
 CREATE INDEX IF NOT EXISTS idx_scalper_state ON scalper_pairs(state);
 CREATE INDEX IF NOT EXISTS idx_scalper_period ON scalper_pairs(period_ts);
+
+CREATE TABLE IF NOT EXISTS news_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    headline TEXT NOT NULL,
+    source TEXT,
+    url TEXT,
+    market_id TEXT NOT NULL,
+    market_question TEXT,
+    direction TEXT NOT NULL,
+    materiality REAL NOT NULL,
+    relevance_score REAL NOT NULL,
+    latency_ms INTEGER,
+    model TEXT,
+    status TEXT NOT NULL,
+    reasoning TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_news_signals_ts ON news_signals(ts);
+CREATE INDEX IF NOT EXISTS idx_news_signals_market_ts ON news_signals(market_id, ts);
+CREATE INDEX IF NOT EXISTS idx_news_signals_status_ts ON news_signals(status, ts);
 """
 
 
@@ -218,6 +238,29 @@ class TradeLog:
             row = conn.execute(sql, (*statuses, cutoff)).fetchone()
             return int(row["n"])
 
+    def filled_positions(self) -> list:
+        """Return one row per filled trade with token_id present.
+
+        Each row is a dict with market_id, token_id, side, price, size_usdc —
+        the fields needed to mark the position to market. There is currently
+        no closing flow (maintain_positions is a stub), so every filled row
+        is treated as an open position.
+
+        Note: scalper legs use status='scalper_leg', not 'filled', so they
+        are NOT included here. Once the scalper goes live, mark-to-market
+        of scalper positions must be added separately (e.g., from
+        `scalper_pairs`) or scalper-deployed cash will read as drawdown.
+        """
+        sql = (
+            "SELECT market_id, token_id, side, price, size_usdc "
+            "FROM trades WHERE status = ? AND token_id IS NOT NULL "
+            "AND token_id != '' "
+            "ORDER BY id"
+        )
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, (FILLED,)).fetchall()
+            return [dict(r) for r in rows]
+
     def recover_stranded_pendings(self, older_than_minutes: int = 10) -> int:
         """Mark old pending rows as MAY_HAVE_FIRED — the order may have executed
         on the exchange even though we never recorded the response. Operator
@@ -248,5 +291,51 @@ class TradeLog:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def insert_news_signal(
+        self,
+        headline: str,
+        market_id: str,
+        direction: str,
+        materiality: float,
+        relevance_score: float,
+        status: str,
+        source: Optional[str] = None,
+        url: Optional[str] = None,
+        market_question: Optional[str] = None,
+        latency_ms: Optional[int] = None,
+        model: Optional[str] = None,
+        reasoning: Optional[str] = None,
+    ) -> int:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO news_signals (ts, headline, source, url, market_id, "
+                "market_question, direction, materiality, relevance_score, "
+                "latency_ms, model, status, reasoning) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    _now(),
+                    headline,
+                    source,
+                    url,
+                    str(market_id),
+                    market_question,
+                    direction,
+                    float(materiality),
+                    float(relevance_score),
+                    latency_ms,
+                    model,
+                    status,
+                    reasoning,
+                ),
+            )
+            return cur.lastrowid
+
+    def recent_news_signals(self, limit: int = 50) -> list:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM news_signals ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]

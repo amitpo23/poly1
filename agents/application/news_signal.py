@@ -1,0 +1,324 @@
+"""Dry-run news classification signal.
+
+This module never places orders. It classifies news against active markets and
+persists observations to `news_signals` for dashboard/calibration review.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import time
+import urllib.request
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Iterable, Optional
+
+from agents.application.trade_log import TradeLog
+
+
+logger = logging.getLogger(__name__)
+
+NEWS_SIGNAL_STATUS = "news_signal"
+
+DEFAULT_RSS_FEEDS = [
+    "https://news.google.com/rss/search?q=OpenAI%20OR%20Anthropic%20OR%20Bitcoin%20OR%20Ethereum%20OR%20Fed%20OR%20Nvidia&hl=en-US&gl=US&ceid=US:en",
+    "https://feeds.feedburner.com/TechCrunch",
+    "https://www.theverge.com/rss/index.xml",
+]
+
+STOPWORDS = {
+    "will", "the", "a", "an", "be", "by", "in", "on", "at", "to", "of",
+    "for", "is", "it", "this", "that", "and", "or", "not", "before",
+    "after", "end", "yes", "no", "any", "has", "have", "does", "do",
+    "than", "more", "less", "over", "under", "above", "below", "through",
+    "during", "between", "reach", "exceed", "what", "when", "with",
+    "new", "before",
+}
+
+CLASSIFICATION_PROMPT = """You classify breaking news for prediction markets.
+
+Market question:
+{question}
+
+Current YES price:
+{yes_price}
+
+News headline:
+{headline}
+
+Task:
+Does this news make the market question more likely to resolve YES, more likely
+to resolve NO, or is it not relevant?
+
+Return ONLY valid JSON:
+{{
+  "direction": "bullish" | "bearish" | "neutral",
+  "materiality": <number 0.0 to 1.0>,
+  "reasoning": "<one short sentence>"
+}}"""
+
+
+@dataclass
+class NewsItem:
+    headline: str
+    source: str = "unknown"
+    url: str = ""
+    published_at: Optional[str] = None
+
+
+@dataclass
+class MarketCandidate:
+    market_id: str
+    question: str
+    yes_price: Optional[float]
+    relevance_score: float
+
+
+@dataclass
+class ClassificationResult:
+    direction: str
+    materiality: float
+    reasoning: str
+    latency_ms: int
+    model: str
+
+
+def extract_keywords(text: str) -> list[str]:
+    words = re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]{2,}", text.lower())
+    return [w for w in words if w not in STOPWORDS]
+
+
+def relevance_score(headline: str, question: str) -> float:
+    keywords = extract_keywords(question)
+    if not keywords:
+        return 0.0
+    haystack = headline.lower()
+    hits = sum(1 for kw in keywords if kw in haystack)
+    return hits / len(keywords)
+
+
+def relevance_hits(headline: str, question: str) -> int:
+    haystack = headline.lower()
+    return sum(1 for kw in extract_keywords(question) if kw in haystack)
+
+
+def _parse_yes_price(market: dict) -> Optional[float]:
+    raw = market.get("outcomePrices")
+    if not raw:
+        return None
+    try:
+        prices = json.loads(raw) if isinstance(raw, str) else raw
+        if prices:
+            return float(prices[0])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def match_news_to_markets(
+    headline: str,
+    markets: Iterable[dict],
+    min_relevance: float = 0.12,
+    max_matches: int = 5,
+    min_hits: int = 2,
+) -> list[MarketCandidate]:
+    scored: list[MarketCandidate] = []
+    for market in markets:
+        question = market.get("question") or ""
+        market_id = str(
+            market.get("conditionId")
+            or market.get("condition_id")
+            or market.get("id")
+            or ""
+        )
+        if not question or not market_id:
+            continue
+        hits = relevance_hits(headline, question)
+        if hits < min_hits:
+            continue
+        score = relevance_score(headline, question)
+        if score < min_relevance:
+            continue
+        scored.append(MarketCandidate(
+            market_id=market_id,
+            question=question,
+            yes_price=_parse_yes_price(market),
+            relevance_score=score,
+        ))
+    scored.sort(key=lambda c: c.relevance_score, reverse=True)
+    return scored[:max_matches]
+
+
+class NewsSignalClassifier:
+    def __init__(self, model: Optional[str] = None):
+        from langchain_openai import ChatOpenAI
+
+        self.model = model or os.getenv("NEWS_CLASSIFICATION_MODEL") or os.getenv(
+            "OPENAI_MODEL", "gpt-4o-mini"
+        )
+        self.llm = ChatOpenAI(model=self.model, temperature=0)
+
+    def classify(self, item: NewsItem, market: MarketCandidate) -> ClassificationResult:
+        from langchain_core.messages import HumanMessage
+
+        start = time.time()
+        prompt = CLASSIFICATION_PROMPT.format(
+            question=market.question,
+            yes_price=(
+                f"{market.yes_price:.3f}" if market.yes_price is not None else "unknown"
+            ),
+            headline=item.headline,
+        )
+        try:
+            response = self.llm.invoke([HumanMessage(content=prompt)])
+            payload = _coerce_json(response.content)
+            direction = payload.get("direction", "neutral")
+            if direction not in ("bullish", "bearish", "neutral"):
+                direction = "neutral"
+            materiality = max(0.0, min(1.0, float(payload.get("materiality", 0.0))))
+            reasoning = str(payload.get("reasoning", ""))[:500]
+        except Exception as exc:
+            logger.warning("news_signal classification failed: %s", exc)
+            direction = "neutral"
+            materiality = 0.0
+            reasoning = f"classification_error:{type(exc).__name__}"
+
+        return ClassificationResult(
+            direction=direction,
+            materiality=materiality,
+            reasoning=reasoning,
+            latency_ms=int((time.time() - start) * 1000),
+            model=self.model,
+        )
+
+
+def _coerce_json(text: str) -> dict:
+    text = text.strip()
+    if "```" in text:
+        parts = text.split("```")
+        text = parts[1] if len(parts) > 1 else text
+        if text.lstrip().startswith("json"):
+            text = text.lstrip()[4:]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end >= start:
+        text = text[start:end + 1]
+    return json.loads(text)
+
+
+def fetch_news_items(query: str, limit: int = 10) -> list[NewsItem]:
+    if not os.getenv("NEWSAPI_API_KEY", "").strip():
+        return fetch_rss_items(limit=limit)
+
+    from agents.connectors.news import News
+
+    news = News()
+    articles = news.get_articles_for_cli_keywords(query)
+    out: list[NewsItem] = []
+    for article in articles[:limit]:
+        source = getattr(article, "source", None)
+        if isinstance(source, dict):
+            source_name = source.get("name") or "newsapi"
+        else:
+            source_name = str(source or "newsapi")
+        headline = getattr(article, "title", None) or getattr(article, "description", "")
+        if not headline:
+            continue
+        out.append(NewsItem(
+            headline=headline,
+            source=source_name,
+            url=getattr(article, "url", "") or "",
+            published_at=str(getattr(article, "publishedAt", "") or ""),
+        ))
+    return out
+
+
+def fetch_rss_items(limit: int = 10, feeds: Optional[list[str]] = None) -> list[NewsItem]:
+    out: list[NewsItem] = []
+    seen: set[str] = set()
+    for feed in feeds or DEFAULT_RSS_FEEDS:
+        if len(out) >= limit:
+            break
+        try:
+            with urllib.request.urlopen(feed, timeout=10) as resp:
+                data = resp.read()
+            root = ET.fromstring(data)
+        except Exception as exc:
+            logger.warning("news_signal rss fetch failed feed=%s err=%s", feed, exc)
+            continue
+        channel_title = root.findtext("./channel/title") or "rss"
+        for item in root.findall("./channel/item"):
+            title = (item.findtext("title") or "").strip()
+            if not title:
+                continue
+            key = title.lower()[:120]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(NewsItem(
+                headline=title,
+                source=channel_title,
+                url=(item.findtext("link") or "").strip(),
+                published_at=(item.findtext("pubDate") or "").strip(),
+            ))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def collect_once(
+    query: str,
+    limit_news: int = 10,
+    limit_markets: int = 100,
+    max_matches_per_item: int = 3,
+    min_relevance: float = 0.12,
+    trade_log: Optional[TradeLog] = None,
+    gamma=None,
+    classifier: Optional[NewsSignalClassifier] = None,
+    news_items: Optional[list[NewsItem]] = None,
+) -> int:
+    """Fetch, classify, and log dry-run news signals. Returns rows inserted."""
+    log = trade_log or TradeLog()
+    if gamma is None:
+        from agents.polymarket.gamma import GammaMarketClient
+
+        gamma_client = GammaMarketClient()
+    else:
+        gamma_client = gamma
+    classifier = classifier or NewsSignalClassifier()
+    markets = gamma_client.get_current_markets(limit=limit_markets)
+    items = news_items if news_items is not None else fetch_news_items(
+        query=query, limit=limit_news
+    )
+    inserted = 0
+
+    for item in items:
+        matches = match_news_to_markets(
+            item.headline, markets, min_relevance=min_relevance,
+            max_matches=max_matches_per_item,
+        )
+        for market in matches:
+            result = classifier.classify(item, market)
+            log.insert_news_signal(
+                headline=item.headline,
+                source=item.source,
+                url=item.url,
+                market_id=market.market_id,
+                market_question=market.question,
+                direction=result.direction,
+                materiality=result.materiality,
+                relevance_score=market.relevance_score,
+                latency_ms=result.latency_ms,
+                model=result.model,
+                status=NEWS_SIGNAL_STATUS,
+                reasoning=result.reasoning,
+            )
+            inserted += 1
+    logger.info(
+        "news_signal: inserted=%d query=%s at=%s",
+        inserted, query, datetime.now(timezone.utc).isoformat(),
+    )
+    return inserted

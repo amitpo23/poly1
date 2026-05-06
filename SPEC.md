@@ -364,9 +364,11 @@ Each FAK attempt also writes a `SCALPER_LEG` row to the existing
 ### Capital isolation
 
 `SCALPER_RESERVE_USDC` reserves a fixed sub-balance for the scalper.
-`RiskGate.available_for_trader()` returns `balance - reserve`. The
-scalper itself reads the wallet balance directly and refuses to enter
-new pairs when `balance < leg_cost × 2`.
+`SWARM_RESERVE_USDC` reserves a fixed sub-balance for the sister swarm
+bot (which shares the same deposit wallet). Both reserves are tracked
+in `RiskGate.reserves` dict. `RiskGate.available_for_trader()` returns
+`balance - sum(reserves)`. The scalper itself reads the wallet balance
+directly and refuses to enter new pairs when `balance < leg_cost × 2`.
 
 ### Operational stages
 

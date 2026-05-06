@@ -524,6 +524,92 @@
           "timeColumns": []
         }
       ]
+    },
+    {
+      "id": 50,
+      "type": "row",
+      "title": "Unified Capital Tracking (added 2026-05-06)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 70}
+    },
+    {
+      "id": 51,
+      "type": "table",
+      "title": "Swarm — Pending Orders by Agent (in-flight)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 71},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "swarm-sqlite"},
+      "options": {},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "status"}, "properties": [
+            {"id": "custom.displayMode", "value": "color-background"},
+            {"id": "mappings", "value": [
+              {"type": "value", "options": {"pending": {"color": "orange", "text": "PENDING"}}},
+              {"type": "value", "options": {"submitted": {"color": "blue", "text": "SUBMITTED"}}},
+              {"type": "value", "options": {"failed": {"color": "red", "text": "FAILED"}}},
+              {"type": "value", "options": {"cleared": {"color": "green", "text": "CLEARED"}}}
+            ]}
+          ]},
+          {"matcher": {"id": "byName", "options": "size_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}]}
+        ]
+      },
+      "targets": [{
+        "datasource": {"type": "frser-sqlite-datasource", "uid": "swarm-sqlite"},
+        "rawQueryText": "SELECT agent, status, COUNT(*) as count, ROUND(SUM(size_usd),2) as size_usd FROM pending_orders GROUP BY agent, status ORDER BY agent, status",
+        "queryType": "table", "timeColumns": []
+      }]
+    },
+    {
+      "id": 52,
+      "type": "timeseries",
+      "title": "Poly1 Trader — Skip Reasons per Hour",
+      "description": "Counts of skipped_dedupe / skipped_gate / failed rows by hour. High skipped_gate counts mean the risk gate is blocking entries — investigate.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 71},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "tradelog-sqlite"},
+      "options": {},
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "bars", "lineInterpolation": "stepAfter"}}},
+      "targets": [{
+        "datasource": {"type": "frser-sqlite-datasource", "uid": "tradelog-sqlite"},
+        "rawQueryText": "SELECT strftime('%Y-%m-%d %H:00:00', ts) as time, status, COUNT(*) as count FROM trades WHERE status IN ('skipped_dedupe','skipped_gate','failed','may_have_fired') AND ts >= datetime('now','-24 hours') GROUP BY time, status ORDER BY time",
+        "queryType": "time series", "timeColumns": ["time"]
+      }]
+    },
+    {
+      "id": 53,
+      "type": "table",
+      "title": "Wallet — Capital Allocation Ledger",
+      "description": "Reserves dict from poly1's RiskGate. Each strategy's slice of the shared deposit-wallet pUSD pool. After Phase C+E migration on 2026-05-06.",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 79},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "tradelog-sqlite"},
+      "options": {},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "amount_usd"}, "properties": [{"id": "unit", "value": "currencyUSD"}]}
+        ]
+      },
+      "targets": [{
+        "datasource": {"type": "frser-sqlite-datasource", "uid": "tradelog-sqlite"},
+        "rawQueryText": "SELECT 'poly1 main (STARTING_BALANCE_USDC)' as slice, 40.00 as amount_usd, 'sees its own positions only; uses journal-based drawdown' as note UNION ALL SELECT 'swarm (SWARM_RESERVE_USDC, TOTAL_CAPITAL)', 40.00, 'split across 5 agents — 35% MR / 30% MM / 15% NH / 15% AI / 5% ARB' UNION ALL SELECT 'scalper (SCALPER_RESERVE_USDC)', 0.00, 'shadow only ($2.50/leg config); no live reserve until Stage 1 flip' UNION ALL SELECT 'TOTAL allocated', 80.00, 'combined slice budget across all strategies'",
+        "queryType": "table", "timeColumns": []
+      }]
+    },
+    {
+      "id": 54,
+      "type": "stat",
+      "title": "Wallet — pUSD Snapshot (combined)",
+      "description": "Combined live activity: total fills today across both bots + total capital deployed.",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 79},
+      "datasource": {"type": "frser-sqlite-datasource", "uid": "tradelog-sqlite"},
+      "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none"},
+      "fieldConfig": {
+        "defaults": {"unit": "currencyUSD", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}
+      },
+      "targets": [{
+        "datasource": {"type": "frser-sqlite-datasource", "uid": "tradelog-sqlite"},
+        "rawQueryText": "SELECT COALESCE(SUM(size_usdc),0) as poly1_deployed_today FROM trades WHERE status='filled' AND date(ts)=date('now')",
+        "queryType": "table", "timeColumns": []
+      }]
     }
   ],
   "templating": {

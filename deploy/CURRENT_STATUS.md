@@ -1,19 +1,67 @@
 # Current Status
 
-Date: 2026-05-05
+Date: 2026-05-06
+
+Latest dashboard/swarm handoff:
+
+- `docs/AGENT_HANDOFF_2026-05-05_DASHBOARD_SWARM.md`
+
+Latest research/review handoff:
+
+- `docs/POLYAGENT_REVIEW_2026-05-06.md` — PolyAgent read-only review;
+  added `news_signals` table + dry-run news classification module
+  (no live wiring to executor or risk gate).
+
+Latest unified-wallet migration:
+
+- `docs/AGENT_HANDOFF_2026-05-06.md` — handoff for next agent: state,
+  invariants, verification commands, outstanding work. **Read first.**
+- `docs/MIGRATION_LOG_2026-05-06.md` — full execution log of swarm → V2
+  + signature_type=3 + shared deposit wallet migration. swarm now
+  live trading on the same wallet as poly1. Follow-up review on
+  2026-05-06 corrected the live swarm budget to `$20`: four funded
+  agents at `$5` each; arbitrage observational at `$0`.
+
+Latest A/B review completion:
+
+- `docs/AGENT_HANDOFF_2026-05-06.md` and
+  `docs/MIGRATION_LOG_2026-05-06.md` now include the follow-up review
+  completion section: SELL MTM fix, reserve setter, V2 order response
+  hardening, arbitrage 404 fix, market-maker duplicate-order guard, and
+  the final live swarm restart.
+
+Tomorrow's runbook:
+
+- `docs/RUNBOOK_2026-05-07.md` — morning health check, swarm live
+  activation steps (operator-only), scalper Stage 1 criteria, halt
+  rules. Written 2026-05-06 after MTM-aware risk gate deployed.
+
+Known gaps:
+
+- `docs/POLY1_EXIT_LOGIC_GAP.md` — poly1 main trader has no exit
+  logic; positions held until market resolution. Dashboard does not
+  show per-position P/L. User-flagged for future work, not being
+  built today.
+- Swarm local DB reconciliation is still manual: recent market-maker
+  submitted rows include two matched CLOB orders and one canceled CLOB
+  order. They intentionally remain blocking to prevent duplicate quotes
+  until an order-status sweep is implemented. The swarm runtime risk
+  summary currently reports `Open positions: 0`; that is not reliable
+  until reconciliation is automated.
 
 ## Summary
 
-The bot is running live in Polymarket CLOB v2 deposit-wallet mode with
-conservative sizing. The order path works and five live bot trades have
-matched. As of the morning check, the daemon is healthy but the risk gate is
-blocking new entries because cash-balance drawdown is above the configured 10%
-limit.
+poly1 and the sister swarm bot now share the same Polymarket CLOB v2
+deposit wallet. poly1 uses journal-based drawdown accounting so swarm
+spend does not count as poly1 loss.
 
-The sister swarm bot at `~/Desktop/poly/bot` was also checked on
-2026-05-05. It had been down because it was not running persistently, and a
-later Docker attempt was crash-looping on invalid capital/sizing config. It has
-been rebuilt and restarted under Docker Compose in explicit dry-run mode.
+The swarm bot at `~/Desktop/poly/bot` is live under Docker Compose with
+`TOTAL_CAPITAL=20`: market_maker, mean_reversion, nothing_happens, and
+ai_decision each have `$5`; arbitrage is registered but observational
+with `$0`. During the follow-up review, market_maker placed real CLOB
+orders: two matched and one canceled. There are no open CLOB orders, and
+the local submitted rows remain blocking to prevent duplicate MM quotes
+until reconciliation is automated.
 
 Full handoff for future agents:
 
@@ -90,10 +138,17 @@ Trading log and journal:
 
 ```env
 EXECUTE="true"
-MAX_POSITION_FRACTION="0.025"
+MAX_POSITION_FRACTION="0.0625"
 STARTING_BALANCE_USDC="80.0"
 MAX_TRADES_PER_HOUR="2"
+EXECUTE_SCALPER="false"
+SCALP_LEG_USDC="5.0"
 ```
+
+This targets about `$5` per `poly1` trade and `$5` per scalper leg. The main
+trader remains live-capable but is blocked by the risk gate. The scalper remains
+shadow-only. The sister swarm remains dry-run only and was observed simulating
+about `$5` per position (`4` open simulated positions, `$20.00` at risk).
 
 The first daemon cycle after migration placed no filled bot trade. Two FOK
 orders were killed by CLOB because they could not be fully filled immediately

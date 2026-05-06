@@ -148,6 +148,26 @@ def scalper_state_counts() -> dict[str, int]:
     return {r["state"]: r["n"] for r in rows}
 
 
+# ── news classification signals ──────────────────────────────────────────────
+
+def news_signals_recent(limit: int = 50) -> list[dict]:
+    if not _table_exists("news_signals"):
+        return []
+    return _rows(
+        "SELECT * FROM news_signals ORDER BY ts DESC LIMIT ?", (limit,)
+    )
+
+
+def news_signal_stats() -> dict[str, int]:
+    if not _table_exists("news_signals"):
+        return {}
+    rows = _rows(
+        "SELECT direction || ':' || status AS key, COUNT(*) AS n "
+        "FROM news_signals GROUP BY direction, status"
+    )
+    return {r["key"]: r["n"] for r in rows}
+
+
 # ── LLM usage ─────────────────────────────────────────────────────────────────
 
 def llm_records() -> list[dict]:

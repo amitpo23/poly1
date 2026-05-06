@@ -140,10 +140,31 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
         self.assertIn("below floor", gate.reason())
 
     def test_daily_loss_blocks(self):
+        """Drawdown gate blocks when journal-based loss exceeds the daily
+        loss limit. Cash level on-chain is intentionally NOT used: under
+        the shared-wallet model another bot can spend pUSD without
+        being a poly1 loss."""
+        log = TradeLog(db_path=self.db_path)
+        # Spent $30, positions are now worth $0 (resolved against us / mtm crashed).
+        self._insert_filled(log, "M1", "TOK_X", "BUY", 0.50, 30.0)
+        # No midpoints registered → mtm fallback to entry — but we want a
+        # real loss, so register a midpoint of 0 explicitly.
         pm = MagicMock()
-        pm.get_usdc_balance.return_value = 80.0
-        gate = self._gate(polymarket=pm, starting_balance_usdc=100.0,
-                          max_daily_loss_pct=0.10)
+        pm.get_usdc_balance = MagicMock(return_value=80.0)
+        client = MagicMock()
+        client.get_midpoint = MagicMock(return_value={"mid": 0.0})
+        pm.client = client
+        gate = RiskGate(
+            trade_log=log,
+            polymarket=pm,
+            starting_balance_usdc=100.0,
+            max_daily_loss_pct=0.10,
+            max_trades_per_hour=100,
+            min_usdc_floor=10.0,
+            kill_switch_file=self.kill_path,
+            llm_usage_file=self.usage_path,
+        )
+        # portfolio = 100 - 30 + 0 = 70 → drawdown 30% > 10%
         self.assertFalse(gate.ok())
         self.assertIn("drawdown", gate.reason())
 
@@ -161,6 +182,15 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
                          starting_balance_usdc=80.0,
                          scalper_reserve_usdc=20.0)
         self.assertEqual(gate.available_for_trader(), 60.0)
+
+    def test_scalper_reserve_setter_updates_reserves_dict(self):
+        log = TradeLog(db_path=self.db_path)
+        gate = RiskGate(trade_log=log, polymarket=None,
+                         starting_balance_usdc=80.0,
+                         scalper_reserve_usdc=20.0)
+        gate.scalper_reserve = 12.5
+        self.assertEqual(gate.reserves["scalper"], 12.5)
+        self.assertEqual(gate.scalper_reserve, 12.5)
 
     def test_available_for_trader_zero_reserve_default(self):
         log = TradeLog(db_path=self.db_path)
@@ -181,6 +211,97 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
                          min_usdc_floor=10.0)
         # available = 25 - 20 = 5 < 10 → block
         self.assertIsNotNone(gate.reason())
+
+    def _insert_filled(self, log, market_id, token_id, side, price, size_usdc):
+        log.insert_terminal(
+            cycle_id="t-cycle",
+            market_id=market_id,
+            token_id=token_id,
+            side=side,
+            price=price,
+            size_usdc=size_usdc,
+            confidence=0.9,
+            status=FILLED,
+        )
+
+    def _poly_with_midpoints(self, balance, midpoints):
+        poly = MagicMock()
+        poly.get_usdc_balance = MagicMock(return_value=balance)
+        client = MagicMock()
+        def get_mid(token_id):
+            if token_id in midpoints:
+                return {"mid": midpoints[token_id]}
+            raise RuntimeError("unknown token")
+        client.get_midpoint = MagicMock(side_effect=get_mid)
+        poly.client = client
+        return poly
+
+    def test_drawdown_uses_portfolio_value_not_cash(self):
+        """Cash-only drawdown reads deployed capital as loss; portfolio
+        drawdown (cash + MTM) must not block when positions are flat."""
+        log = TradeLog(db_path=self.db_path)
+        # Deployed $9.49 split across 4 positions, all flat at entry price.
+        self._insert_filled(log, "566188", "TOK_A", "BUY",  0.38,  1.996)
+        self._insert_filled(log, "566228", "TOK_B", "BUY",  0.997, 1.946)
+        self._insert_filled(log, "566187", "TOK_C", "SELL", 0.565, 1.897)
+        self._insert_filled(log, "653788", "TOK_D", "BUY",  0.11,  3.650)
+        # Midpoints exactly at entry → MTM == cost, portfolio == starting.
+        poly = self._poly_with_midpoints(
+            balance=70.51,  # 80 - 9.49 deployed
+            midpoints={"TOK_A": 0.38, "TOK_B": 0.997, "TOK_C": 0.435, "TOK_D": 0.11},
+        )
+        gate = self._gate(polymarket=poly, starting_balance_usdc=80.0,
+                          max_daily_loss_pct=0.10,
+                          max_trades_per_hour=100)  # isolate drawdown check
+        self.assertTrue(gate.ok(), msg=f"unexpected block: {gate.reason()}")
+
+    def test_drawdown_blocks_on_real_mtm_loss(self):
+        """If positions are actually losing enough to push portfolio below
+        starting * (1 - max_daily_loss_pct), the gate must still block."""
+        log = TradeLog(db_path=self.db_path)
+        # Deployed $30 across two positions; both lost most of their value.
+        self._insert_filled(log, "M1", "TOK_X", "BUY", 0.50, 20.0)  # cost $20
+        self._insert_filled(log, "M2", "TOK_Y", "BUY", 0.40, 10.0)  # cost $10
+        # Journal-based portfolio = starting - cost + mtm
+        # = 100 - 30 + (40 * 0.10 + 25 * 0.05) = 100 - 30 + 5.25 = 75.25
+        # drawdown = (100 - 75.25) / 100 = 24.75% > 10%
+        poly = self._poly_with_midpoints(
+            balance=70.0,  # cash is irrelevant under journal-based accounting
+            midpoints={"TOK_X": 0.10, "TOK_Y": 0.05},
+        )
+        gate = self._gate(polymarket=poly, starting_balance_usdc=100.0,
+                          max_daily_loss_pct=0.10,
+                          max_trades_per_hour=100)  # isolate drawdown check
+        self.assertFalse(gate.ok())
+        self.assertIn("drawdown", gate.reason())
+
+    def test_mtm_falls_back_to_entry_when_midpoint_fails(self):
+        """If midpoint lookup raises, fall back to entry price for that
+        position (treat it as flat) — don't crash, don't spuriously block."""
+        log = TradeLog(db_path=self.db_path)
+        self._insert_filled(log, "M1", "TOK_X", "BUY", 0.50, 20.0)
+        # No midpoints registered → get_midpoint raises for every token.
+        poly = self._poly_with_midpoints(balance=80.0, midpoints={})
+        gate = self._gate(polymarket=poly, starting_balance_usdc=100.0,
+                          max_daily_loss_pct=0.10)
+        # Fallback MTM = cost = 20. Portfolio = 80 + 20 = 100. No drawdown.
+        self.assertTrue(gate.ok(), msg=f"unexpected block: {gate.reason()}")
+        self.assertAlmostEqual(gate.position_mtm_usd(), 20.0, places=4)
+
+    def test_sell_position_mtm_uses_actual_token_entry_price(self):
+        """SELL recommendations are encoded as BUYs of the opposite token.
+        TradeLog.price is already the actual token entry price, so MTM must
+        not invert it again with 1-price.
+        """
+        log = TradeLog(db_path=self.db_path)
+        self._insert_filled(log, "M1", "NO_TOKEN", "SELL", 0.40, 20.0)
+        poly = self._poly_with_midpoints(balance=60.0, midpoints={"NO_TOKEN": 0.40})
+        gate = self._gate(polymarket=poly, starting_balance_usdc=80.0,
+                          max_daily_loss_pct=0.10,
+                          max_trades_per_hour=100)
+        # shares = 20 / 0.40 = 50; mtm = 50 * 0.40 = 20; portfolio flat.
+        self.assertAlmostEqual(gate.position_mtm_usd(), 20.0, places=4)
+        self.assertTrue(gate.ok(), msg=f"unexpected block: {gate.reason()}")
 
 
 class TestPolymarketDryRun(unittest.TestCase):

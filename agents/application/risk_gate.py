@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -47,7 +48,8 @@ class RiskGate:
         max_daily_token_usd: Optional[float] = None,
         kill_switch_file: Optional[str] = None,
         llm_usage_file: Optional[str] = None,
-        scalper_reserve_usdc: Optional[float] = None,   # NEW
+        scalper_reserve_usdc: Optional[float] = None,
+        swarm_reserve_usdc: Optional[float] = None,
     ):
         self.trade_log = trade_log
         self.polymarket = polymarket
@@ -82,16 +84,130 @@ class RiskGate:
         self.llm_usage_file = Path(
             llm_usage_file or os.getenv("LLM_USAGE_FILE", "./data/llm_usage.jsonl")
         )
-        self.scalper_reserve = (
-            scalper_reserve_usdc if scalper_reserve_usdc is not None
-            else _env_float("SCALPER_RESERVE_USDC", 0.0)
+        # Capital reservation ledger. Each strategy that draws from the
+        # shared deposit-wallet pUSD pool gets a slice via a *_RESERVE_USDC
+        # env var. `available_for_trader()` returns balance - sum(reserves)
+        # so each strategy's effective bankroll is `slice` and they can't
+        # accidentally overdraw each other. Adding a new strategy = one
+        # env var + one entry here. See ~/Desktop/poly/CAPITAL_ALLOCATION.md.
+        self.reserves = {
+            "scalper": (
+                scalper_reserve_usdc if scalper_reserve_usdc is not None
+                else _env_float("SCALPER_RESERVE_USDC", 0.0)
+            ),
+            "swarm": (
+                swarm_reserve_usdc if swarm_reserve_usdc is not None
+                else _env_float("SWARM_RESERVE_USDC", 0.0)
+            ),
+        }
+        self._mtm_cache_value: Optional[float] = None
+        self._mtm_cache_ts: float = 0.0
+        self._mtm_cache_ttl: float = _env_float("MTM_CACHE_TTL_SEC", 60.0)
+
+    def position_mtm_usd(self) -> float:
+        """Mark-to-market value of all currently filled positions.
+
+        Sums each filled position's shares * current midpoint. If midpoint
+        lookup fails for a token, falls back to the entry price for that
+        position (treats it as flat). Result is cached for `MTM_CACHE_TTL_SEC`.
+        Returns 0.0 if no polymarket adapter or no client.
+        """
+        if self.polymarket is None or getattr(self.polymarket, "client", None) is None:
+            return 0.0
+        now = time.time()
+        if (
+            self._mtm_cache_value is not None
+            and (now - self._mtm_cache_ts) < self._mtm_cache_ttl
+        ):
+            return self._mtm_cache_value
+        positions = self.trade_log.filled_positions()
+        total = 0.0
+        for pos in positions:
+            token_id = pos.get("token_id")
+            side = pos.get("side")
+            price = pos.get("price")
+            size_usdc = pos.get("size_usdc")
+            if not token_id or not side or price is None or not size_usdc:
+                continue
+            # `token_id` is already the exact CLOB outcome token we bought.
+            # A recommendation with side=SELL means "bet against outcomes[0]",
+            # implemented by buying outcomes[1] at order_price=(1-model_price).
+            # TradeLog.price stores that actual token entry price, so MTM must
+            # value shares against `price` for both BUY and SELL rows.
+            entry_px = float(price)
+            if entry_px <= 0:
+                continue
+            shares = size_usdc / entry_px
+            try:
+                mid_resp = self.polymarket.client.get_midpoint(token_id)
+                if isinstance(mid_resp, dict):
+                    mid = float(mid_resp.get("mid", entry_px))
+                else:
+                    mid = float(mid_resp)
+            except Exception as e:
+                logger.warning(
+                    "risk_gate mtm: midpoint lookup failed for %s: %s; using entry",
+                    token_id, e,
+                )
+                mid = entry_px
+            total += shares * mid
+        self._mtm_cache_value = total
+        self._mtm_cache_ts = now
+        return total
+
+    def portfolio_value_usdc(self) -> float:
+        """Poly1's slice of the shared wallet, computed from its own journal.
+
+        Returns ``starting_balance - deployed_cost + position_mtm``.
+        Equivalent to ``starting - (cost - mtm)`` = starting minus realized
+        + unrealized loss on poly1's own positions.
+
+        Why journal-based instead of on-chain cash:
+        the deposit wallet is shared with the swarm bot. When swarm spends
+        pUSD on its own fills, the on-chain cash balance drops without
+        poly1 having lost anything. A cash-based portfolio calc would
+        treat the swarm's normal trading activity as a poly1 drawdown
+        and halt poly1 within minutes of swarm going live.
+
+        Falls back to cash + mtm only when starting_balance is unset
+        (legacy single-bot config).
+        """
+        if self.starting_balance <= 0:
+            # Legacy fallback — single-bot semantics where cash IS poly1's bankroll.
+            if self.polymarket is None:
+                return 0.0
+            try:
+                cash = self.polymarket.get_usdc_balance()
+            except Exception:
+                return 0.0
+            return cash + self.position_mtm_usd()
+
+        deployed_cost = sum(
+            float(p.get("size_usdc") or 0)
+            for p in self.trade_log.filled_positions()
         )
+        return self.starting_balance - deployed_cost + self.position_mtm_usd()
+
+    @property
+    def scalper_reserve(self) -> float:
+        """Backwards-compat alias for callers that read this attribute directly."""
+        return self.reserves.get("scalper", 0.0)
+
+    @scalper_reserve.setter
+    def scalper_reserve(self, value: float) -> None:
+        """Backwards-compat setter for older tests/callers mutating the field."""
+        self.reserves["scalper"] = float(value)
+
+    @property
+    def total_reserves(self) -> float:
+        """Sum of all strategy reserves carved out of the shared pUSD pool."""
+        return sum(self.reserves.values())
 
     def available_for_trader(self) -> float:
         if self.polymarket is None:
             return 0.0
         bal = self.polymarket.get_usdc_balance()
-        return max(0.0, bal - self.scalper_reserve)
+        return max(0.0, bal - self.total_reserves)
 
     def reason(self) -> Optional[str]:
         """Return None if all gates pass, else a short string describing the first failure."""
@@ -103,18 +219,26 @@ class RiskGate:
                 bal = self.polymarket.get_usdc_balance()
             except Exception as e:
                 return f"balance read failed: {e}"
-            available = max(0.0, bal - self.scalper_reserve)
+            available = max(0.0, bal - self.total_reserves)
             if available < self.min_usdc_floor:
+                reserves_breakdown = ", ".join(
+                    f"{k}={v:.2f}" for k, v in self.reserves.items() if v > 0
+                ) or "none"
                 return (
-                    f"available {available:.4f} (after scalper reserve "
-                    f"{self.scalper_reserve:.4f}) below floor {self.min_usdc_floor}"
+                    f"available {available:.4f} (after reserves [{reserves_breakdown}]) "
+                    f"below floor {self.min_usdc_floor}"
                 )
-            if self.starting_balance > 0:  # keep drawdown check on raw bal
-                drawdown = (self.starting_balance - bal) / self.starting_balance
+            if self.starting_balance > 0:
+                # Drawdown is based on portfolio value (cash + MTM of open
+                # positions), not cash alone. Otherwise capital deployed to
+                # open positions reads as drawdown until they resolve.
+                portfolio = self.portfolio_value_usdc()
+                drawdown = (self.starting_balance - portfolio) / self.starting_balance
                 if drawdown > self.max_daily_loss_pct:
                     return (
-                        f"drawdown {drawdown:.2%} above max_daily_loss_pct "
-                        f"{self.max_daily_loss_pct:.2%}"
+                        f"drawdown {drawdown:.2%} (portfolio ${portfolio:.2f} "
+                        f"vs starting ${self.starting_balance:.2f}) above "
+                        f"max_daily_loss_pct {self.max_daily_loss_pct:.2%}"
                     )
 
         recent = self.trade_log.count_recent((SUBMITTED, FILLED), hours=1)
