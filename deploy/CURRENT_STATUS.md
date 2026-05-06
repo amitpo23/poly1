@@ -66,6 +66,30 @@ Latest swarm reconciliation completion:
 - Current swarm DB: `submitted_unreconciled_count=0`, `fills=2`,
   `pending_by_status={cleared:10, failed:229, filled:2}`.
 
+## Trading review — 2026-05-06
+
+**poly1 (LLM Trader)**
+
+- 3 fills today, 8 fills all-time, $19.49 total deployed
+- 05:19 UTC — pair trade EPL: SELL Arsenal YES @ 79.5¢ ($3.51) + BUY Man City YES @ 20.5¢ ($3.33)
+- 07:43 UTC — BUY Barcelona YES (La Liga) @ 99.7¢ ($3.16), near-certainty position
+- Markets: 566187 (Arsenal EPL), 566188 (Man City EPL), 566228 (Barcelona La Liga), 653788 (OpenAI AGI 2027)
+- All positions open; no P&L realized yet (sports markets settle end of season)
+- 14 `skipped_dedupe` rows — same three markets blocked correctly between cycles
+- LLM usage today: 6 calls, 3,988 tokens, $0.0122 (`est_cost_usd` field in jsonl)
+- LLM all-time: 78 calls, 51,232 tokens, $0.1563
+
+**swarm (market_maker)**
+
+- No new fills today; fills=2 remain from yesterday's reconciliation
+- Market: `0x348cd9...` — "Strait of Hormuz traffic returns to normal by end of June?"
+- market_maker BUY YES @ 59.5¢ ×2 lots, ~$5 each (total ~$10 notional)
+- `submitted_unreconciled_count=0`, `pending_by_status={cleared:10, failed:229, filled:2}`
+- No pnl_events yet (positions open)
+
+**LLM cost tracking confirmed correct** — `llm_usage.jsonl` uses `est_cost_usd` (not `cost_usd`);
+dashboard reads the correct field name. No bug.
+
 Tomorrow's runbook:
 
 - `docs/RUNBOOK_2026-05-07.md` — morning health check, swarm live
