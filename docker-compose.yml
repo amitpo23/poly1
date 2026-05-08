@@ -49,6 +49,66 @@ services:
     stop_grace_period: 30s
     profiles: ["scalper"]
 
+  btc_daily:
+    build: .
+    image: poly1:local
+    container_name: poly1-btc-daily
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+    command: ["python", "-m", "agents.application.btc_daily"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/btc_daily_heartbeat') < 60"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["btc_daily"]
+
+  position_manager:
+    build: .
+    image: poly1:local
+    container_name: poly1-position-manager
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+    command: ["python", "-m", "agents.application.position_manager"]
+    volumes:
+      - ./data:/app/data
+      # Mount swarm DB read-write so resolution_sync can write
+      # pnl_events when swarm-side markets resolve. Without this, the
+      # swarm sub-agents can't be defunded by realized PnL.
+      - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/app/swarm/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/position_manager_heartbeat') < 120"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["positions"]
+
   dashboard:
     build: .
     image: poly1:local
@@ -67,9 +127,49 @@ services:
     volumes:
       - ./data:/app/data
       - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/swarm/data:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8050/_stcore/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     mem_limit: 512m
     cpus: "0.5"
+
+  allocator-sync:
+    build: .
+    image: poly1:local
+    container_name: poly1-allocator-sync
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+      # Path inside container to the host-mounted poly1 .env file.
+      # The daemon reads allocator output and writes these files directly.
+      POLY1_ENV_PATH: /app/host/poly1.env
+      SWARM_ENV_PATH: /app/host/swarm.env
+      POLY1_DB_PATH: /app/data/trade_log.db
+      SWARM_DB_PATH: /app/swarm/data/swarm.db
+    command: ["python", "scripts/python/allocator_sync.py"]
+    volumes:
+      - ./data:/app/data
+      # poly1/.env mounted read-write so the daemon can update allocations.
+      - ./.env:/app/host/poly1.env
+      # swarm .env mounted read-write for cross-bot capital sync.
+      - ${SWARM_ENV_PATH:-/Users/mymac/Desktop/poly/bot/.env}:/app/host/swarm.env
+      # swarm DB read-write for resolution_sync pnl_events writes.
+      - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/app/swarm/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 256m
+    cpus: "0.25"
+    profiles: ["allocator"]
 
   grafana:
     image: grafana/grafana:10.4.2

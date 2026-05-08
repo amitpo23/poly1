@@ -54,10 +54,22 @@ class Executor:
         self.model = model
         self.prompter = Prompter()
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.llm = ChatOpenAI(
-            model=model,
-            temperature=0,
-        )
+        # For models that support JSON-mode (gpt-4o, gpt-4o-mini), pass
+        # response_format so the LLM is structurally constrained to emit
+        # valid JSON.  Older models (gpt-3.5-turbo-16k) don't support this
+        # parameter and get the standard ChatOpenAI constructor.
+        _JSON_MODE_MODELS = {"gpt-4o", "gpt-4o-mini"}
+        if model in _JSON_MODE_MODELS:
+            self.llm = ChatOpenAI(
+                model=model,
+                temperature=0,
+                model_kwargs={"response_format": {"type": "json_object"}},
+            )
+        else:
+            self.llm = ChatOpenAI(
+                model=model,
+                temperature=0,
+            )
         self._gamma = None
         self._chroma = None
         self._polymarket = None

@@ -22,6 +22,17 @@ _SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 import db  # noqa: E402
 
+# CapitalAllocator is optional — if it fails to import (e.g. missing deps in
+# a slim image) the dashboard degrades gracefully without the allocator table.
+try:
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    from agents.application.capital_allocator import CapitalAllocator as _CapitalAllocator
+    _HAS_ALLOCATOR = True
+except Exception:
+    _HAS_ALLOCATOR = False
+
 st.set_page_config(
     page_title="poly1 dashboard",
     page_icon="📊",
@@ -237,6 +248,45 @@ with TAB_CAPITAL:
     col1.metric("Starting balance", f"${starting_balance:.2f}")
     col2.metric("Capital deployed (filled)", f"${total_deployed:.2f}")
     col3.metric("Scalper open (deployed)", f"${scalper_deployed:.2f}")
+
+    st.divider()
+
+    # ── Allocator scores table ────────────────────────────────────────────
+    if _HAS_ALLOCATOR:
+        try:
+            _alloc = _CapitalAllocator(
+                poly_db=os.getenv("TRADE_LOG_DB", "./data/trade_log.db"),
+                swarm_db=os.getenv("SWARM_DB", os.path.expanduser(
+                    "~/Desktop/poly/bot/data/swarm.db"
+                )),
+                total_budget_usdc=float(os.getenv("ALLOC_SYNC_BUDGET_USDC", "20.0")),
+            )
+            _report = _alloc.build_report()
+            _rows = [
+                {
+                    "Agent": a.agent,
+                    "Recommended $": round(a.recommended_usdc, 2),
+                    "Realized PnL $": round(a.realized_pnl_usdc, 4),
+                    "Score": round(a.score, 3),
+                    "Entries": a.entries,
+                    "Errors": a.errors,
+                    "Live?": "✅" if a.live_allowed else "❌",
+                    "Reasons": ", ".join(a.reasons[:3]),
+                }
+                for a in _report.agents
+            ]
+            st.subheader("Allocator scores (current 24 h window)")
+            st.dataframe(
+                pd.DataFrame(_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+            if _report.warnings:
+                st.caption("⚠️ " + "  |  ".join(_report.warnings[:4]))
+        except Exception as _e:
+            st.warning(f"Allocator table unavailable: {_e}")
+    else:
+        st.info("CapitalAllocator not available in this environment.")
 
     st.divider()
 

@@ -25,26 +25,8 @@ nothing. pnl_event will appear automatically when the market resolves.
 
 ## Deferred recommendations — review before next sprint
 
-The following items were evaluated but deferred (not blocking, or not
-"small action + meaningful improvement" at this stage). Review before any
-strategy tuning or next live-capital increase:
-
-### D1 — Dockerize `allocator_sync` daemon
-**Risk**: allocator_sync runs as host `nohup`, dies on reboot. Currently
-`scripts/python/allocator_sync.py` is not in docker-compose.yml.
-**What to do**: add a `poly1-allocator-sync` service to `docker-compose.yml` with
-`restart: unless-stopped`, bind-mount poly1/.env and swarm/.env as volumes,
-set `ALLOC_SYNC_ENFORCE=true`. ~15 lines.
-**Deferred because**: requires testing bind-mount paths on VPS, and the daemon
-is healthy today. Do before next VPS reboot or $100 live-capital event.
-
-### D2 — Allocator anti-churn (hysteresis / cooldown)
-**Risk**: allocator_sync restarts a container every 5 min whenever allocation
-shifts by $0.01, causing unnecessary container thrash.
-**What to do**: add `ALLOC_SYNC_MIN_DELTA_USDC` (default `0.50`). Only write
-env + restart if `abs(new - old) > threshold`.
-**Deferred because**: low urgency at current budget; can be tuned empirically
-once we observe churn in the logs over a week.
+The following item was evaluated but deferred (not "small action" — requires
+replay data infrastructure):
 
 ### D3 — Backtest harness for btc_daily
 **Risk**: the 5 parameter changes in `btc_daily.py` (trigger_pct, trend_threshold,
@@ -55,23 +37,6 @@ CLOB snapshots through `BtcDailyAgent._evaluate` and measures entry/exit
 counts + PnL on 30 days of data.
 **Deferred because**: medium complexity (~2-3h). Do before any further
 btc_daily parameter changes.
-
-### D4 — Trader structured output (JSON-schema enforcement)
-**Risk**: `parse_trade_recommendation` uses regex fallback (`_parse_trade_fields`)
-when the LLM produces narrative prose instead of JSON. The prompt already demands
-JSON but doesn't pass a response_format / tool_use schema.
-**What to do**: pass `response_format={"type": "json_object"}` (GPT-4o) or use
-a LangChain tool schema so the LLM is structurally constrained to emit the
-`{price, size_fraction, side, confidence}` shape.
-**Deferred because**: the current failure mode is `no asks available` (CLOB), not
-parse failures — fixing D4 now would be solving the wrong problem. Revisit after
-the trader accumulates 20+ evaluated markets.
-
-### D5 — Dashboard realized-PnL column per agent
-**What to do**: add a `realized_pnl_usdc` column to the allocator table in
-`agents/application/monitor.py` (the data is already in `AgentScore.realized_pnl_usdc`).
-**Deferred because**: cosmetic at this stage. Do when the user wants richer
-dashboard before a capital-increase decision.
 
 ---
 

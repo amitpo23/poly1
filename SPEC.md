@@ -243,7 +243,18 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | Var | Default | Notes |
 |---|---|---|
 | `SWARM_DB` | `~/Desktop/poly/bot/data/swarm.db` | Read-only path used by dashboard Swarm tab. |
-| `SWARM_AGENT_ALLOCATIONS_JSON` | `{"market_maker":5,"mean_reversion":5,"nothing_happens":5,"ai_decision":5,"arbitrage":0}` | Dashboard-only per-agent budget map (USD) used to compute allocation consumed/remaining columns. |
+| `SWARM_AGENT_ALLOCATIONS_JSON` | `{"market_maker":5,...}` | Dashboard-only per-agent budget map (USD) for Swarm tab summary. |
+
+### Allocator-sync daemon
+
+| Var | Default | Notes |
+|---|---|---|
+| `ALLOC_SYNC_CYCLE_SEC` | `300` | Daemon loop interval in seconds. |
+| `ALLOC_SYNC_BUDGET_USDC` | `20.0` | Hard cap — daemon never allocates beyond this total. |
+| `ALLOC_SYNC_WINDOW_HOURS` | `24.0` | Scoring lookback window passed to `CapitalAllocator`. |
+| `ALLOC_SYNC_ENFORCE` | `true` | `false` = log-only dry run; no writes or restarts. |
+| `ALLOC_SYNC_MIN_DELTA_USDC` | `0.50` | Min per-agent USDC shift to trigger env write + container restart. Prevents thrashing on tiny allocation changes. |
+| `SWARM_ENV_PATH` | `/Users/mymac/Desktop/poly/bot/.env` | Host path to swarm `.env`; bind-mounted into the allocator-sync container. |
 
 ## 8. LLM prompt contract
 
