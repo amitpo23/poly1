@@ -180,7 +180,9 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
         poly.get_usdc_balance = MagicMock(return_value=80.0)
         gate = RiskGate(trade_log=log, polymarket=poly,
                          starting_balance_usdc=80.0,
-                         scalper_reserve_usdc=20.0)
+                         scalper_reserve_usdc=20.0,
+                         swarm_reserve_usdc=0.0,
+                         btc_daily_reserve_usdc=0.0)
         self.assertEqual(gate.available_for_trader(), 60.0)
 
     def test_scalper_reserve_setter_updates_reserves_dict(self):
@@ -197,7 +199,10 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
         poly = MagicMock()
         poly.get_usdc_balance = MagicMock(return_value=80.0)
         gate = RiskGate(trade_log=log, polymarket=poly,
-                         starting_balance_usdc=80.0)  # default reserve=0
+                         starting_balance_usdc=80.0,
+                         scalper_reserve_usdc=0.0,
+                         swarm_reserve_usdc=0.0,
+                         btc_daily_reserve_usdc=0.0)  # ignore env
         self.assertEqual(gate.available_for_trader(), 80.0)
 
     def test_min_floor_uses_available_after_reserve(self):
@@ -536,6 +541,100 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
         statuses = [r["status"] for r in recent]
         self.assertEqual(statuses.count(SKIPPED_GATE), 1)
         self.assertEqual(statuses.count(SKIPPED_DRY_RUN), 2)
+
+    def test_shadow_can_continue_when_risk_gate_blocks(self):
+        from agents.application.trade import Trader
+
+        with patch.dict(os.environ, {"SHADOW_IGNORE_RISK_GATE": "true"}), \
+                patch("agents.application.trade.Polymarket") as PMock, \
+                patch("agents.application.trade.Agent") as AgentMock, \
+                patch("agents.application.trade.Gamma"):
+            pm = PMock.return_value
+            pm.get_all_tradeable_events.return_value = []
+            pm.get_usdc_balance.return_value = 50.0
+
+            agent = AgentMock.return_value
+            agent.filter_events_with_rag.return_value = []
+            agent.map_filtered_events_to_markets.return_value = []
+            agent.filter_markets.return_value = [self._make_market(22, 0.05)]
+            agent.source_best_trade.return_value = "stub"
+            agent.parse_trade_recommendation.return_value = TradeRecommendation(
+                price=0.5, size_fraction=0.05, side="BUY", confidence=0.9,
+            )
+
+            tl = TradeLog(self.db_path)
+            gate = MagicMock()
+            gate.ok.return_value = False
+            gate.reason.return_value = "paper test block"
+            gate.available_for_trader.return_value = 20.0
+
+            trader = Trader(
+                dry_run=True,
+                top_n=1,
+                max_trades_per_cycle=1,
+                min_confidence=0.7,
+                max_position_fraction=0.1,
+                trade_log=tl,
+                risk_gate=gate,
+            )
+
+            trader.one_best_trade_sweep()
+
+        recent = tl.recent(limit=5)
+        self.assertEqual(recent[0]["status"], SKIPPED_DRY_RUN)
+
+    def test_illiquid_market_writes_skipped_gate_not_failed(self):
+        """execute_market_order raising ValueError('no asks available') must
+        write SKIPPED_GATE (veto), not FAILED (error that blocks the trader
+        for 24 h in the allocator)."""
+        from agents.application.trade import Trader
+
+        with patch("agents.application.trade.Polymarket") as PMock, \
+                patch("agents.application.trade.Agent") as AgentMock, \
+                patch("agents.application.trade.Gamma"):
+            pm = PMock.return_value
+            pm.get_all_tradeable_events.return_value = []
+            pm.get_usdc_balance.return_value = 50.0
+            pm.execute_market_order.side_effect = ValueError(
+                "no asks available for token_id=abc123"
+            )
+
+            agent = AgentMock.return_value
+            agent.filter_events_with_rag.return_value = []
+            agent.map_filtered_events_to_markets.return_value = []
+            agent.filter_markets.return_value = [self._make_market(99, 0.05)]
+            agent.source_best_trade.return_value = "stub"
+            agent.parse_trade_recommendation.return_value = TradeRecommendation(
+                price=0.5, size_fraction=0.05, side="BUY", confidence=0.9,
+            )
+
+            tl = TradeLog(self.db_path)
+            gate = RiskGate(
+                trade_log=tl, polymarket=pm,
+                starting_balance_usdc=0.0,
+                max_daily_loss_pct=0.99,
+                max_trades_per_hour=99,
+                min_usdc_floor=0.0,
+                max_daily_token_usd=999.0,
+                kill_switch_file=self.kill_path,
+                llm_usage_file=self.usage_path,
+            )
+            trader = Trader(
+                dry_run=False,  # live path so execute_market_order is called
+                top_n=1,
+                max_trades_per_cycle=1,
+                min_confidence=0.7,
+                max_position_fraction=0.1,
+                trade_log=tl,
+                risk_gate=gate,
+            )
+
+            trader.one_best_trade_sweep()
+
+        recent = tl.recent(limit=5)
+        statuses = [r["status"] for r in recent]
+        self.assertIn(SKIPPED_GATE, statuses, "illiquid market must write SKIPPED_GATE")
+        self.assertNotIn(FAILED, statuses, "illiquid market must NOT write FAILED")
 
 
 if __name__ == "__main__":

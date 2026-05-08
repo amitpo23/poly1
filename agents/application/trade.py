@@ -1,5 +1,6 @@
 import ast
 import logging
+import os
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
@@ -65,6 +66,9 @@ class Trader:
         self.risk_gate = risk_gate or RiskGate(
             trade_log=self.trade_log, polymarket=self.polymarket
         )
+        self.shadow_ignore_risk_gate = (
+            os.getenv("SHADOW_IGNORE_RISK_GATE", "false").lower() == "true"
+        )
 
     def pre_trade_logic(self) -> None:
         if self.force_refresh_dbs:
@@ -106,9 +110,15 @@ class Trader:
         logger.info("cycle %s: starting sweep (dry_run=%s)", cycle_id, self.dry_run)
 
         if not self.risk_gate.ok():
-            logger.warning("cycle %s: risk gate blocked entry", cycle_id)
-            return
-
+            if self.dry_run and self.shadow_ignore_risk_gate:
+                logger.warning(
+                    "cycle %s: risk gate blocked but shadow evaluation continues: %s",
+                    cycle_id,
+                    self.risk_gate.reason(),
+                )
+            else:
+                logger.warning("cycle %s: risk gate blocked entry", cycle_id)
+                return
         self.pre_trade_logic()
 
         events = self.polymarket.get_all_tradeable_events()
@@ -130,7 +140,9 @@ class Trader:
 
         placed = 0
         for market in ranked:
-            if not self.risk_gate.ok():
+            if not self.risk_gate.ok() and not (
+                self.dry_run and self.shadow_ignore_risk_gate
+            ):
                 logger.warning("cycle %s: risk gate flipped mid-sweep, stopping", cycle_id)
                 break
             if self._evaluate_market(cycle_id, market):
@@ -172,6 +184,23 @@ class Trader:
 
     def _evaluate_market(self, cycle_id: str, market) -> bool:
         market_id = self._market_id(market)
+
+        # First gate: do we already hold a filled position on this market?
+        # Without exit logic (`maintain_positions` is a stub), reopening is
+        # "averaging down" — observed 2026-05-06 when the LLM doubled
+        # exposure on 566187/566188 from 0.38 → 0.205. Block regardless
+        # of dedupe age until exit logic exists to close positions
+        # before reopening.
+        if self.trade_log.has_filled_position_for_market(market_id):
+            logger.info(
+                "cycle %s: market %s skipped (already holds filled position)",
+                cycle_id, market_id,
+            )
+            self.trade_log.insert_terminal(
+                cycle_id, market_id, SKIPPED_DEDUPE,
+                error="already holds filled position on this market",
+            )
+            return False
 
         if self.trade_log.has_active_trade_for_market(market_id, hours=6):
             logger.info(
@@ -277,6 +306,22 @@ class Trader:
         try:
             # Please refer to TOS before enabling live trading: polymarket.com/tos
             result = self.polymarket.execute_market_order(market, recommendation)
+        except ValueError as e:
+            if "no asks available" in str(e):
+                # Thin orderbook — not a code error, just a market condition.
+                # Write SKIPPED_GATE (veto) so the allocator doesn't penalise
+                # the trader as if it crashed. The market can be retried next
+                # cycle once liquidity returns.
+                logger.warning(
+                    "cycle %s: market %s illiquid (no asks) — skipping", cycle_id, market_id
+                )
+                self.trade_log.mark(trade_id, SKIPPED_GATE, error=f"illiquid: {e}")
+                return False
+            logger.exception(
+                "cycle %s: market %s execute_market_order failed", cycle_id, market_id
+            )
+            self.trade_log.mark(trade_id, FAILED, error=str(e))
+            return False
         except Exception as e:
             logger.exception(
                 "cycle %s: market %s execute_market_order failed", cycle_id, market_id
@@ -290,8 +335,26 @@ class Trader:
         return True
 
     def maintain_positions(self):
-        # Stub - read-only here; full close logic out of scope for v1.
-        pass
+        """Inline position-management call. Delegates to PositionManager.
+
+        The canonical home of exit logic is the dedicated daemon at
+        `agents.application.position_manager` (run as its own container
+        via `--profile positions`). This inline path exists so callers
+        of `Trader.maintain_positions()` get the same behavior without
+        spinning up a separate process; useful for tests or single-shot
+        CLI invocations.
+        """
+        try:
+            from agents.application.position_manager import PositionManager
+            mgr = PositionManager(
+                polymarket=self.polymarket,
+                trade_log=self.trade_log,
+            )
+            result = mgr.check_and_close_positions()
+            if result.get("evaluated"):
+                logger.info("maintain_positions: %s", result)
+        except Exception:
+            logger.exception("maintain_positions failed")
 
     def incentive_farm(self):
         pass
