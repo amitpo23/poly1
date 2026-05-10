@@ -1,6 +1,236 @@
 # Current Status
 
-Date: 2026-05-08
+Date: 2026-05-09
+
+## Latest changes (2026-05-10, Phase A + Scout plan)
+
+**Committed `ab041d1`:** WR infrastructure for `CapitalAllocator`.
+- AgentScore now tracks `wins`/`losses`/`win_rate`
+- `position_manager` augments closed_* response_json with
+  `pnl_usdc_real` (cash) + `strategy_pnl_usdc` (matched-shares)
+- 3 historical close rows from 2026-05-08 backfilled
+- Output: `position_manager` reports W/L=2/1 WR=66.7% PnL=+$0.44
+
+**Surprise finding from backfill:** btc_daily's 3 closes yesterday had
+**cash-PnL +$0.44** but **strategy-PnL -$2.63**. The cash positive
+came from dust monetization (8.13/9.68 shares sold at new sell price
+when only 6 were paid for per open). The 60.7% backtest WR may
+overstate actual edge; need 30+ live trades to confirm.
+
+**Scout plan approved (not yet built):** Hourly cron to scan
+Gamma + Tavily across all strategies, score by replayable heuristics,
+write to `scout_opportunities` table. `state_watcher` alerts on new
+rows. **Does NOT auto-activate any agent** — surfaces candidates for
+human review + backtest. Replaces the "auto-tuner" pattern that bit
+us with scalper yesterday.
+
+See `docs/SESSION_2026-05-10_SCOUT_PLAN.md` for the full plan.
+
+## Earlier changes (afternoon 2026-05-09, exhaustive strategy sweep)
+
+User asked: *"בטוח שיש שווקים שאחת מהאסטרטגיות שלנו תעבוד בלמעלה מ 55
+winrate"*. Answer after exhaustive testing: **no**.
+
+Built 3 backtest harnesses today (MR + scalper sweep + market sweep
+across 5 categories). Combined with morning's MR backtest, we now have
+empirical evidence on every strategy concept replayable from CLOB
+price-history.
+
+**Headline result:** market_sweep on 90-day window initially showed
+2 cells passing 55% WR (`sports`/`other` × `no_bias_hold`). Split
+test on 30/30/30 day windows revealed instability:
+
+| sports / no_bias_hold | 0-30d | 30-60d | 60-90d |
+|---|---|---|---|
+| WR | 64.0% | 57.5% | **44.9%** |
+| PnL | +$21.84 | +$4.26 | **-$7.55** |
+
+The 90-day average was a regime-specific artifact (recent underdogs
+won more than expected). Earlier window broke. **No strategy passed
+55% WR with stability.**
+
+CLOB only retains ~90 days of price-history (verified — 1 of 10
+markets aged 90-180d returned data). Can't validate longer windows.
+
+**Decision:** btc_daily remains the only strategy with stable
+backtest evidence (60.7% / 30d). Everything else fails. swarm stays
+in dryrun. See `docs/SESSION_2026-05-09_MARKET_SWEEP.md`.
+
+## Earlier (morning 2026-05-09, MR backtest + alerting layer)
+
+Three concrete outcomes this morning:
+
+1. **Tier 1 alerting layer built** — `scripts/python/state_watcher.py`
+   replaces the verbose 30-min cron with diff-driven alerts. Silent on
+   no-change; alerts on new fills, container down, RECONCILE_NEEDED,
+   MAY_HAVE_FIRED. Cron updated to fire short prompt (`שקט.` when no
+   change). See `docs/SESSION_2026-05-09_ALERTING_LAYER.md`.
+
+2. **swarm dryrun discovery** — `.env` says `BOT_MODE=live` but the
+   running container reports `mode=dryrun` (env drift, never recreated
+   after `.env` change). Side effect: market_maker writes `submitted`
+   rows to `pending_orders` for every paper-quote, never sends to CLOB.
+   These accumulate as dryrun artifacts (`order_id LIKE 'dry_%'`).
+
+3. **mean_reversion backtest with slippage modeling — strategy fails
+   65% win-rate gate.** `scripts/python/backtest_mean_reversion.py`
+   built with spread-based slippage (entry=ask, exit=bid). 30 days, 372
+   entries:
+
+| spread | 30d win rate | 30d paper PnL |
+|---|---|---|
+| **0¢** (ceiling, impossible) | **43.5%** | +$3.33 |
+| 1¢ (best realistic) | 33.2% | -$11.49 |
+| 2¢ (typical) | 26.9% | -$22.13 |
+| 3¢ (worst) | 15.9% | -$35.46 |
+
+Even at zero slippage the WR ceiling is **below 50%**. Fade-the-move at
+0.3% / 180s on BTC daily is structurally a losing strategy — small BTC
+moves don't revert, they continue. Confirms the pre-existing comment
+in `config.py:85`: "60-day BTC daily backtest showed no edge across
+all parameter variants once realistic spreads/fees were modeled."
+
+**Decision per user's principle (≥65% WR gate):**
+- swarm stays in `BOT_MODE=dryrun`
+- MR allocation 0.25 left as-is (config-loaded, dryrun-contained)
+- BOT_MODE flip blocked until any swarm strategy passes 65% WR with
+  realistic slippage
+
+See `docs/SESSION_2026-05-09_MR_BACKTEST.md`.
+
+## Earlier (late evening 2026-05-08, scalper disabled — backtest correction)
+
+**Honest correction.** The "first data-driven tuning" earlier today
+(scalper threshold 0.35 → 0.60 based on backtest showing 65% win rate)
+was based on a **flawed backtest** that didn't model live FAK SELL
+slippage. The advisor caught this; re-running the backtest with the
+2% slippage that `exit_executor.py:38-43` actually applies produced:
+
+| threshold | Entries | Win Rate | Paper PnL (2% slippage) |
+|---|---|---|---|
+| 0.35 | 110 | 27.4% | **-$5.92** |
+| 0.50 | 73 | 21.7% | **-$4.50** |
+| 0.60 | 47 | 23.3% | **-$1.57** |
+
+Every threshold loses money once realistic execution costs are
+modeled. The strategy's edge (5-7%) is smaller than the round-trip
+slippage cost (4%) on current Polymarket 15m spreads. **Scalper is
+structurally unprofitable at current spreads.**
+
+**Action taken:**
+- `EXECUTE_SCALPER="true" → "false"` in `.env`
+- `poly1-scalper` recreated; will scan but not place orders
+- Stale market_maker pending row (id=244, dry_1) cleared in swarm.db
+- The "65% win rate" claim from the earlier backtest is retracted
+
+**The lesson:** every backtest claim needs to model real execution
+costs (slippage, fees) explicitly. The harness now takes a
+`--slippage` flag (default 0.02 = matches live).
+
+## Latest changes (evening 2026-05-08, backtest harnesses + first data-driven tuning)
+
+User asked "we don't see the path to scale" — the specific trigger that
+finally justified building a backtest harness (yesterday it was YAGNI;
+today it's the evidence-shaped question we needed). Per advisor:
+"build it, btc_daily only, three windows for stability."
+
+- **`scripts/python/backtest_harness.py`** (~470 lines) — replays
+  historical bitcoin-up-or-down markets through `BtcDailyEngine.maybe_enter`.
+  Pulls full active-period CLOB price-history per day (start_ts/end_ts
+  works for resolved markets too; `closed=true` Gamma flag exposes them).
+  Runs paper TP/SL exits at MAINTAIN_*_PCT thresholds, settles open
+  positions at terminal mid. Output: per-day PnL + 7d/14d/30d window
+  summaries.
+- **btc_daily backtest verdict**: positive paper PnL across all windows.
+  30 days = 28 entries, 60.7% win rate, +$0.61. 14d = 14 entries, 57.1%,
+  +$0.03 (barely positive). 7d = 7 entries, 57.1%, +$0.16. Edge is real
+  but thin: ~$0.02/day on $3 trades = 0.7%/day return. Strategy is worth
+  keeping live; scaling to larger size is the next decision (post-experiment).
+- **`scripts/python/backtest_scalper.py`** (~280 lines) — replays
+  historical 15-min crypto markets through `MarketBrain.evaluate_scalper_entry`
+  using local `scalper_pairs` table (1234 expired pairs, ~2 days). Per pair:
+  fetch UP+DOWN price-history, walk ticks, simulate paired-leg entry +
+  TP/SL/expiry exit. v2 added; reuses MarketBrain directly.
+- **scalper backtest verdict — threshold sweep findings**:
+  - `min_edge_score=0.35` (current default): 115 entries, 45.9% win
+    rate, +$0.06 PnL → essentially noise.
+  - `min_edge_score=0.50`: 69 entries, 46.8%, +$0.73.
+  - `min_edge_score=0.60`: 46 entries, **65.4% win rate**, **+$2.10**.
+- **Action taken (data-driven, advisor-validated)**: changed
+  `MARKET_BRAIN_SCALPER_MIN_EDGE_SCORE` 0.35 → 0.60. Scalper container
+  recreated; new threshold live. This is the first parameter change
+  ever made on backtest evidence rather than intuition. Expected:
+  ~50% fewer entries, ~40% higher win rate.
+- **`mean_reversion`, `nothing_happens`, `ai_decision`, `market_maker`,
+  `arbitrage`** are NOT replayable from price-history alone (they need
+  news feeds, LLM context, orderbook depth, or hardcoded pairs). Out
+  of v1/v2 scope.
+
+## Latest changes (afternoon 2026-05-08, B1 + B2-mini)
+
+User identified that 4 of 8 swarm sub-agents were either broken or
+gated. We fixed two and excluded one rather than building from scratch:
+
+- **B1.1: OpenAI fallback in `core/ai_advisor.py`.** `AIAdvisor` now
+  takes `openai_api_key` + `openai_model` and routes to OpenAI with
+  strict `response_format={"type": "json_object"}` when
+  `ANTHROPIC_API_KEY` is empty. Eliminates the "no ANTHROPIC_API_KEY
+  set" SKIP loop. `requirements.txt` now includes `openai>=1.40.0`.
+  swarm/.env gained `OPENAI_API_KEY` + `OPENAI_MODEL=gpt-4o-mini`.
+- **B1.2: market_maker fixes.** `refresh_interval_seconds: 30 → 5`,
+  added `quote_slippage_cents: 0.5`, and a pre-placement slippage
+  guard in `market_maker_agent.py`: refetch the book just before
+  submitting and drop the order if the live ref-price drifted past
+  `quote_slippage_cents`. Should kill the 226/228 rejection rate.
+- **B2-mini: exclude `swarm_arbitrage`.** It's a 130-line stub that
+  only logs candidates; gives it `entry_strategy = False` in
+  `capital_allocator._score_agent` so exploration_floor doesn't waste
+  $1.50 on a no-op. Building a real arbitrage trader is gated on D3.
+- **Swarm `$20 floor → $1`.** After B2-mini moved $1.50 back to the
+  pool, swarm got allocated $4.50 (3 sub-agents × $1.50 exploration)
+  but the swarm config validator crashed boot demanding
+  `TOTAL_CAPITAL >= $20`. User chose to drop the floor and lower
+  per-agent order sizes (5 → 1) rather than force dryrun. Trade-off:
+  higher % fee+slippage on $1 trades, but real fills beat dryrun.
+  All 4 swarm sub-agents now live.
+
+**Final allocation as of this session end:**
+```
+btc_daily=$14.00 (live, +1 winning trade today: closed_take_profit
+                   at 10:19 UTC, $3 → $3.087)
+scalper=$1.50    (live, HTTP/2 rotation fix from earlier today; brain
+                   approved 16 trades in 30m, fills pending)
+swarm=$4.50      (live; 3 sub-agents × $1.50, $1 order sizes)
+trader=$0        (waiting for errors=1 to roll off allocator window)
+```
+
+7 agents trading (counting 4 swarm sub-agents). arbitrage stub
+excluded.
+
+## 24-hour wait period (in progress)
+
+The 24h `$20` experiment is running with the full feedback loop active
+(resolution_sync + P&L→allocator + exploration mode + swarm pnl-event
+sync). Capital split is `btc_daily=$12.50, scalper=$1.50, swarm=$6.00`,
+auto-rebalanced every 5 min by `allocator_sync` daemon.
+
+**Deliberate inaction.** No new infrastructure today. The advisor and
+the user both pushed back against pre-emptively building backtest
+harness, journal-analyzer, on-chain-reconciler — all over-engineering
+without a specific parameter we want to tune. YAGNI.
+
+**What to check tomorrow morning (~24h from now):**
+1. `tail data/logs/allocator_sync.log` — which agents earned/lost,
+   which got auto-defunded.
+2. `docker exec poly1-position-manager python /app/scripts/python/capital_allocator.py --hours 24`
+   — full per-agent breakdown including `realized_pnl_usdc`.
+3. Verify trader `errors` count fell to 0 after `errors=1` rolled off
+   the 24-hour window (Task #36 fix is in place — see below).
+4. Decide based on observed data whether any single parameter looks
+   wrong empirically. **Only then** does building backtest harness
+   become essential rather than premature.
+
+---
 
 ## Latest changes (evening 2026-05-08)
 
@@ -15,6 +245,17 @@ Fix: split the exception handler. A `ValueError` whose message contains
 `"no asks available"` now writes `SKIPPED_GATE` (veto, 0.06-penalty) instead of
 `FAILED` (error, 0.45-penalty + hard block). Any other exception still writes
 `FAILED`. Test added in `tests/test_trader.py::test_illiquid_market_writes_skipped_gate_not_failed`.
+
+**Verified end-to-end 2026-05-08 evening (this session):** code at
+`agents/application/trade.py:310-318` matches expected fix. Test passed
+inside the docker image:
+```
+docker compose run --rm --entrypoint python btc_daily \
+  -m unittest tests.test_trader.TestTraderTopN.test_illiquid_market_writes_skipped_gate_not_failed
+# OK
+```
+Trader will become `live_allowed=True` automatically when the existing
+`errors=1` row drops out of the 24-hour allocator window. Task #36 closed.
 
 **Swarm pnl_events** — confirmed *not a bug*. The swarm's only fill is on market
 `0x348cd9...` ("Strait of Hormuz traffic returns to normal by end of June?") which

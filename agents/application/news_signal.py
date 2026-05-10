@@ -210,28 +210,106 @@ def _coerce_json(text: str) -> dict:
 
 
 def fetch_news_items(query: str, limit: int = 10) -> list[NewsItem]:
-    if not os.getenv("NEWSAPI_API_KEY", "").strip():
-        return fetch_rss_items(limit=limit)
+    """Fetch news from all configured sources, deduped by headline.
 
-    from agents.connectors.news import News
-
-    news = News()
-    articles = news.get_articles_for_cli_keywords(query)
+    Source preference order: Tavily > NewsAPI > RSS. Tavily search is
+    keyword-targeted (better for prediction-market relevance) so it
+    runs first when ``TAVILY_API_KEY`` is set; remaining slots fall
+    back to NewsAPI then RSS to fill ``limit``.
+    """
     out: list[NewsItem] = []
-    for article in articles[:limit]:
-        source = getattr(article, "source", None)
-        if isinstance(source, dict):
-            source_name = source.get("name") or "newsapi"
-        else:
-            source_name = str(source or "newsapi")
-        headline = getattr(article, "title", None) or getattr(article, "description", "")
-        if not headline:
+    seen: set[str] = set()
+
+    def _add(items: Iterable[NewsItem]) -> None:
+        for it in items:
+            key = it.headline.lower().strip()[:120]
+            if key in seen or not key:
+                continue
+            seen.add(key)
+            out.append(it)
+            if len(out) >= limit:
+                break
+
+    if os.getenv("TAVILY_API_KEY", "").strip():
+        try:
+            _add(fetch_tavily_items(query=query, limit=limit))
+        except Exception as exc:
+            logger.warning("news_signal tavily fetch failed: %s", exc)
+
+    if len(out) < limit and os.getenv("NEWSAPI_API_KEY", "").strip():
+        try:
+            from agents.connectors.news import News
+            news = News()
+            articles = news.get_articles_for_cli_keywords(query)
+            newsapi_items: list[NewsItem] = []
+            for article in articles[: limit]:
+                source = getattr(article, "source", None)
+                if isinstance(source, dict):
+                    source_name = source.get("name") or "newsapi"
+                else:
+                    source_name = str(source or "newsapi")
+                headline = getattr(article, "title", None) or getattr(article, "description", "")
+                if not headline:
+                    continue
+                newsapi_items.append(NewsItem(
+                    headline=headline,
+                    source=source_name,
+                    url=getattr(article, "url", "") or "",
+                    published_at=str(getattr(article, "publishedAt", "") or ""),
+                ))
+            _add(newsapi_items)
+        except Exception as exc:
+            logger.warning("news_signal newsapi fetch failed: %s", exc)
+
+    if len(out) < limit:
+        _add(fetch_rss_items(limit=limit - len(out)))
+
+    return out
+
+
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
+
+def fetch_tavily_items(query: str, limit: int = 10) -> list[NewsItem]:
+    """Fetch search results from Tavily as ``NewsItem``s.
+
+    Tavily POST /search returns ``{"results": [{title, url, content,
+    published_date, ...}]}``. Requires ``TAVILY_API_KEY``. Returns
+    [] silently on missing key (caller checks first) or on any
+    network/parse failure with a warning logged.
+    """
+    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+    if not api_key:
+        return []
+    payload = json.dumps({
+        "api_key": api_key,
+        "query": query,
+        "max_results": min(max(1, limit), 20),
+        "search_depth": "basic",
+        "topic": "news",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        TAVILY_SEARCH_URL,
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "poly1-news-signal"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+    except Exception as exc:
+        logger.warning("tavily fetch failed: %s", exc)
+        return []
+    raw_results = body.get("results") or []
+    out: list[NewsItem] = []
+    for r in raw_results[:limit]:
+        title = (r.get("title") or "").strip()
+        if not title:
             continue
         out.append(NewsItem(
-            headline=headline,
-            source=source_name,
-            url=getattr(article, "url", "") or "",
-            published_at=str(getattr(article, "publishedAt", "") or ""),
+            headline=title,
+            source="tavily",
+            url=(r.get("url") or "").strip(),
+            published_at=(r.get("published_date") or "").strip(),
         ))
     return out
 
