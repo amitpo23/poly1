@@ -2,7 +2,26 @@
 
 Date: 2026-05-09
 
-## Latest changes (2026-05-10 end-of-day, full sweep)
+## Latest changes (2026-05-10 evening, manual_entry + momentum)
+
+**Two more pieces shipped today:**
+
+1. **Manual entry CLI** (`e328042`) — `scripts/python/manual_entry.py`
+   for user-driven directional bets ($2.50/trade, +20% TP, optional
+   no-SL). position_manager now supports per-position `tp_pct_override`
+   via response_json on the filled row. Algorithmic agents inherit
+   the brain's compound exit logic unchanged.
+
+2. **Momentum backtest verdict** (`cf4f1fb`) — chase the BTC move
+   instead of fading it. WR 30.4% / 33.3% / n=0 across 3×30d windows.
+   **Fails the gate.** No agent built. Harness stays for re-runs.
+
+End-of-day strategy-test count: **4 candidates today (nothing_happens,
+#5, #9, momentum), 0 pass.** Plus yesterday's scalper (0/19) and
+mean_reversion (structurally broken). btc_daily remains the only
+strategy with backtest evidence.
+
+## Earlier changes (2026-05-10 afternoon, full sweep)
 
 **3 strategies tested today via new data-api harness; 0/3 pass the
 55% WR + stability gate.**

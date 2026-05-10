@@ -37,7 +37,7 @@
 - **position_manager** every 60s — TP/SL/timeout checks for any
   open btc_daily / scalper positions.
 
-## Today's 3 commits + headline finding
+## Today's 8 commits + headline finding
 
 | commit | what |
 |---|---|
@@ -45,16 +45,37 @@
 | `001f849` | scout cron (Tavily + Gamma scan) |
 | `62ca40e` | code-review fixes + nothing_happens backtest harness |
 | `73b4202` | session docs + #5/#9 strategy backtests |
+| `438e3c8` | handoff doc |
+| `b2c7f96` | date attribution fix |
+| `e328042` | manual entry CLI + per-position TP override |
+| `cf4f1fb` | momentum backtest verdict (no agent built) |
 
-**Headline:** 3 strategies tested via the new data-api harness today
-(nothing_happens, #5 Resolution Drift, #9 Range-Bound). **0/3 pass**
-the user's 55% WR + stability gate.
+**Headline:** 4 strategies tested via the new data-api harness today.
+**0/4 pass** the user's 55% WR + stability gate.
 
 | strategy | 0-30d | 30-60d | 60-90d | verdict |
 |---|---|---|---|---|
 | nothing_happens | 32.4% / +$8 | 4.5% / -$3.9 | 12.5% / -$14 | regime-dep ❌ |
 | #5 Resolution Drift | n=0 | n=0 | n=1 | inconclusive |
 | #9 Range-Bound | 22% / -$40 | 20% / -$64 | 24% / -$97 | broken ❌ |
+| BTC daily momentum chase | 30.4% / -$1.2 | 33.3% / -$0.8 | n=0 (gap) | fails ❌ |
+
+## Manual entry capability (new today)
+
+`scripts/python/manual_entry.py` lets the operator place directional
+bets on any Polymarket slug with auto-exit at +X% TP. Used for
+user-conviction trades that don't fit any backtested algorithmic
+strategy. Backtest gates apply only to AUTO-firing agents; manual
+trades are the operator's explicit risk.
+
+```
+docker exec poly1-position-manager python /app/scripts/python/manual_entry.py \
+  --slug <slug> --side YES|NO --size-usdc 2.5 --tp-pct 0.20 [--no-sl] --execute
+```
+
+position_manager handles auto-exit via `tp_pct_override` field on
+response_json. No trades placed via this tool yet today; ready for
+operator use.
 
 ## Critical thing the next agent should know
 

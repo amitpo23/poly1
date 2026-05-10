@@ -250,11 +250,72 @@ The Phase B price_snapshots table starts collecting from now on. In
 found. That data could potentially be used to backtest with looser
 slippage assumptions or different exit rules.
 
+## Late-afternoon additions (commits `e328042` + `cf4f1fb`)
+
+### Manual entry tool (`e328042`)
+
+User asked for a way to take directional bets ("BTC up in 90d", "oil
+down in 90d") at $2.50/trade with auto-exit at +20% TP. None of our
+algorithmic strategies do directional momentum — all fade. Backtest
+gates apply only to ALGORITHMIC agents; manual user-conviction
+trades are a separate code path with explicit operator approval.
+
+Built:
+- `position_manager.AggregatedPosition.tp_pct_override` + `no_sl`
+  fields. Populated from response_json on the originating filled
+  row. When set, _evaluate_position uses simple TP-only rule and
+  bypasses the brain's compound exit logic.
+- `trade_log.filled_positions_with_id` extended to include
+  response_json so the aggregator can read overrides.
+- `scripts/python/manual_entry.py` — CLI:
+  ```
+  --slug X --side YES|NO --size-usdc 2.5 --tp-pct 0.20 [--no-sl] --execute
+  ```
+  Resolves Gamma slug → token_ids, fetches best_ask, places FOK BUY,
+  writes filled row with overrides.
+
+Verified dryrun on `will-wti-reach-110-in-may-2026-116-472` NO at
+0.5950 → +20% TP exit at 0.7140.
+
+### Momentum backtest (`cf4f1fb`)
+
+User wanted a momentum agent (chase BTC trend) but agreed to
+backtest first per discipline. Built `backtest_btc_momentum.py`:
+
+| Window | n | WR | PnL/$ |
+|---|---|---|---|
+| 0-30d | 23 | 30.4% | -$1.20 |
+| 30-60d | 21 | 33.3% | -$0.81 |
+| 60-90d | 0 | n/a (Gamma gap) | $0 |
+
+**Verdict:** 0/3 windows pass. Momentum on BTC daily fails decisively
+(30-33% WR, both windows lose money after 2% slippage on TP/SL exits).
+**No momentum agent built.** Harness stays in repo.
+
+This brings today's strategy-test count to **4 candidates, 0 pass:**
+nothing_happens, #5 Resolution Drift (inconclusive), #9 Range-Bound,
+momentum. Plus yesterday's scalper sweep (0/19) and mean_reversion
+(structurally broken).
+
+## End-of-day summary commits
+
+| commit | what |
+|---|---|
+| `ab041d1` | Phase A — wins/losses/WR + cash-PnL |
+| `001f849` | Scout S1-S3 |
+| `62ca40e` | Code review fixes + nothing_happens backtest |
+| `73b4202` | Final docs + #5/#9 backtests |
+| `438e3c8` | Handoff doc |
+| `b2c7f96` | Date attribution fix |
+| `e328042` | Manual entry + per-position TP |
+| `cf4f1fb` | Momentum backtest (no agent built) |
+
 ## Open follow-ups
 
 | # | Item | Notes |
 |---|---|---|
-| – | btc_daily strategy-PnL trend | Watch for 30+ live trades. Cash-WR vs strategy-WR divergence is a real concern |
+| – | btc_daily strategy-PnL trend | Watch for 30+ live trades. Cash-WR vs strategy-WR divergence is a real concern. Last trade was 2026-05-08; 2 days idle since. |
+| – | First manual_entry execution | User has $2.50/trade ready; pending operator command via CLI |
 | – | Strategy #5 with looser filter | Quick re-run with (0.52-0.98) entry band; ~30min |
 | – | Strategy #6 Correlated Pairs | Not built. Needs cross-market price data. ~3-4h harness build |
 | – | Strategy #7 Whale Tracking | Not built. Needs Polygon RPC scraping. ~1-2 days |
