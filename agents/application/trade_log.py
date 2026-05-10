@@ -71,6 +71,29 @@ CREATE TABLE IF NOT EXISTS news_signals (
 CREATE INDEX IF NOT EXISTS idx_news_signals_ts ON news_signals(ts);
 CREATE INDEX IF NOT EXISTS idx_news_signals_market_ts ON news_signals(market_id, ts);
 CREATE INDEX IF NOT EXISTS idx_news_signals_status_ts ON news_signals(status, ts);
+
+CREATE TABLE IF NOT EXISTS brain_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    decision_type TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    token_id TEXT,
+    approved INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    score REAL NOT NULL,
+    market_type TEXT,
+    asset TEXT,
+    features_json TEXT,
+    action TEXT,
+    outcome_status TEXT,
+    outcome_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_ts ON brain_decisions(ts);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_agent_ts ON brain_decisions(agent, ts);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_market_ts ON brain_decisions(market_id, ts);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_reason_ts ON brain_decisions(reason, ts);
 """
 
 
@@ -83,6 +106,15 @@ SKIPPED_DEDUPE = "skipped_dedupe"
 SKIPPED_GATE = "skipped_gate"
 SKIPPED_DRY_RUN = "skipped_dry_run"
 SCALPER_LEG = "scalper_leg"
+SCALPER_EXIT = "scalper_exit"
+BTC_DAILY_OPEN = "btc_daily_open"
+# Resolution-sync statuses (added 2026-05-08): written when a Polymarket
+# market resolves and on-chain CTF balance hits dust on a token we held.
+# Realized P&L is recorded in `size_usdc` as the payout (shares × $1 if won,
+# 0 if lost). Used by allocator to feed actual outcomes into agent scoring.
+RESOLVED_YES = "resolved_yes"
+RESOLVED_NO = "resolved_no"
+RESOLVED_LOSS = "resolved_loss"  # token resolved against us, payout = 0
 
 # Statuses that block re-trading the same market within the dedupe window.
 TIME_BOUNDED_ACTIVE_STATUSES = (PENDING, SUBMITTED, FILLED)
@@ -120,6 +152,23 @@ class TradeLog:
 
     def new_cycle_id(self) -> str:
         return str(uuid.uuid4())
+
+    def has_filled_position_for_market(self, market_id: str) -> bool:
+        """Return True if poly1 main has any FILLED row for this market,
+        regardless of age. Used to block 'averaging down' — if the LLM
+        already opened a position on this market and the market then
+        moved against us, we don't want to double the bet by reopening
+        when the dedupe window expires. We'd only want to reopen after
+        an exit (which currently doesn't exist — `maintain_positions`
+        is a stub). Once exit logic lands, this check should also
+        consult position state, not just journal rows.
+        """
+        sql = (
+            "SELECT 1 FROM trades WHERE market_id = ? AND status = ? LIMIT 1"
+        )
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, (str(market_id), FILLED)).fetchone()
+            return row is not None
 
     def has_active_trade_for_market(self, market_id: str, hours: int = 6) -> bool:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -238,6 +287,49 @@ class TradeLog:
             row = conn.execute(sql, (*statuses, cutoff)).fetchone()
             return int(row["n"])
 
+    def filled_positions_with_id(self) -> list:
+        """Like filled_positions() but includes id, ts, and response_json.
+        Used by position_manager to aggregate fills + read per-position
+        overrides (e.g. tp_pct_override on manual entries)."""
+        open_statuses = (FILLED, BTC_DAILY_OPEN)
+        placeholders = ",".join("?" for _ in open_statuses)
+        sql = (
+            "SELECT id, ts, market_id, token_id, side, price, size_usdc, "
+            "status, response_json "
+            f"FROM trades WHERE status IN ({placeholders}) AND token_id IS NOT NULL "
+            "AND token_id != '' "
+            "AND (error IS NULL OR error NOT LIKE 'SHADOW%') "
+            "ORDER BY id"
+        )
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, open_statuses).fetchall()
+            return [dict(r) for r in rows]
+
+    def has_close_attempt_for_token(self, token_id: str) -> bool:
+        """Return True if a LIVE successful closed_* row exists for this
+        token. Used by position_manager to avoid double-closing the same
+        position across daemon cycles or restarts.
+
+        Shadow rows (error LIKE 'SHADOW%') are excluded — paper decisions
+        shouldn't block a real execution after the operator flips to live.
+
+        `close_failed` rows are also excluded — those are FAILED close
+        attempts (allowance issue, balance issue, etc.) and the engine
+        should retry on the next cycle. The retry rate is bounded by
+        `MAINTAIN_POLL_SEC` (60s default).
+        """
+        sql = (
+            "SELECT 1 FROM trades WHERE token_id = ? "
+            "AND status IN ('closed_take_profit','closed_stop_loss',"
+            "'closed_timeout','closed_dust',"
+            "'resolved_yes','resolved_no','resolved_loss') "
+            "AND (error IS NULL OR error NOT LIKE 'SHADOW%') "
+            "LIMIT 1"
+        )
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, (str(token_id),)).fetchone()
+            return row is not None
+
     def filled_positions(self) -> list:
         """Return one row per filled trade with token_id present.
 
@@ -339,3 +431,63 @@ class TradeLog:
                 "SELECT * FROM news_signals ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def insert_brain_decision(
+        self,
+        agent: str,
+        strategy: str,
+        decision_type: str,
+        market_id: str,
+        approved: bool,
+        reason: str,
+        score: float,
+        token_id: Optional[str] = None,
+        market_type: Optional[str] = None,
+        asset: Optional[str] = None,
+        features: Optional[dict] = None,
+        action: Optional[str] = None,
+    ) -> int:
+        features_json = json.dumps(features, default=str) if features is not None else None
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO brain_decisions (ts, agent, strategy, decision_type, "
+                "market_id, token_id, approved, reason, score, market_type, asset, "
+                "features_json, action) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    _now(),
+                    agent,
+                    strategy,
+                    decision_type,
+                    str(market_id),
+                    token_id,
+                    1 if approved else 0,
+                    reason,
+                    float(score),
+                    market_type,
+                    asset,
+                    features_json,
+                    action,
+                ),
+            )
+            return cur.lastrowid
+
+    def recent_brain_decisions(self, limit: int = 50) -> list:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM brain_decisions ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_brain_decision_outcome(
+        self,
+        decision_id: int,
+        outcome_status: str,
+        outcome: Optional[dict] = None,
+    ) -> None:
+        outcome_json = json.dumps(outcome, default=str) if outcome is not None else None
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE brain_decisions SET outcome_status = ?, outcome_json = ? "
+                "WHERE id = ?",
+                (outcome_status, outcome_json, int(decision_id)),
+            )

@@ -121,6 +121,12 @@ class AggregatedPosition:
     avg_entry_price: float  # the price at which we bought *this token*
     earliest_ts: float       # unix seconds — for max_hold check
     journal_row_ids: list[int] = field(default_factory=list)
+    # Manual-entry overrides — encoded in response_json on the originating
+    # filled row (`tp_pct_override`, `no_sl`). When present, position_manager
+    # bypasses the brain's compound-exit logic and uses a simple TP-only
+    # rule. None means "use global config / brain".
+    tp_pct_override: Optional[float] = None
+    no_sl: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +219,7 @@ class PositionManager:
 
     def _aggregate_open_positions(self) -> list[AggregatedPosition]:
         """Collapse open journal rows on the same token into one position."""
+        import json as _json
         rows = self.trade_log.filled_positions_with_id()
         by_token: dict[str, AggregatedPosition] = {}
         for r in rows:
@@ -235,6 +242,22 @@ class PositionManager:
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
             except Exception:
                 ts = time.time()
+            # Per-position overrides via response_json. Manual entries set
+            # these; algorithmic entries leave them None and inherit the
+            # global config / brain logic.
+            tp_override: Optional[float] = None
+            no_sl_flag = False
+            rj = r.get("response_json")
+            if rj:
+                try:
+                    payload = _json.loads(rj) if isinstance(rj, str) else rj
+                    if isinstance(payload, dict):
+                        if payload.get("tp_pct_override") is not None:
+                            tp_override = float(payload["tp_pct_override"])
+                        if payload.get("no_sl"):
+                            no_sl_flag = True
+                except (TypeError, ValueError, _json.JSONDecodeError):
+                    pass
             existing = by_token.get(tok)
             if existing is None:
                 by_token[tok] = AggregatedPosition(
@@ -246,6 +269,8 @@ class PositionManager:
                     avg_entry_price=entry,
                     earliest_ts=ts,
                     journal_row_ids=[r.get("id")] if r.get("id") else [],
+                    tp_pct_override=tp_override,
+                    no_sl=no_sl_flag,
                 )
             else:
                 # Weighted-average entry price across all fills on this token.
@@ -259,6 +284,11 @@ class PositionManager:
                 existing.earliest_ts = min(existing.earliest_ts, ts)
                 if r.get("id"):
                     existing.journal_row_ids.append(r.get("id"))
+                # Preserve any override from any fill on this token.
+                if tp_override is not None and existing.tp_pct_override is None:
+                    existing.tp_pct_override = tp_override
+                if no_sl_flag:
+                    existing.no_sl = True
         return list(by_token.values())
 
     # ----------------------------------------------------------- evaluate
@@ -280,6 +310,19 @@ class PositionManager:
         prior_peak = self._max_price_by_token.get(pos.token_id, pos.avg_entry_price)
         peak = max(prior_peak, mid)
         self._max_price_by_token[pos.token_id] = peak
+
+        # Per-position TP override (set by manual_entry.py): bypass the
+        # brain's compound exit logic. This is a deliberately simple
+        # "exit at +X% from entry" — no trailing stop, no momentum, no
+        # max-hold. SL is honored unless explicitly disabled by `no_sl`.
+        if pos.tp_pct_override is not None:
+            gain_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
+            if gain_pct >= pos.tp_pct_override:
+                return ("take_profit", mid)
+            if not pos.no_sl and gain_pct <= -self.cfg.stop_loss_pct:
+                return ("stop_loss", mid)
+            return (None, mid)
+
         decision = self.brain.evaluate_exit(
             ExitPosition(
                 market_id=pos.market_id,
