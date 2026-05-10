@@ -176,11 +176,87 @@ sqlite3 ~/coding/poly1/data/trade_log.db "
 # Expected: 0.12 / 0.4146 / -0.096
 ```
 
+## Final session results (added end-of-day 2026-05-10)
+
+### Step 4 verdict — nothing_happens fails the gate (committed `62ca40e`)
+
+The harness uses `data-api.polymarket.com/trades` (paginated). This was
+the breakthrough that let us get history for political markets where
+CLOB `/prices-history` returns 0 samples.
+
+| Window | n | WR | PnL/$ |
+|---|---|---|---|
+| 0-30d | 34 | 32.4% | +$8.06 |
+| 30-60d | 22 | 4.5% | -$3.89 |
+| 60-90d | 40 | 12.5% | -$13.92 |
+
+The 0-30d window matches the agent's docstring claim (33% WR with
+positive EV from R/R asymmetry). But 30-60d and 60-90d are
+catastrophic. **Regime-dependent strategy** — won't pass user's gate
+of ≥55% WR with stability across 3×30d windows. Net 90-day PnL: -$9.75.
+
+**Decision:** nothing_happens stays in dryrun.
+
+### Bonus: strategy #5 (Resolution Drift) and #9 (Range-Bound) — also fail
+
+Built `scripts/python/backtest_strategy_5_9.py` to test the two
+unimplemented strategies from the 10-strategies design doc:
+
+| Strategy | Window | n | WR | PnL/$ | Verdict |
+|---|---|---|---|---|---|
+| #5 Resolution Drift | 0-30d | 0 | n/a | $0 | filter too narrow — inconclusive |
+| #5 | 30-60d | 0 | n/a | $0 | (same) |
+| #5 | 60-90d | 1 | 100% | +$0.06 | n=1, noise |
+| **#9 Range-Bound** | 0-30d | 1496 | **21.9%** | **-$39.84** | ❌ |
+| **#9** | 30-60d | 2222 | **20.2%** | **-$64.12** | ❌ |
+| **#9** | 60-90d | 4188 | **23.7%** | **-$96.54** | ❌ |
+
+**Strategy #9 fails decisively:** 7906 trades, 22% WR, -$200 PnL.
+Range-bound mean reversion at TP=0.50 / SL=0.40 with 2% slippage
+needs ~50% WR to break even; observed is 22%. Not viable.
+
+**Strategy #5 was inconclusive** — only n=1 across 300 markets. The
+0.55-0.95 entry band is too narrow. Could be retried with looser
+filter (0.52-0.98) but priors suggest still fails.
+
+### Code review fixes (committed `62ca40e`)
+
+3 correctness bugs caught by `feature-dev:code-reviewer` agent before
+the commit landed:
+- `scout._persist`: was using `conn.total_changes` (cumulative since
+  conn open) → switched to `cur.rowcount` (per-statement). Without
+  this, all post-first-insert calls reported True, inflating
+  insertion counts.
+- `scout._filter_mean_reversion`: missing the `days_to_end is None`
+  guard the other filters had → could crash mid-loop on malformed
+  Gamma data + the `reason` f-string had `cand.get('days_to_end',
+  0):.1f` which fails on None (key present, value None). Added guard
+  + made all numeric formatters use `(x or 0)`.
+- `state_watcher`: top_candidate fields could be None per scout.db
+  schema; crash in `_diff` would loop watcher every cron tick AND
+  silence other alerts. Added isinstance + or-fallback.
+
+### Combined verdict end of day
+
+Three strategies tested today via the new data-api harness; **0/3
+pass the gate**. btc_daily remains the only proven strategy.
+
+The scout + state_watcher infrastructure is durable and useful even
+without a winning second strategy — operator gets surfaced
+opportunities instead of needing to manually check.
+
+The Phase B price_snapshots table starts collecting from now on. In
+~30 days we'll have our own time-series for the candidates the scout
+found. That data could potentially be used to backtest with looser
+slippage assumptions or different exit rules.
+
 ## Open follow-ups
 
 | # | Item | Notes |
 |---|---|---|
-| – | Scout step 1-5 | This plan; estimated 6-8h |
 | – | btc_daily strategy-PnL trend | Watch for 30+ live trades. Cash-WR vs strategy-WR divergence is a real concern |
+| – | Strategy #5 with looser filter | Quick re-run with (0.52-0.98) entry band; ~30min |
+| – | Strategy #6 Correlated Pairs | Not built. Needs cross-market price data. ~3-4h harness build |
+| – | Strategy #7 Whale Tracking | Not built. Needs Polygon RPC scraping. ~1-2 days |
 | – | 53 unpushed commits + many untracked core files | The repo is in "lots of work, not committed" state. Cleanup is its own task |
 | – | Vault sync to iCloud/Dropbox | Knowledge-store, not code; git not appropriate |

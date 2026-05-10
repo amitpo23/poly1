@@ -2,7 +2,41 @@
 
 Date: 2026-05-09
 
-## Latest changes (2026-05-10, Phase A + Scout plan)
+## Latest changes (2026-05-10 end-of-day, full sweep)
+
+**3 strategies tested today via new data-api harness; 0/3 pass the
+55% WR + stability gate.**
+
+| strategy | 0-30d WR | 30-60d WR | 60-90d WR | verdict |
+|---|---|---|---|---|
+| nothing_happens | 32.4% | 4.5% | 12.5% | regime-dependent ❌ |
+| #5 Resolution Drift | n=0 | n=0 | n=1 | inconclusive (filter too tight) |
+| #9 Range-Bound | 21.9% | 20.2% | 23.7% | structurally broken ❌ |
+
+**Discovery:** CLOB `/prices-history` returns 0 samples for high-
+volume political markets. `data-api.polymarket.com/trades?market=
+<conditionId>` returns full paginated trade history for any market.
+This unlocked nothing_happens + #9 backtests; would also support any
+future per-market backtest.
+
+**Commits today:**
+- `ab041d1` — Phase A: WR infrastructure (wins/losses/win_rate +
+  pnl_usdc_real on closed_*)
+- `001f849` — Scout S1-S3: Tavily integration, hourly cron,
+  watcher alerts
+- `62ca40e` — Code review fixes (3 bugs caught) + nothing_happens
+  backtest harness
+
+**Cron jobs running:**
+- `1590c7bb` — state_watcher at :17/:47 (silent unless change)
+- `131149fb` — scout at :23 (writes opportunities + price_snapshots)
+
+**Decision:** btc_daily stays the only LIVE strategy. swarm stays
+DRYRUN. Scout continues surfacing candidates for human review.
+Phase B price_snapshots table starts collecting from today; can be
+used for follow-up backtests in ~30 days.
+
+## Earlier (2026-05-10 morning, Phase A + Scout plan)
 
 **Committed `ab041d1`:** WR infrastructure for `CapitalAllocator`.
 - AgentScore now tracks `wins`/`losses`/`win_rate`
