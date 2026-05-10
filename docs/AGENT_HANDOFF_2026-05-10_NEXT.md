@@ -58,10 +58,15 @@ the user's 55% WR + stability gate.
 
 ## Critical thing the next agent should know
 
-**btc_daily yesterday: cash-PnL +$0.44 BUT strategy-PnL -$2.63** on
-3 closes. The +$0.44 came from dust monetization (8.13/9.68 shares
-sold per close even though only 6 were paid for per open). The
-60.7% backtest WR may overstate the actual edge.
+**btc_daily on 2026-05-08 (last day it traded): cash-PnL +$0.44 BUT
+strategy-PnL -$2.63** on 3 closes. The +$0.44 came from dust
+monetization (8.13/9.68 shares sold per close even though only 6
+were paid for per open). The 60.7% backtest WR may overstate the
+actual edge.
+
+**2026-05-09 and 2026-05-10: 0 btc_daily trades.** The market both
+days had one side too cheap (NO < 0.30 floor) — bot correctly skipped.
+The 60+ hour silence is the strategy working as designed, not broken.
 
 **Action:** wait for 30+ live btc_daily trades. Watch
 `strategy_pnl_usdc` field on closed_* rows (added today via A1
