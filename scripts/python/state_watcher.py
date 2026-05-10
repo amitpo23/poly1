@@ -237,11 +237,19 @@ def _diff(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     if new_opportunities > 0:
         top = nsc.get("top_candidate") or {}
         if top:
-            news_str = f" news={top.get('news')[:50]!r}" if top.get("news") else ""
+            # Defensive: any of these may be NULL in scout.db (schema allows
+            # NULL for prices). A crash here would break the watcher loop and
+            # silently swallow alerts on subsequent cycles since the snapshot
+            # never gets updated.
+            slug = (top.get("slug") or "")[:50]
+            no_price = top.get("no_price")
+            no_str = f"{no_price:.3f}" if isinstance(no_price, (int, float)) else "n/a"
+            news = top.get("news")
+            news_str = f" news={news[:50]!r}" if news else ""
             alerts.append(
                 f"🔎 scout: +{new_opportunities} opportunity(ies). "
-                f"top: {top.get('strategy')} on {top.get('slug')[:50]} "
-                f"(NO={top.get('no_price'):.3f} score={top.get('score')}){news_str}"
+                f"top: {top.get('strategy', '?')} on {slug} "
+                f"(NO={no_str} score={top.get('score', '?')}){news_str}"
             )
         else:
             alerts.append(f"🔎 scout: +{new_opportunities} opportunity(ies)")

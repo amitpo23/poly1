@@ -84,6 +84,24 @@ CREATE INDEX IF NOT EXISTS ix_scout_ts ON scout_opportunities(ts);
 CREATE INDEX IF NOT EXISTS ix_scout_strategy ON scout_opportunities(strategy_match, ts);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_scout_dedupe
     ON scout_opportunities(market_slug, strategy_match, date(ts));
+
+-- Phase B (forward data collector): every scout cycle records the
+-- current price for every candidate that passed filters, so after
+-- N days we have our own time-series for resolved markets — bypassing
+-- CLOB's missing price-history on speculative political markets.
+CREATE TABLE IF NOT EXISTS price_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    market_slug TEXT NOT NULL,
+    market_id TEXT,
+    yes_price REAL,
+    no_price REAL,
+    spread_cents REAL,
+    volume_24h REAL,
+    liquidity REAL
+);
+CREATE INDEX IF NOT EXISTS ix_snap_slug_ts ON price_snapshots(market_slug, ts);
+CREATE INDEX IF NOT EXISTS ix_snap_ts ON price_snapshots(ts);
 """
 
 
@@ -202,6 +220,10 @@ def _filter_mean_reversion(b: dict) -> Optional[float]:
         return None
     if b["vol24"] < 5_000:
         return None
+    # Reject markets without parseable end date — downstream `reason` f-string
+    # uses days_to_end with `:.1f` formatting which crashes on None.
+    if b["days_to_end"] is None or b["days_to_end"] < 0:
+        return None
     proximity = 1.0 - 2 * abs(b["yes_price"] - 0.5)
     vol_score = min(1.0, b["vol24"] / 50_000)
     return round(0.6 * proximity + 0.4 * vol_score, 3)
@@ -264,8 +286,14 @@ def _open_db(db_path: str) -> sqlite3.Connection:
 
 
 def _persist(conn: sqlite3.Connection, row: dict) -> bool:
+    """Insert opportunity; True if a new row was actually inserted (not deduped).
+
+    NOTE: ``conn.total_changes`` is cumulative since connection open — using
+    it here would report True on every call after the first successful insert.
+    Use ``cursor.rowcount`` instead, which is per-statement.
+    """
     try:
-        conn.execute(
+        cur = conn.execute(
             """
             INSERT OR IGNORE INTO scout_opportunities
                 (ts, market_slug, market_id, strategy_match, score,
@@ -285,7 +313,7 @@ def _persist(conn: sqlite3.Connection, row: dict) -> bool:
                 row.get("reason"),
             ),
         )
-        return conn.total_changes > 0
+        return cur.rowcount > 0
     except sqlite3.Error as exc:
         logger.warning("scout persist failed for %s/%s: %s", row.get("slug"), row.get("strategy"), exc)
         return False
@@ -318,8 +346,32 @@ def run_once(db_path: str, *, max_markets: int = 500, news_top_n: int = 10) -> d
 
     conn = _open_db(db_path)
     inserted = 0
+    snapshots = 0
     enriched = 0
     by_strategy: dict[str, int] = {}
+
+    # Phase B: snapshot the price for every candidate that passed filters,
+    # deduped by slug (candidates can match multiple strategies).
+    seen_slugs: set[str] = set()
+    for cand in candidates:
+        if cand["slug"] in seen_slugs:
+            continue
+        seen_slugs.add(cand["slug"])
+        try:
+            conn.execute(
+                """
+                INSERT INTO price_snapshots
+                    (ts, market_slug, market_id, yes_price, no_price,
+                     spread_cents, volume_24h, liquidity)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (cand["ts"], cand["slug"], cand.get("market_id"),
+                 cand.get("yes_price"), cand.get("no_price"), cand.get("spread"),
+                 cand.get("vol24"), cand.get("liquidity")),
+            )
+            snapshots += 1
+        except sqlite3.Error as exc:
+            logger.warning("snapshot insert failed for %s: %s", cand.get("slug"), exc)
 
     for cand in candidates:
         # Tavily news enrichment for top N candidates
@@ -336,10 +388,14 @@ def run_once(db_path: str, *, max_markets: int = 500, news_top_n: int = 10) -> d
             # Bump score by news count (more discussion → potentially more mispriced)
             cand["score"] = round(cand["score"] + 0.05 * min(news_count, 3), 3)
 
+        # Defensive formatting — every numeric could be None if Gamma returned
+        # malformed data. `.get(key, 0)` doesn't help when the key IS present
+        # with value None; explicit `or 0` does.
+        days_str = f"{(cand.get('days_to_end') or 0):.1f}"
         cand["reason"] = (
-            f"strategy={cand['strategy']} no={cand['no_price']:.3f} "
-            f"yes={cand['yes_price']:.3f} vol24=${cand['vol24']:,.0f} "
-            f"liq=${cand['liquidity']:,.0f} days_to_end={cand.get('days_to_end', 0):.1f}"
+            f"strategy={cand['strategy']} no={(cand.get('no_price') or 0):.3f} "
+            f"yes={(cand.get('yes_price') or 0):.3f} vol24=${(cand.get('vol24') or 0):,.0f} "
+            f"liq=${(cand.get('liquidity') or 0):,.0f} days_to_end={days_str}"
         )
         if _persist(conn, cand):
             inserted += 1
@@ -352,6 +408,7 @@ def run_once(db_path: str, *, max_markets: int = 500, news_top_n: int = 10) -> d
         "candidates_passed_filters": len(candidates),
         "enriched_with_news": enriched,
         "inserted_new": inserted,
+        "price_snapshots_written": snapshots,
         "by_strategy": by_strategy,
     }
 
