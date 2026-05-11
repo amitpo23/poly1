@@ -111,6 +111,26 @@ CREATE TABLE IF NOT EXISTS decision_reflections (
 CREATE INDEX IF NOT EXISTS idx_decision_reflections_ts ON decision_reflections(ts);
 CREATE INDEX IF NOT EXISTS idx_decision_reflections_agent_ts ON decision_reflections(agent, ts);
 CREATE INDEX IF NOT EXISTS idx_decision_reflections_market_ts ON decision_reflections(market_id, ts);
+
+CREATE TABLE IF NOT EXISTS wallet_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    wallet_address TEXT NOT NULL,
+    wallet_profit_usdc REAL,
+    wallet_trades_30d INTEGER,
+    market_id TEXT NOT NULL,
+    market_question TEXT,
+    direction TEXT NOT NULL,
+    token_id TEXT,
+    yes_price REAL,
+    wallet_entry_price REAL,
+    wallet_size_usdc REAL,
+    status TEXT NOT NULL DEFAULT 'fresh'
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_signals_ts ON wallet_signals(ts);
+CREATE INDEX IF NOT EXISTS idx_wallet_signals_market ON wallet_signals(market_id, ts);
+CREATE INDEX IF NOT EXISTS idx_wallet_signals_status_ts ON wallet_signals(status, ts);
+CREATE INDEX IF NOT EXISTS idx_wallet_signals_wallet_ts ON wallet_signals(wallet_address, ts);
 """
 
 
@@ -127,6 +147,7 @@ SCALPER_EXIT = "scalper_exit"
 BTC_DAILY_OPEN = "btc_daily_open"
 NEAR_RESOLUTION_OPEN = "near_resolution_open"
 NEWS_SHOCK_OPEN = "news_shock_open"
+WALLET_FOLLOW_OPEN = "wallet_follow_open"
 # Resolution-sync statuses (added 2026-05-08): written when a Polymarket
 # market resolves and on-chain CTF balance hits dust on a token we held.
 # Realized P&L is recorded in `size_usdc` as the payout (shares × $1 if won,
@@ -329,7 +350,7 @@ class TradeLog:
         """Like filled_positions() but includes id, ts, and response_json.
         Used by position_manager to aggregate fills + read per-position
         overrides (e.g. tp_pct_override on manual entries)."""
-        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN)
+        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN)
         placeholders = ",".join("?" for _ in open_statuses)
         sql = (
             "SELECT id, ts, market_id, token_id, side, price, size_usdc, "

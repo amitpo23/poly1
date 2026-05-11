@@ -53,6 +53,7 @@ class RiskGate:
         btc_daily_reserve_usdc: Optional[float] = None,
         near_resolution_reserve_usdc: Optional[float] = None,
         news_shock_reserve_usdc: Optional[float] = None,
+        wallet_follow_reserve_usdc: Optional[float] = None,
     ):
         self.trade_log = trade_log
         self.polymarket = polymarket
@@ -113,6 +114,10 @@ class RiskGate:
             "news_shock": (
                 news_shock_reserve_usdc if news_shock_reserve_usdc is not None
                 else _env_float("NEWS_SHOCK_RESERVE_USDC", 0.0)
+            ),
+            "wallet_follow": (
+                wallet_follow_reserve_usdc if wallet_follow_reserve_usdc is not None
+                else _env_float("WALLET_FOLLOW_RESERVE_USDC", 0.0)
             ),
         }
         self._mtm_cache_value: Optional[float] = None

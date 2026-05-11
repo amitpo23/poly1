@@ -67,6 +67,7 @@ from agents.application.trade_log import (
     RESOLVED_NO,
     RESOLVED_YES,
     SCALPER_LEG,
+    WALLET_FOLLOW_OPEN,
     TradeLog,
 )
 
@@ -108,7 +109,7 @@ class ResolutionSync:
     only for tokens that look stranded.
     """
 
-    OPEN_STATUSES = (FILLED, BTC_DAILY_OPEN, SCALPER_LEG, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN)
+    OPEN_STATUSES = (FILLED, BTC_DAILY_OPEN, SCALPER_LEG, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN)
 
     def __init__(
         self,

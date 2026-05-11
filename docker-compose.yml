@@ -227,6 +227,62 @@ services:
     stop_grace_period: 30s
     profiles: ["news_shock"]
 
+  wallet-watcher:
+    build: .
+    image: poly1:local
+    container_name: poly1-wallet-watcher
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+    command: ["python", "-m", "agents.application.wallet_watcher"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/wallet_watcher_heartbeat') < 300"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["wallet"]
+
+  wallet-follow:
+    build: .
+    image: poly1:local
+    container_name: poly1-wallet-follow
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+    command: ["python", "-m", "agents.application.wallet_follow"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/wallet_follow_heartbeat') < 180"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["wallet"]
+
   grafana:
     image: grafana/grafana:10.4.2
     container_name: poly1-grafana

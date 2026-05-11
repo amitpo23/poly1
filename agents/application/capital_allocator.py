@@ -379,7 +379,7 @@ class CapitalAllocator:
                     s.decisions += 1
                     if status in {"skipped_gate", "skipped_dedupe"}:
                         s.vetoes += 1
-                elif status in {"filled", "submitted", "btc_daily_open", "scalper_leg", "near_resolution_open", "news_shock_open"}:
+                elif status in {"filled", "submitted", "btc_daily_open", "scalper_leg", "near_resolution_open", "news_shock_open", "wallet_follow_open"}:
                     s.entries += 1
                     s.deployed_usdc += size
                     if "SHADOW" in str(row["error"] or ""):
@@ -713,6 +713,8 @@ class CapitalAllocator:
             return "near_resolution"
         if status.startswith("news_shock"):
             return "news_shock"
+        if status.startswith("wallet_follow"):
+            return "wallet_follow"
         if status.startswith("closed_") or status == "close_failed":
             return "position_manager"
         return "trader"
