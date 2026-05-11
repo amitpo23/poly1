@@ -1,4 +1,5 @@
 from agents.application.executor import Executor as Agent
+from agents.application.retry import run_with_retries
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
 
@@ -19,7 +20,7 @@ class Creator:
         then executes that trade without any human intervention
 
         """
-        try:
+        def create_market():
             events = self.polymarket.get_all_tradeable_events()
             print(f"1. FOUND {len(events)} EVENTS")
 
@@ -38,9 +39,7 @@ class Creator:
             print(f"5. IDEA FOR NEW MARKET {best_market}")
             return best_market
 
-        except Exception as e:
-            print(f"Error {e} \n \n Retrying")
-            self.one_best_market()
+        return run_with_retries(create_market, operation_name="one_best_market")
 
     def maintain_positions(self):
         pass

@@ -1,4 +1,5 @@
 from agents.application.executor import Executor as Agent
+from agents.application.retry import run_with_retries
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
 
@@ -34,7 +35,7 @@ class Trader:
         then executes that trade without any human intervention
 
         """
-        try:
+        def execute_trade() -> None:
             self.pre_trade_logic()
 
             events = self.polymarket.get_all_tradeable_events()
@@ -59,10 +60,9 @@ class Trader:
             # Please refer to TOS before uncommenting: polymarket.com/tos
             # trade = self.polymarket.execute_market_order(market, amount)
             # print(f"6. TRADED {trade}")
+            return None
 
-        except Exception as e:
-            print(f"Error {e} \n \n Retrying")
-            self.one_best_trade()
+        return run_with_retries(execute_trade, operation_name="one_best_trade")
 
     def maintain_positions(self):
         pass
