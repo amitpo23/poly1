@@ -50,6 +50,7 @@ class RiskGate:
         llm_usage_file: Optional[str] = None,
         scalper_reserve_usdc: Optional[float] = None,
         swarm_reserve_usdc: Optional[float] = None,
+        btc_daily_reserve_usdc: Optional[float] = None,
     ):
         self.trade_log = trade_log
         self.polymarket = polymarket
@@ -98,6 +99,10 @@ class RiskGate:
             "swarm": (
                 swarm_reserve_usdc if swarm_reserve_usdc is not None
                 else _env_float("SWARM_RESERVE_USDC", 0.0)
+            ),
+            "btc_daily": (
+                btc_daily_reserve_usdc if btc_daily_reserve_usdc is not None
+                else _env_float("BTC_DAILY_RESERVE_USDC", 0.0)
             ),
         }
         self._mtm_cache_value: Optional[float] = None

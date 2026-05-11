@@ -17,6 +17,7 @@ from typing import Any
 _DB = os.getenv("TRADE_LOG_DB", "./data/trade_log.db")
 _LLM_FILE = os.getenv("LLM_USAGE_FILE", "./data/llm_usage.jsonl")
 _LOG_DIR = os.getenv("LOG_DIR", "./data/logs")
+_SCOUT_DB = os.getenv("SCOUT_DB", "./data/scout.db")
 _HALT_FILE = Path(os.getenv("KILL_SWITCH_FILE", "./data/HALT"))
 _HB_TRADER = Path(os.getenv("HEARTBEAT_PATH", "./data/heartbeat"))
 _HB_SCALPER = Path("./data/scalper_heartbeat")
@@ -26,8 +27,8 @@ _SWARM_DB = Path(os.path.expanduser(os.getenv(
 
 
 def _conn() -> sqlite3.Connection:
-    uri = f"file:{_DB}?mode=ro"
-    c = sqlite3.connect(uri, uri=True, check_same_thread=False)
+    db_path = Path(_DB).expanduser().resolve()
+    c = sqlite3.connect(str(db_path), check_same_thread=False)
     c.row_factory = sqlite3.Row
     return c
 
@@ -49,6 +50,22 @@ def _table_exists(name: str) -> bool:
     ))
 
 
+def _table_exists_in(path: str, name: str) -> bool:
+    db_path = Path(path).expanduser().resolve()
+    if not db_path.exists():
+        return False
+    uri = f"file:{db_path}?mode=ro&immutable=1"
+    try:
+        with contextlib.closing(sqlite3.connect(uri, uri=True)) as c:
+            row = c.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (name,),
+            ).fetchone()
+            return bool(row)
+    except sqlite3.Error:
+        return False
+
+
 def _swarm_conn() -> sqlite3.Connection:
     uri = f"file:{_SWARM_DB}?mode=ro&immutable=1"
     c = sqlite3.connect(uri, uri=True, check_same_thread=False)
@@ -59,8 +76,13 @@ def _swarm_conn() -> sqlite3.Connection:
 def _swarm_rows(sql: str, params: tuple = ()) -> list[dict]:
     if not _SWARM_DB.exists():
         return []
-    with contextlib.closing(_swarm_conn()) as c:
-        return [dict(r) for r in c.execute(sql, params).fetchall()]
+    try:
+        with contextlib.closing(_swarm_conn()) as c:
+            return [dict(r) for r in c.execute(sql, params).fetchall()]
+    except sqlite3.Error:
+        # The local swarm DB can be on a partial/older schema during rollout.
+        # Keep the dashboard alive and let the swarm panel render empty.
+        return []
 
 
 # ── heartbeats ────────────────────────────────────────────────────────────────
@@ -132,6 +154,29 @@ def trade_status_counts() -> dict[str, int]:
     return {r["status"]: r["n"] for r in rows}
 
 
+def trade_status_counts_recent(hours: int = 24) -> dict[str, int]:
+    rows = _rows(
+        "SELECT status, COUNT(*) AS n FROM trades "
+        "WHERE ts >= datetime('now', ?) GROUP BY status",
+        (f"-{int(hours)} hours",),
+    )
+    return {r["status"]: r["n"] for r in rows}
+
+
+def trade_blocker_counts(hours: int = 24, limit: int = 20) -> list[dict]:
+    return _rows(
+        "SELECT status, COALESCE(NULLIF(error,''), '(none)') AS reason, "
+        "COUNT(*) AS n "
+        "FROM trades "
+        "WHERE ts >= datetime('now', ?) "
+        "AND status IN ('failed','skipped_gate','skipped_dedupe') "
+        "GROUP BY status, reason "
+        "ORDER BY n DESC, status "
+        "LIMIT ?",
+        (f"-{int(hours)} hours", int(limit)),
+    )
+
+
 def open_positions() -> list[dict]:
     """All filled trades, newest first — capital at risk is approximate until settlement tracking is added."""
     return _rows(
@@ -183,6 +228,81 @@ def news_signal_stats() -> dict[str, int]:
         "FROM news_signals GROUP BY direction, status"
     )
     return {r["key"]: r["n"] for r in rows}
+
+
+# ── routing / decision intelligence ──────────────────────────────────────────
+
+def opportunity_routes(limit: int = 25) -> list[dict]:
+    if _table_exists_in(_SCOUT_DB, "opportunity_routes"):
+        db_path = Path(_SCOUT_DB).expanduser().resolve()
+        uri = f"file:{db_path}?mode=ro&immutable=1"
+        try:
+            with contextlib.closing(sqlite3.connect(uri, uri=True)) as c:
+                c.row_factory = sqlite3.Row
+                rows = c.execute(
+                    "SELECT market_slug, market_id, strategy_match AS strategy, "
+                    "route, score, risk_score, estimated_true_probability, "
+                    "entry_price, expected_value, slippage, error_margin, "
+                    "liquidity AS liquidity_usd, spread_cents, catalyst_score, "
+                    "historical_edge, reasons_json "
+                    "FROM opportunity_routes ORDER BY created_ts DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
+                out = []
+                for row in rows:
+                    item = dict(row)
+                    try:
+                        item["reasons"] = ", ".join(json.loads(item.pop("reasons_json") or "[]"))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        item["reasons"] = ""
+                    out.append(item)
+                return out
+        except sqlite3.Error:
+            return []
+    if not _table_exists_in(_SCOUT_DB, "research_reports"):
+        return []
+    try:
+        from agents.application.opportunity_router import OpportunityRouter
+
+        router = OpportunityRouter()
+        return [
+            {
+                "market_slug": r.market_slug,
+                "market_id": r.market_id,
+                "strategy": r.strategy,
+                "route": r.route,
+                "score": r.score,
+                "risk_score": r.risk_score,
+                "expected_value": r.expected_value,
+                "estimated_true_probability": r.estimated_true_probability,
+                "entry_price": r.entry_price,
+                "slippage": r.slippage,
+                "error_margin": r.error_margin,
+                "liquidity_usd": r.liquidity_usd,
+                "spread_cents": r.spread_cents,
+                "catalyst_score": r.catalyst_score,
+                "historical_edge": r.historical_edge,
+                "reasons": ", ".join(r.reasons),
+            }
+            for r in router.latest_from_scout_db(_SCOUT_DB, limit=limit)
+        ]
+    except Exception:
+        return []
+
+
+def brain_veto_counts(hours: int = 24, limit: int = 25) -> list[dict]:
+    if not _table_exists("brain_decisions"):
+        return []
+    return _rows(
+        "SELECT agent, decision_type, strategy, reason, COUNT(*) AS n, "
+        "ROUND(AVG(score), 3) AS avg_score "
+        "FROM brain_decisions "
+        "WHERE ts >= datetime('now', ?) AND approved = 0 "
+        "GROUP BY agent, decision_type, strategy, reason "
+        "ORDER BY n DESC, avg_score ASC "
+        "LIMIT ?",
+        (f"-{int(hours)} hours", int(limit)),
+    )
 
 
 # ── swarm read-only mirror ───────────────────────────────────────────────────

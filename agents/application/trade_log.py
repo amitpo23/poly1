@@ -94,6 +94,23 @@ CREATE INDEX IF NOT EXISTS idx_brain_decisions_ts ON brain_decisions(ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_agent_ts ON brain_decisions(agent, ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_market_ts ON brain_decisions(market_id, ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_reason_ts ON brain_decisions(reason, ts);
+
+CREATE TABLE IF NOT EXISTS decision_reflections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    decision_id INTEGER,
+    agent TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    lesson_type TEXT NOT NULL,
+    lesson TEXT NOT NULL,
+    outcome_status TEXT,
+    metrics_json TEXT,
+    FOREIGN KEY(decision_id) REFERENCES brain_decisions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_decision_reflections_ts ON decision_reflections(ts);
+CREATE INDEX IF NOT EXISTS idx_decision_reflections_agent_ts ON decision_reflections(agent, ts);
+CREATE INDEX IF NOT EXISTS idx_decision_reflections_market_ts ON decision_reflections(market_id, ts);
 """
 
 
@@ -193,6 +210,25 @@ class TradeLog:
                 ),
             ).fetchone()
             return row is not None
+
+    def count_recent_failures_for_market(
+        self,
+        market_id: str,
+        hours: int = 6,
+        error_like: Optional[list[str]] = None,
+    ) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        params: list = [str(market_id), FAILED, cutoff]
+        sql = "SELECT COUNT(*) AS n FROM trades WHERE market_id = ? AND status = ? AND ts >= ?"
+        if error_like:
+            clauses = []
+            for pattern in error_like:
+                clauses.append("error LIKE ?")
+                params.append(pattern)
+            sql += " AND (" + " OR ".join(clauses) + ")"
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+            return int(row["n"])
 
     def insert_pending(
         self,
@@ -491,3 +527,41 @@ class TradeLog:
                 "WHERE id = ?",
                 (outcome_status, outcome_json, int(decision_id)),
             )
+
+    def insert_decision_reflection(
+        self,
+        agent: str,
+        strategy: str,
+        market_id: str,
+        lesson_type: str,
+        lesson: str,
+        decision_id: Optional[int] = None,
+        outcome_status: Optional[str] = None,
+        metrics: Optional[dict] = None,
+    ) -> int:
+        metrics_json = json.dumps(metrics, default=str) if metrics is not None else None
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO decision_reflections (ts, decision_id, agent, strategy, "
+                "market_id, lesson_type, lesson, outcome_status, metrics_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    _now(),
+                    int(decision_id) if decision_id is not None else None,
+                    agent,
+                    strategy,
+                    str(market_id),
+                    lesson_type,
+                    lesson,
+                    outcome_status,
+                    metrics_json,
+                ),
+            )
+            return cur.lastrowid
+
+    def recent_decision_reflections(self, limit: int = 50) -> list:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM decision_reflections ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]

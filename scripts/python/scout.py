@@ -57,6 +57,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from agents.application.research_committee import MarketContext, ResearchCommittee  # noqa: E402
+
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("scout")
 
@@ -102,6 +104,30 @@ CREATE TABLE IF NOT EXISTS price_snapshots (
 );
 CREATE INDEX IF NOT EXISTS ix_snap_slug_ts ON price_snapshots(market_slug, ts);
 CREATE INDEX IF NOT EXISTS ix_snap_ts ON price_snapshots(ts);
+
+-- TradingAgents-inspired read-only research layer. Reports are advisory:
+-- approved_for_live is intentionally stored and expected to be 0 until a
+-- separate backtest + human activation flow promotes a strategy.
+CREATE TABLE IF NOT EXISTS research_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts TEXT NOT NULL,
+    market_slug TEXT NOT NULL,
+    market_id TEXT,
+    strategy_match TEXT NOT NULL,
+    final_action TEXT NOT NULL,
+    final_score REAL NOT NULL,
+    risk_score REAL NOT NULL,
+    confidence REAL NOT NULL,
+    approved_for_backtest INTEGER NOT NULL,
+    approved_for_live INTEGER NOT NULL,
+    features_json TEXT NOT NULL,
+    assessments_json TEXT NOT NULL,
+    conclusion TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_research_reports_ts ON research_reports(created_ts);
+CREATE INDEX IF NOT EXISTS ix_research_reports_strategy ON research_reports(strategy_match, created_ts);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_research_reports_dedupe
+    ON research_reports(market_slug, strategy_match, date(created_ts));
 """
 
 
@@ -319,6 +345,64 @@ def _persist(conn: sqlite3.Connection, row: dict) -> bool:
         return False
 
 
+def _research_context(row: dict) -> MarketContext:
+    return MarketContext(
+        market_slug=row["slug"],
+        market_id=row.get("market_id"),
+        strategy=row["strategy"],
+        score=float(row.get("score") or 0.0),
+        yes_price=row.get("yes_price"),
+        no_price=row.get("no_price"),
+        spread_cents=row.get("spread"),
+        volume_24h=row.get("vol24"),
+        liquidity=row.get("liquidity"),
+        days_to_end=row.get("days_to_end"),
+        news_count=int(row.get("news_count") or 0),
+        top_news_headline=row.get("top_news_headline"),
+        reason=row.get("reason"),
+    )
+
+
+def _persist_research_report(conn: sqlite3.Connection, report) -> bool:
+    data = report.to_dict()
+    try:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO research_reports
+                (created_ts, market_slug, market_id, strategy_match, final_action,
+                 final_score, risk_score, confidence, approved_for_backtest,
+                 approved_for_live, features_json, assessments_json, conclusion)
+            VALUES (?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?)
+            """,
+            (
+                report.created_ts,
+                report.market_slug,
+                report.market_id,
+                report.strategy,
+                report.final_action,
+                report.final_score,
+                report.risk_score,
+                report.confidence,
+                1 if report.approved_for_backtest else 0,
+                1 if report.approved_for_live else 0,
+                json.dumps(data["features"], sort_keys=True),
+                json.dumps(data["assessments"], sort_keys=True),
+                report.conclusion,
+            ),
+        )
+        return cur.rowcount > 0
+    except sqlite3.Error as exc:
+        logger.warning(
+            "research report persist failed for %s/%s: %s",
+            report.market_slug,
+            report.strategy,
+            exc,
+        )
+        return False
+
+
 # ---------------------------------------------------------------------
 # Main scout loop
 # ---------------------------------------------------------------------
@@ -329,6 +413,7 @@ def run_once(db_path: str, *, max_markets: int = 500, news_top_n: int = 10) -> d
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     raw = _gamma_markets(limit=max_markets)
     logger.info("scout: fetched %d markets from Gamma", len(raw))
+    committee = ResearchCommittee()
 
     candidates: list[dict] = []
     for m in raw:
@@ -346,6 +431,7 @@ def run_once(db_path: str, *, max_markets: int = 500, news_top_n: int = 10) -> d
 
     conn = _open_db(db_path)
     inserted = 0
+    research_written = 0
     snapshots = 0
     enriched = 0
     by_strategy: dict[str, int] = {}
@@ -400,6 +486,10 @@ def run_once(db_path: str, *, max_markets: int = 500, news_top_n: int = 10) -> d
         if _persist(conn, cand):
             inserted += 1
             by_strategy[cand["strategy"]] = by_strategy.get(cand["strategy"], 0) + 1
+        if committee.cfg.enabled:
+            report = committee.review(_research_context(cand))
+            if _persist_research_report(conn, report):
+                research_written += 1
 
     conn.close()
     return {
@@ -408,6 +498,7 @@ def run_once(db_path: str, *, max_markets: int = 500, news_top_n: int = 10) -> d
         "candidates_passed_filters": len(candidates),
         "enriched_with_news": enriched,
         "inserted_new": inserted,
+        "research_reports_written": research_written,
         "price_snapshots_written": snapshots,
         "by_strategy": by_strategy,
     }
@@ -441,6 +532,7 @@ def main() -> int:
         print(f"  filtered: {summary['candidates_passed_filters']} candidates")
         print(f"  news-enriched: {summary['enriched_with_news']}")
         print(f"  inserted: {summary['inserted_new']} new opportunities")
+        print(f"  research reports: {summary['research_reports_written']}")
         if summary["by_strategy"]:
             print(f"  by strategy: {summary['by_strategy']}")
     return 0

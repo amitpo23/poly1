@@ -186,7 +186,13 @@ def main() -> int:
                 ),
             )
         )
-    for operator in (EXCHANGE, NEG_RISK_EXCHANGE):
+    # Approve all three V2 exchange/adapter contracts to move CTF tokens
+    # on behalf of the deposit wallet. Without NEG_RISK_ADAPTER, sport
+    # / political binary markets reject SELL orders with "allowance is
+    # not enough -> spender: 0xd91E80cF...". Discovered 2026-05-07
+    # when the position_manager tried to liquidate poly1's first
+    # filled positions.
+    for operator in (EXCHANGE, NEG_RISK_EXCHANGE, NEG_RISK_ADAPTER):
         calls.append(
             DepositWalletCall(
                 target=CTF,

@@ -108,6 +108,29 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
         # Must NOT be in ACTIVE_STATUSES — scalper has its own dedupe
         self.assertNotIn(SCALPER_LEG, ACTIVE_STATUSES)
 
+    def test_counts_recent_hard_failures_for_market(self):
+        log = TradeLog(db_path=self.db_path)
+        cycle = log.new_cycle_id()
+        log.insert_terminal(
+            cycle_id=cycle,
+            market_id="bad-market",
+            status=FAILED,
+            error="execute_market_order raised: PolyApiException[status_code=404]",
+        )
+        log.insert_terminal(
+            cycle_id=cycle,
+            market_id="bad-market",
+            status=FAILED,
+            error="execute_market_order raised: live ask price 0.7400 exceeds recommended price",
+        )
+        self.assertEqual(
+            log.count_recent_failures_for_market(
+                "bad-market",
+                error_like=["%status_code=404%", "%live ask price%"],
+            ),
+            2,
+        )
+
 
 class TestRiskGate(TempDataMixin, unittest.TestCase):
     def _gate(self, **kwargs):
@@ -635,6 +658,106 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
         statuses = [r["status"] for r in recent]
         self.assertIn(SKIPPED_GATE, statuses, "illiquid market must write SKIPPED_GATE")
         self.assertNotIn(FAILED, statuses, "illiquid market must NOT write FAILED")
+
+    def test_live_price_slippage_writes_skipped_gate_not_failed(self):
+        from agents.application.trade import Trader
+
+        with patch("agents.application.trade.Polymarket") as PMock, \
+                patch("agents.application.trade.Agent") as AgentMock, \
+                patch("agents.application.trade.Gamma"):
+            pm = PMock.return_value
+            pm.get_all_tradeable_events.return_value = []
+            pm.get_usdc_balance.return_value = 50.0
+            pm.execute_market_order.side_effect = ValueError(
+                "live ask price 0.7400 exceeds recommended price 0.5000"
+            )
+
+            agent = AgentMock.return_value
+            agent.filter_events_with_rag.return_value = []
+            agent.map_filtered_events_to_markets.return_value = []
+            agent.filter_markets.return_value = [self._make_market(100, 0.05)]
+            agent.source_best_trade.return_value = "stub"
+            agent.parse_trade_recommendation.return_value = TradeRecommendation(
+                price=0.5, size_fraction=0.05, side="BUY", confidence=0.9,
+            )
+
+            tl = TradeLog(self.db_path)
+            gate = RiskGate(
+                trade_log=tl, polymarket=pm,
+                starting_balance_usdc=0.0,
+                max_daily_loss_pct=0.99,
+                max_trades_per_hour=99,
+                min_usdc_floor=0.0,
+                max_daily_token_usd=999.0,
+                kill_switch_file=self.kill_path,
+                llm_usage_file=self.usage_path,
+            )
+            trader = Trader(
+                dry_run=False,
+                top_n=1,
+                max_trades_per_cycle=1,
+                min_confidence=0.7,
+                max_position_fraction=0.1,
+                trade_log=tl,
+                risk_gate=gate,
+            )
+
+            trader.one_best_trade_sweep()
+
+        recent = tl.recent(limit=5)
+        statuses = [r["status"] for r in recent]
+        self.assertIn(SKIPPED_GATE, statuses)
+        self.assertNotIn(FAILED, statuses)
+
+    def test_broken_market_failure_threshold_skips_before_llm(self):
+        from agents.application.trade import Trader
+
+        with patch("agents.application.trade.Polymarket") as PMock, \
+                patch("agents.application.trade.Agent") as AgentMock, \
+                patch("agents.application.trade.Gamma"):
+            pm = PMock.return_value
+            pm.get_all_tradeable_events.return_value = []
+            pm.get_usdc_balance.return_value = 50.0
+
+            agent = AgentMock.return_value
+            agent.filter_events_with_rag.return_value = []
+            agent.map_filtered_events_to_markets.return_value = []
+            agent.filter_markets.return_value = [self._make_market(101, 0.05)]
+
+            tl = TradeLog(self.db_path)
+            for _ in range(3):
+                tl.insert_terminal(
+                    cycle_id=tl.new_cycle_id(),
+                    market_id="101",
+                    status=FAILED,
+                    error="execute_market_order raised: PolyApiException[status_code=404]",
+                )
+            gate = RiskGate(
+                trade_log=tl, polymarket=pm,
+                starting_balance_usdc=0.0,
+                max_daily_loss_pct=0.99,
+                max_trades_per_hour=99,
+                min_usdc_floor=0.0,
+                max_daily_token_usd=999.0,
+                kill_switch_file=self.kill_path,
+                llm_usage_file=self.usage_path,
+            )
+            trader = Trader(
+                dry_run=False,
+                top_n=1,
+                max_trades_per_cycle=1,
+                min_confidence=0.7,
+                max_position_fraction=0.1,
+                trade_log=tl,
+                risk_gate=gate,
+            )
+
+            trader.one_best_trade_sweep()
+
+        agent.source_best_trade.assert_not_called()
+        recent = tl.recent(limit=1)[0]
+        self.assertEqual(recent["status"], SKIPPED_GATE)
+        self.assertIn("broken_market_blacklist", recent["error"])
 
 
 if __name__ == "__main__":

@@ -40,10 +40,21 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-TAB_LIVE, TAB_PNL, TAB_CAPITAL, TAB_TRADES, TAB_SCALPER, TAB_SWARM, TAB_LLM, TAB_CTRL = st.tabs([
+(
+    TAB_LIVE,
+    TAB_PNL,
+    TAB_CAPITAL,
+    TAB_ROUTER,
+    TAB_TRADES,
+    TAB_SCALPER,
+    TAB_SWARM,
+    TAB_LLM,
+    TAB_CTRL,
+) = st.tabs([
     "🟢 Live",
     "📈 P&L",
     "💰 Capital",
+    "🧭 Router",
     "📋 Trades",
     "🔪 Scalper",
     "🐝 Swarm",
@@ -327,6 +338,93 @@ with TAB_CAPITAL:
         )
     else:
         st.info("No open scalper pairs.")
+
+# ── Router tab ────────────────────────────────────────────────────────────────
+
+with TAB_ROUTER:
+    st.subheader("Opportunity routing")
+    routes = db.opportunity_routes(25)
+    if routes:
+        df_routes = pd.DataFrame(routes)
+        route_counts = df_routes["route"].value_counts().to_dict()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Live probe", route_counts.get("live_probe", 0))
+        c2.metric("Backtest", route_counts.get("backtest", 0))
+        c3.metric("Paper", route_counts.get("paper", 0))
+        c4.metric("Reject", route_counts.get("reject", 0))
+
+        show_cols = [
+            "route", "strategy", "score", "risk_score",
+            "estimated_true_probability", "entry_price", "expected_value",
+            "liquidity_usd", "spread_cents", "catalyst_score",
+            "historical_edge", "market_slug", "reasons",
+        ]
+        st.dataframe(
+            df_routes[[c for c in show_cols if c in df_routes.columns]].rename(
+                columns={
+                    "route": "Route",
+                    "strategy": "Strategy",
+                    "score": "Score",
+                    "risk_score": "Risk",
+                    "estimated_true_probability": "True P est.",
+                    "entry_price": "Entry",
+                    "expected_value": "EV",
+                    "liquidity_usd": "Liquidity",
+                    "spread_cents": "Spread",
+                    "catalyst_score": "Catalyst",
+                    "historical_edge": "Hist edge",
+                    "market_slug": "Market",
+                    "reasons": "Reasons",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No router rows yet. Scout/research reports may be empty.")
+
+    st.divider()
+    st.subheader("Why no trade")
+
+    recent_counts = db.trade_status_counts_recent(24)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("24h failed", recent_counts.get("failed", 0))
+    c2.metric("24h gate blocks", recent_counts.get("skipped_gate", 0))
+    c3.metric("24h dedupe skips", recent_counts.get("skipped_dedupe", 0))
+    c4.metric("24h fills/open", recent_counts.get("filled", 0) + recent_counts.get("btc_daily_open", 0))
+
+    blockers = db.trade_blocker_counts(24, 25)
+    if blockers:
+        st.caption("Execution and trade-log blockers, last 24h")
+        st.dataframe(
+            pd.DataFrame(blockers).rename(
+                columns={"status": "Status", "reason": "Reason", "n": "Count"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No execution blockers in the last 24h.")
+
+    vetoes = db.brain_veto_counts(24, 25)
+    if vetoes:
+        st.caption("Brain/exit-agent vetoes, last 24h")
+        st.dataframe(
+            pd.DataFrame(vetoes).rename(
+                columns={
+                    "agent": "Agent",
+                    "decision_type": "Type",
+                    "strategy": "Strategy",
+                    "reason": "Reason",
+                    "n": "Count",
+                    "avg_score": "Avg score",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No brain veto rows in the last 24h.")
 
 # ── Trades tab ────────────────────────────────────────────────────────────────
 

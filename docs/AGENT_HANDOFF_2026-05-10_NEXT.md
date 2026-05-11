@@ -128,6 +128,29 @@ the canonical history source going forward. Used in:
 | – | mean_reversion daily slug rotation | 30min | Restart fixes; moot while DRYRUN |
 | – | Many untracked core files | hours | Scope creep — separate cleanup task |
 
+## 2026-05-11 addition: research committee sidecar
+
+A TradingAgents-inspired committee brain was added, but only as a read-only
+research layer.
+
+- Code: `agents/application/research_committee.py`
+- Scout integration: `scripts/python/scout.py`
+- Scout DB table: `data/scout.db:research_reports`
+- Memory table: `data/trade_log.db:decision_reflections`
+- Full session note: `docs/SESSION_2026-05-11_RESEARCH_COMMITTEE.md`
+
+Important safety invariant: `approved_for_live` is hard-blocked to `0`.
+Committee output can recommend research, paper trading, or backtesting only.
+It cannot allocate capital or place trades.
+
+Latest real row written by a one-off scout pass:
+
+```text
+bitcoin-up-or-down-on-may-11-2026 | mean_reversion |
+reject_live_backtest_required | final_score=0.086 | risk_score=0.64 |
+approved_for_live=0
+```
+
 ## Quick health-check commands
 
 ```bash

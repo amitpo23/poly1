@@ -1,6 +1,65 @@
 # Current Status
 
-Date: 2026-05-09
+Date: 2026-05-11
+
+## Latest changes (2026-05-11, agent trading stabilization)
+
+**Goal:** get the agents unstuck without pretending weak strategies are
+ready for live capital.
+
+**Shipped today:**
+
+1. **Swarm dry-run order unblocking** in `/Users/mymac/Desktop/poly/bot`.
+   Stale synthetic `order_id LIKE 'dry_%'` submitted rows now auto-clear
+   after `SWARM_DRYRUN_SUBMITTED_TTL_SECONDS` (default 30s). This fixed
+   the market_maker loop that was stuck on old dry-run submitted rows.
+
+2. **Swarm SQLite hardening.** Added SQLite timeout/busy_timeout,
+   read-only healthcheck, and rebuilt the active DB with `VACUUM INTO`.
+   Current swarm DB integrity is `ok`.
+
+3. **Swarm dry-run book realism.** The mock orderbook no longer changes
+   randomly on every immediate call, so the slippage guard can be tested
+   instead of rejecting fake 20-30 cent jumps.
+
+4. **Poly1 broken-market retry suppression.** Repeated hard execution
+   failures (`404`, no orderbook, no asks, live price above recommended)
+   now route to `skipped_gate` / pre-skip instead of polluting strategy
+   failure metrics.
+
+5. **OpportunityRouter.** New router maps scout/research rows to
+   `live_probe`, `backtest`, `paper`, or `reject`. Current scout output
+   routes BTC mean reversion to `backtest`, not live.
+
+6. **Dashboard Router tab.** Streamlit now shows OpportunityRouter
+   routes plus 24h "why no trade" blockers and brain veto counts. The
+   dashboard was rebuilt/restarted and its health endpoint returned `ok`.
+
+7. **EV-first routing policy.** OpportunityRouter now computes:
+   `estimated_true_probability - entry_price - slippage - error_margin`.
+   Live probes are blocked unless probability is explicit/proven,
+   historical/paper edge is positive, liquidity/spread gates pass, and EV
+   clears the live threshold. Current BTC mean-reversion candidate is
+   persisted as `backtest` with EV `-0.025`, not live.
+
+**Validation:**
+- `poly1:local` rebuilt.
+- `python -m unittest tests.test_trader tests.test_opportunity_router tests.test_research_committee tests.test_brain_journal -v`
+  passed: **40 tests OK**.
+- Main `poly1` trader recreated on the new image and remains
+  `EXECUTE=false`.
+- Swarm recreated and remains `BOT_MODE=dryrun`.
+- Dashboard container recreated on the new image.
+
+**Operational status:**
+- `btc_daily` remains the only live strategy with prior backtest support.
+- `swarm` is active but dry-run only.
+- `scalper` is still high risk; latest realistic backtests did not
+  justify scaling it.
+- Do not flip swarm to live until OpportunityRouter emits `live_probe`
+  and the exit agent has a matching exit thesis.
+
+See `docs/SESSION_2026-05-11_AGENT_TRADING_STABILIZATION.md`.
 
 ## Latest changes (2026-05-10 evening, manual_entry + momentum)
 
@@ -920,6 +979,30 @@ Periodic snapshots are written by `poly1-strategy-reporter` to:
 
 - `data/strategy_report_24h.md`
 - `data/capital_allocator_24h.md`
+
+## Research Committee Brain - 2026-05-11
+
+TradingAgents-inspired research structure was added as a read-only sidecar, not
+as a live executor.
+
+- `agents/application/research_committee.py` produces bull, bear, risk, and
+  portfolio-manager assessments.
+- `scripts/python/scout.py` now writes advisory rows to
+  `data/scout.db:research_reports`.
+- `agents/application/trade_log.py` now includes `decision_reflections` for
+  lessons learned from decisions and outcomes.
+- `approved_for_live` is hard-blocked to `0`; reports can only recommend
+  research, paper trading, or backtest work.
+
+Latest real scout committee row:
+
+```text
+bitcoin-up-or-down-on-may-11-2026 | mean_reversion |
+reject_live_backtest_required | final_score=0.086 | risk_score=0.64 |
+approved_for_live=0
+```
+
+Full handoff: `docs/SESSION_2026-05-11_RESEARCH_COMMITTEE.md`.
 
 Tail logs:
 

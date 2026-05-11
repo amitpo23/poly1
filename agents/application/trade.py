@@ -69,6 +69,12 @@ class Trader:
         self.shadow_ignore_risk_gate = (
             os.getenv("SHADOW_IGNORE_RISK_GATE", "false").lower() == "true"
         )
+        self.broken_market_failure_threshold = int(
+            os.getenv("TRADER_BROKEN_MARKET_FAILURE_THRESHOLD", "3")
+        )
+        self.broken_market_window_hours = int(
+            os.getenv("TRADER_BROKEN_MARKET_WINDOW_HOURS", "6")
+        )
 
     def pre_trade_logic(self) -> None:
         if self.force_refresh_dbs:
@@ -184,6 +190,34 @@ class Trader:
 
     def _evaluate_market(self, cycle_id: str, market) -> bool:
         market_id = self._market_id(market)
+
+        hard_failures = self.trade_log.count_recent_failures_for_market(
+            market_id,
+            hours=self.broken_market_window_hours,
+            error_like=[
+                "%status_code=404%",
+                "%No orderbook%",
+                "%no asks available%",
+                "%live ask price%",
+            ],
+        )
+        if hard_failures >= self.broken_market_failure_threshold:
+            logger.info(
+                "cycle %s: market %s skipped (broken-market failure threshold: %d)",
+                cycle_id,
+                market_id,
+                hard_failures,
+            )
+            self.trade_log.insert_terminal(
+                cycle_id,
+                market_id,
+                SKIPPED_GATE,
+                error=(
+                    f"broken_market_blacklist: {hard_failures} hard execution "
+                    f"failures in {self.broken_market_window_hours}h"
+                ),
+            )
+            return False
 
         # First gate: do we already hold a filled position on this market?
         # Without exit logic (`maintain_positions` is a stub), reopening is
@@ -307,15 +341,19 @@ class Trader:
             # Please refer to TOS before enabling live trading: polymarket.com/tos
             result = self.polymarket.execute_market_order(market, recommendation)
         except ValueError as e:
-            if "no asks available" in str(e):
+            msg = str(e)
+            if "no asks available" in msg or "live ask price" in msg:
                 # Thin orderbook — not a code error, just a market condition.
                 # Write SKIPPED_GATE (veto) so the allocator doesn't penalise
                 # the trader as if it crashed. The market can be retried next
                 # cycle once liquidity returns.
                 logger.warning(
-                    "cycle %s: market %s illiquid (no asks) — skipping", cycle_id, market_id
+                    "cycle %s: market %s execution gate (%s) — skipping",
+                    cycle_id,
+                    market_id,
+                    msg[:160],
                 )
-                self.trade_log.mark(trade_id, SKIPPED_GATE, error=f"illiquid: {e}")
+                self.trade_log.mark(trade_id, SKIPPED_GATE, error=f"execution_gate: {e}")
                 return False
             logger.exception(
                 "cycle %s: market %s execute_market_order failed", cycle_id, market_id
@@ -323,6 +361,16 @@ class Trader:
             self.trade_log.mark(trade_id, FAILED, error=str(e))
             return False
         except Exception as e:
+            msg = str(e)
+            if "status_code=404" in msg or "No orderbook" in msg:
+                logger.warning(
+                    "cycle %s: market %s broken market (%s) — skipping",
+                    cycle_id,
+                    market_id,
+                    msg[:160],
+                )
+                self.trade_log.mark(trade_id, SKIPPED_GATE, error=f"broken_market: {e}")
+                return False
             logger.exception(
                 "cycle %s: market %s execute_market_order failed", cycle_id, market_id
             )

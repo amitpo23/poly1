@@ -516,6 +516,36 @@ class Polymarket:
             OrderArgs(price=price, size=size, side=side, token_id=token_id)
         )
 
+    def sell_shares(
+        self,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        order_type=None,
+    ) -> dict:
+        """Place a SELL order to liquidate held shares.
+
+        Used by `position_manager` to exit a position via take-profit /
+        stop-loss / timeout. `limit_price` is the floor — Polymarket will
+        execute at this or better. For an aggressive exit (don't sit on
+        bid), use FAK order_type with a price near the current best bid.
+
+        Returns the raw response dict from CLOB. Status `matched` =
+        filled (some/all). Status `delayed` / `unmatched` = order
+        sitting in the book.
+        """
+        if order_type is None:
+            order_type = OrderType.GTC
+        return self.client.create_and_post_order(
+            OrderArgs(
+                price=limit_price,
+                size=shares,
+                side="SELL",
+                token_id=token_id,
+            ),
+            order_type=order_type,
+        )
+
     def _book_entries(self, book, side: str) -> list:
         entries = getattr(book, side, None)
         if entries is None and isinstance(book, dict):

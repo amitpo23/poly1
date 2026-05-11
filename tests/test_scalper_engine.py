@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 import agents.application.scalper as _scalper_mod
 from agents.application.scalper import ScalperEngine, ScalperConfig, ScalpPair
 from agents.application.scalper_pairs import ScalperPairsDAO, ScalperState
-from agents.application.trade_log import TradeLog, SCALPER_LEG
+from agents.application.trade_log import TradeLog, SCALPER_EXIT, SCALPER_LEG
+from agents.application.market_brain import BrainConfig, BrainDecision, MarketBrain, MarketProfile
 
 
 class TestPlaceLeg(unittest.TestCase):
@@ -316,6 +317,175 @@ class TestShadowMode(unittest.TestCase):
                   if r["status"] == SCALPER_LEG]
         self.assertGreaterEqual(len(recent), 1)
         self.assertIn("SHADOW", recent[0]["error"] or "")
+
+
+class TestScalperBrainJournal(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.log = TradeLog(db_path=self.tmp.name)
+        self.dao = ScalperPairsDAO(self.log)
+        self.client = MagicMock()
+        self.cfg = ScalperConfig(leg_usdc_cap=5.0)
+        self.brain = MarketBrain(BrainConfig(
+            enabled=True,
+            scalper_min_seconds_to_expiry=90,
+            scalper_max_pair_ask_sum=1.04,
+            scalper_min_edge_score=0.35,
+        ))
+        self.engine = ScalperEngine(client=self.client, log=self.log,
+                                      dao=self.dao, cfg=self.cfg, execute=False,
+                                      brain=self.brain)
+        self.dao.create("eth-updown-15m-1770000000", 1770000000,
+                        "tok_up", "tok_dn")
+        self.engine.add_pair(ScalpPair(
+            slug="eth-updown-15m-1770000000",
+            period_ts=1770000000,
+            up_token="tok_up",
+            down_token="tok_dn",
+            cfg=self.cfg,
+        ))
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            p = self.tmp.name + suffix
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_tick_records_brain_decision(self):
+        now_ms = (1770000000 - 300) * 1000
+        self.engine.tick(
+            slug="eth-updown-15m-1770000000",
+            up_ask=0.45,
+            down_ask=0.50,
+            now_ms=now_ms,
+        )
+        self.engine.tick(
+            slug="eth-updown-15m-1770000000",
+            up_ask=0.471,
+            down_ask=0.50,
+            now_ms=now_ms + 1000,
+        )
+        rows = self.log.recent_brain_decisions()
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertEqual(rows[0]["agent"], "scalper")
+        self.assertEqual(rows[0]["approved"], 1)
+        self.assertEqual(rows[0]["asset"], "eth")
+
+    def test_veto_records_brain_decision_without_leg(self):
+        now_ms = (1770000000 - 30) * 1000
+        self.engine.tick(
+            slug="eth-updown-15m-1770000000",
+            up_ask=0.45,
+            down_ask=0.50,
+            now_ms=now_ms,
+        )
+        self.engine.tick(
+            slug="eth-updown-15m-1770000000",
+            up_ask=0.471,
+            down_ask=0.50,
+            now_ms=now_ms + 1000,
+        )
+        decisions = self.log.recent_brain_decisions()
+        self.assertEqual(decisions[0]["approved"], 0)
+        self.assertEqual(decisions[0]["reason"], "too_close_to_expiry")
+        legs = [r for r in self.log.recent() if r["status"] == SCALPER_LEG]
+        self.assertEqual(legs, [])
+
+
+class TestScalperOneLegExit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.log = TradeLog(db_path=self.tmp.name)
+        self.dao = ScalperPairsDAO(self.log)
+        self.client = MagicMock()
+        self.cfg = ScalperConfig(leg_usdc_cap=5.0)
+        self.engine = ScalperEngine(client=self.client, log=self.log,
+                                      dao=self.dao, cfg=self.cfg, execute=False)
+        self.dao.create("eth-updown-15m-1770000000", 1770000000,
+                        "tok_up", "tok_dn")
+        self.dao.record_fill("eth-updown-15m-1770000000", "up",
+                             qty=10.0, cost_usdc=5.0, fill_price=0.50)
+        self.dao.set_state("eth-updown-15m-1770000000", ScalperState.LEG1_FILLED)
+        self.engine.add_pair(ScalpPair(
+            slug="eth-updown-15m-1770000000",
+            period_ts=1770000000,
+            up_token="tok_up",
+            down_token="tok_dn",
+            cfg=self.cfg,
+        ))
+
+    def tearDown(self):
+        for suffix in ("", "-wal", "-shm"):
+            p = self.tmp.name + suffix
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_shadow_take_profit_logs_scalper_exit(self):
+        self.engine.tick(
+            "eth-updown-15m-1770000000",
+            up_ask=0.55,
+            down_ask=0.46,
+            up_bid=0.53,
+            down_bid=0.45,
+            now_ms=(1770000000 - 300) * 1000,
+        )
+        exits = [r for r in self.log.recent(limit=5) if r["status"] == SCALPER_EXIT]
+        self.assertEqual(len(exits), 1)
+        self.assertIn("SHADOW scalper exit take_profit", exits[0]["error"])
+
+    def test_live_matched_exit_sets_state_exited(self):
+        exit_executor = MagicMock()
+        exit_executor.limit_price_from_mid.return_value = 0.5194
+        exit_executor.sell_fak.return_value.closed = True
+        exit_executor.sell_fak.return_value.response = {"status": "matched"}
+        with patch.object(_scalper_mod, "_FAK_TYPE", "MOCK_FAK"):
+            engine = ScalperEngine(client=self.client, log=self.log,
+                                   dao=self.dao, cfg=self.cfg, execute=True,
+                                   exit_executor=exit_executor)
+        engine.add_pair(self.engine.pairs["eth-updown-15m-1770000000"])
+        engine.tick(
+            "eth-updown-15m-1770000000",
+            up_ask=0.55,
+            down_ask=0.46,
+            up_bid=0.53,
+            down_bid=0.45,
+            now_ms=(1770000000 - 300) * 1000,
+        )
+        exit_executor.sell_fak.assert_called_once()
+        row = self.dao.get_by_slug("eth-updown-15m-1770000000")
+        self.assertEqual(row["state"], ScalperState.EXITED)
+
+    def test_smart_exit_hold_does_not_log_scalper_exit(self):
+        brain = MagicMock()
+        brain.evaluate_exit.return_value = BrainDecision(
+            approved=False,
+            reason="hold_profit_with_momentum",
+            score=0.06,
+            profile=MarketProfile("crypto_15m", asset="eth", period_ts=1770000000),
+            features={"pnl_pct": 0.06, "smart_exit_momentum": 0.002},
+        )
+        engine = ScalperEngine(client=self.client, log=self.log,
+                               dao=self.dao, cfg=self.cfg, execute=False,
+                               brain=brain)
+        engine.add_pair(self.engine.pairs["eth-updown-15m-1770000000"])
+
+        engine.tick(
+            "eth-updown-15m-1770000000",
+            up_ask=0.55,
+            down_ask=0.46,
+            up_bid=0.53,
+            down_bid=0.45,
+            now_ms=(1770000000 - 300) * 1000,
+        )
+
+        brain.evaluate_exit.assert_called_once()
+        exits = [r for r in self.log.recent(limit=10) if r["status"] == SCALPER_EXIT]
+        self.assertEqual(exits, [])
+        decisions = self.log.recent_brain_decisions(limit=5)
+        self.assertEqual(decisions[0]["decision_type"], "exit")
+        self.assertEqual(decisions[0]["reason"], "hold_profit_with_momentum")
 
 
 if __name__ == "__main__":

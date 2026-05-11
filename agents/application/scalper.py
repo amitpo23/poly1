@@ -41,6 +41,10 @@ class ScalperConfig:
     leg_usdc_cap: float = 5.0
     poll_ms: int = 250
     discover_every_sec: int = 60
+    exit_take_profit_pct: float = 0.05
+    exit_trailing_stop_pct: float = 0.02
+    exit_stop_loss_pct: float = 0.07
+    exit_min_seconds_to_expiry: int = 45
 
     @classmethod
     def from_env(cls) -> "ScalperConfig":
@@ -56,6 +60,10 @@ class ScalperConfig:
             leg_usdc_cap=_env_float("SCALP_LEG_USDC", 5.0),
             poll_ms=_env_int("SCALP_POLL_MS", 250),
             discover_every_sec=_env_int("SCALP_DISCOVER_EVERY_SEC", 60),
+            exit_take_profit_pct=_env_float("SCALP_EXIT_TAKE_PROFIT_PCT", 0.05),
+            exit_trailing_stop_pct=_env_float("SCALP_EXIT_TRAILING_STOP_PCT", 0.02),
+            exit_stop_loss_pct=_env_float("SCALP_EXIT_STOP_LOSS_PCT", 0.07),
+            exit_min_seconds_to_expiry=_env_int("SCALP_EXIT_MIN_SECONDS_TO_EXPIRY", 45),
         )
 
 
@@ -162,15 +170,19 @@ class ScalpPair:
 # ---------------------------------------------------------------------------
 import uuid  # noqa: E402
 
-from agents.application.trade_log import SCALPER_LEG, TradeLog  # noqa: E402
+from agents.application.exit_executor import ExitExecutor  # noqa: E402
+from agents.application.trade_log import SCALPER_EXIT, SCALPER_LEG, TradeLog  # noqa: E402
 from agents.application.scalper_pairs import ScalperPairsDAO, ScalperState  # noqa: E402
+from agents.application.market_brain import CryptoSignalFeed, ExitPosition, MarketBrain  # noqa: E402
 from agents.utils.objects import TradeRecommendation  # noqa: E402
 
 try:
     from py_clob_client_v2.clob_types import OrderType as _ClobOrderType
     _FAK_TYPE = _ClobOrderType.FAK
+    _V2_INSTALLED = True
 except ImportError:
     _FAK_TYPE = "FAK"
+    _V2_INSTALLED = False
 
 try:
     from langchain_core.documents import Document as _Document
@@ -191,6 +203,8 @@ class ScalperEngine:
         dao: ScalperPairsDAO,
         cfg: ScalperConfig,
         gamma=None,
+        brain: MarketBrain = None,
+        exit_executor: ExitExecutor = None,
         execute: bool = False,
         max_legs_per_hour: int = None,
     ):
@@ -199,8 +213,10 @@ class ScalperEngine:
         self.dao = dao
         self.cfg = cfg
         self.gamma = gamma
+        self.brain = brain
+        self.exit_executor = exit_executor or ExitExecutor(client)
         self.execute = execute
-        if self.execute and _FAK_TYPE == "FAK":
+        if self.execute and not _V2_INSTALLED and _FAK_TYPE == "FAK":
             raise RuntimeError(
                 "py_clob_client_v2 not installed; cannot run with execute=True"
             )
@@ -209,6 +225,7 @@ class ScalperEngine:
             else _env_int("MAX_SCALP_TRADES_PER_HOUR", 60)
         )
         self.pairs: dict = {}
+        self._exit_peak_by_slug_side: dict[tuple[str, str], float] = {}
 
     def add_pair(self, pair: ScalpPair) -> None:
         self.pairs[pair.slug] = pair
@@ -284,7 +301,11 @@ class ScalperEngine:
         import ast
         if self.gamma is None:
             raise RuntimeError("gamma client not provided")
-        events = self.gamma.get_events_by_tag(tag_id=21)
+        # limit=200 is needed because Polymarket sorts events by endDate
+        # ascending; default limit=50 returns only stale 5m markets and
+        # cuts off before the live 15m markets. Verified empirically
+        # 2026-05-06: limit=50 → 0 of 21 active 15m markets seen.
+        events = self.gamma.get_events_by_tag(tag_id=21, limit=200)
         out = []
         for ev in events:
             for m in ev.get("markets", []):
@@ -372,10 +393,16 @@ class ScalperEngine:
             )
         return flipped
 
-    def tick(self, slug: str, up_ask: float, down_ask: float, now_ms: int) -> None:
+    def tick(
+        self,
+        slug: str,
+        up_ask: float,
+        down_ask: float,
+        now_ms: int,
+        up_bid: float = None,
+        down_bid: float = None,
+    ) -> None:
         """One scheduling tick per slug. Apply ticks → maybe fire legs."""
-        if not self._has_rate_capacity():
-            return
         pair = self.pairs.get(slug)
         if pair is None:
             return
@@ -384,7 +411,20 @@ class ScalperEngine:
             return
         if row["state"] in (ScalperState.BOTH_FILLED, ScalperState.EXPIRED,
                               ScalperState.REDEEMED, ScalperState.SHADOW,
-                              ScalperState.RECONCILE_NEEDED):
+                              ScalperState.EXITED, ScalperState.RECONCILE_NEEDED):
+            return
+
+        if row["state"] == ScalperState.LEG1_FILLED and self._maybe_exit_leg1(
+            slug=slug,
+            row=row,
+            pair=pair,
+            up_bid=up_bid,
+            down_bid=down_bid,
+            now_ms=now_ms,
+        ):
+            return
+
+        if not self._has_rate_capacity():
             return
 
         pair.apply_tick("up", up_ask, now_ms)
@@ -400,6 +440,16 @@ class ScalperEngine:
                     continue
                 sig = pair.evaluate_entry(side, ask, now_ms)
                 if sig is None:
+                    continue
+                if not self._brain_allows_entry(
+                    slug=slug,
+                    side=side,
+                    up_ask=up_ask,
+                    down_ask=down_ask,
+                    signal=sig,
+                    now_ms=now_ms,
+                    period_ts=pair.period_ts,
+                ):
                     continue
                 if not pair.check_profit_gate(side, sig["price"],
                                                 qty_other=0, cost_other=0):
@@ -427,6 +477,16 @@ class ScalperEngine:
             sig = pair.evaluate_second_leg(second, ask, now_ms)
             if sig is None:
                 return
+            if not self._brain_allows_entry(
+                slug=slug,
+                side=second,
+                up_ask=up_ask,
+                down_ask=down_ask,
+                signal=sig,
+                now_ms=now_ms,
+                period_ts=pair.period_ts,
+            ):
+                return
             qty_other = row["qty_up" if second == "down" else "qty_down"]
             cost_other = row["cost_up" if second == "down" else "cost_down"]
             if not pair.check_profit_gate(second, sig["price"],
@@ -439,6 +499,245 @@ class ScalperEngine:
                                       intended_price=sig["price"])
             if result.get("filled"):
                 self.dao.set_state(slug, ScalperState.BOTH_FILLED)
+
+    def _brain_allows_entry(
+        self,
+        *,
+        slug: str,
+        side: str,
+        up_ask: float,
+        down_ask: float,
+        signal: dict,
+        now_ms: int,
+        period_ts: int,
+    ) -> bool:
+        if self.brain is None:
+            return True
+        decision = self.brain.evaluate_scalper_entry(
+            slug=slug,
+            side=side,
+            up_ask=up_ask,
+            down_ask=down_ask,
+            candidate_price=float(signal["price"]),
+            signal_reason=str(signal.get("reason", "")),
+            now_ms=now_ms,
+            period_ts=period_ts,
+        )
+        self._record_brain_decision(slug, side, signal, decision)
+        if not decision.approved:
+            logger.info(
+                "scalper brain veto slug=%s side=%s reason=%s score=%.3f features=%s",
+                slug,
+                side,
+                decision.reason,
+                decision.score,
+                decision.features,
+            )
+            return False
+        logger.debug(
+            "scalper brain approved slug=%s side=%s score=%.3f reason=%s",
+            slug,
+            side,
+            decision.score,
+            decision.reason,
+        )
+        return True
+
+    def _record_brain_decision(self, slug: str, side: str, signal: dict, decision) -> None:
+        try:
+            token = None
+            pair = self.pairs.get(slug)
+            if pair is not None:
+                token = pair.up_token if side == "up" else pair.down_token
+            self.log.insert_brain_decision(
+                agent="scalper",
+                strategy=decision.profile.market_type or "unknown",
+                decision_type="entry",
+                market_id=slug,
+                token_id=token,
+                approved=decision.approved,
+                reason=decision.reason,
+                score=decision.score,
+                market_type=decision.profile.market_type,
+                asset=decision.profile.asset,
+                features=decision.features,
+                action=f"BUY_{side.upper()}:{signal.get('reason', '')}",
+            )
+        except Exception:
+            logger.exception("scalper brain decision journal write failed")
+
+    def _maybe_exit_leg1(
+        self,
+        *,
+        slug: str,
+        row: dict,
+        pair: ScalpPair,
+        up_bid: float,
+        down_bid: float,
+        now_ms: int,
+    ) -> bool:
+        held_side = None
+        if float(row.get("qty_up") or 0) > 0 and float(row.get("qty_down") or 0) <= 0:
+            held_side = "up"
+        elif float(row.get("qty_down") or 0) > 0 and float(row.get("qty_up") or 0) <= 0:
+            held_side = "down"
+        if held_side is None:
+            return False
+
+        qty = float(row[f"qty_{held_side}"] or 0)
+        cost = float(row[f"cost_{held_side}"] or 0)
+        if qty <= 0 or cost <= 0:
+            return False
+
+        bid = up_bid if held_side == "up" else down_bid
+        if bid is None or bid <= 0:
+            return False
+
+        entry = cost / qty
+        key = (slug, held_side)
+        peak = max(self._exit_peak_by_slug_side.get(key, entry), bid)
+        self._exit_peak_by_slug_side[key] = peak
+        pnl_pct = (bid - entry) / entry if entry > 0 else 0.0
+        drawdown_from_peak = (peak - bid) / peak if peak > 0 else 0.0
+        seconds_to_expiry = pair.period_ts - int(now_ms / 1000) if pair.period_ts else None
+
+        token = pair.up_token if held_side == "up" else pair.down_token
+        reason = None
+        if seconds_to_expiry is not None and seconds_to_expiry <= self.cfg.exit_min_seconds_to_expiry:
+            reason = "expiry_exit"
+        elif self.brain is not None:
+            opened_ts = float(row.get("opened_ts") or int(now_ms / 1000))
+            decision = self.brain.evaluate_exit(
+                ExitPosition(
+                    market_id=slug,
+                    token_id=token,
+                    side=held_side,
+                    entry_price=entry,
+                    current_price=bid,
+                    opened_ts_ms=int(opened_ts * 1000),
+                    max_price_seen=peak,
+                    shares=qty,
+                ),
+                now_ms=now_ms,
+            )
+            self._record_brain_exit_decision(
+                slug=slug,
+                token=token,
+                held_side=held_side,
+                decision=decision,
+            )
+            if not decision.approved:
+                if decision.reason == "hold_profit_with_momentum":
+                    logger.info(
+                        "scalper smart exit hold slug=%s side=%s pnl=%.4f reason=%s features=%s",
+                        slug,
+                        held_side,
+                        pnl_pct,
+                        decision.reason,
+                        decision.features,
+                    )
+                return False
+            reason = {
+                "trailing_stop_after_profit": "trailing_stop",
+                "timeout": "timeout",
+            }.get(decision.reason, decision.reason)
+        else:
+            if pnl_pct >= self.cfg.exit_take_profit_pct:
+                reason = "take_profit"
+            elif (
+                peak >= entry * (1.0 + self.cfg.exit_take_profit_pct)
+                and drawdown_from_peak >= self.cfg.exit_trailing_stop_pct
+            ):
+                reason = "trailing_stop"
+            elif pnl_pct <= -self.cfg.exit_stop_loss_pct:
+                reason = "stop_loss"
+        if reason is None:
+            return False
+
+        cycle_id = f"scalp_exit:{slug}:{held_side}:{str(uuid.uuid4())[:8]}"
+
+        if not self.execute:
+            self.log.insert_terminal(
+                cycle_id=cycle_id,
+                market_id=slug,
+                status=SCALPER_EXIT,
+                token_id=token,
+                side="SELL",
+                price=bid,
+                size_usdc=qty * bid,
+                response={
+                    "shadow": True,
+                    "reason": reason,
+                    "entry": entry,
+                    "bid": bid,
+                    "qty": qty,
+                    "pnl_pct": pnl_pct,
+                },
+                error=f"SHADOW scalper exit {reason}",
+            )
+            return True
+
+        result = self.exit_executor.sell_fak(token_id=token, shares=qty, mid=bid)
+        limit_price = self.exit_executor.limit_price_from_mid(bid)
+        if result.closed:
+            self.log.insert_terminal(
+                cycle_id=cycle_id,
+                market_id=slug,
+                status=SCALPER_EXIT,
+                token_id=token,
+                side="SELL",
+                price=limit_price,
+                size_usdc=qty * limit_price,
+                response={
+                    "reason": reason,
+                    "entry": entry,
+                    "bid": bid,
+                    "qty": qty,
+                    "pnl_pct": pnl_pct,
+                    "raw": result.response,
+                },
+            )
+            self.dao.set_state(slug, ScalperState.EXITED)
+            return True
+
+        self.log.insert_terminal(
+            cycle_id=cycle_id,
+            market_id=slug,
+            status="scalper_exit_failed",
+            token_id=token,
+            side="SELL",
+            price=limit_price,
+            size_usdc=0,
+            response=result.response,
+            error=result.error or f"sell not matched: {result.status}",
+        )
+        return False
+
+    def _record_brain_exit_decision(
+        self,
+        *,
+        slug: str,
+        token: str,
+        held_side: str,
+        decision,
+    ) -> None:
+        try:
+            self.log.insert_brain_decision(
+                agent="scalper",
+                strategy=decision.profile.market_type or "unknown",
+                decision_type="exit",
+                market_id=slug,
+                token_id=token,
+                approved=decision.approved,
+                reason=decision.reason,
+                score=decision.score,
+                market_type=decision.profile.market_type,
+                asset=decision.profile.asset,
+                features=decision.features,
+                action="SELL" if decision.approved else f"HOLD_{held_side.upper()}",
+            )
+        except Exception:
+            logger.exception("scalper brain exit decision journal write failed")
 
 
 # ---------------------------------------------------------------------------
@@ -496,20 +795,52 @@ class ScalperDaemon:
         self.gamma = GammaMarketClient()
         self.engine = ScalperEngine(
             client=self.client, log=self.tl, dao=self.dao,
-            cfg=self.cfg, gamma=self.gamma, execute=self.execute,
+            cfg=self.cfg, gamma=self.gamma,
+            brain=MarketBrain(crypto_feed=CryptoSignalFeed()),
+            execute=self.execute,
         )
         # Public client for order book reads — no credentials required.
         # ClobClient with only host+chain_id works for GET endpoints.
+        # Recreated on HTTP/2 connection errors (see `_make_book_client`
+        # and the tick-fail handler) — without recreation the SDK's
+        # underlying httpx connection hits the server's max-streams cap
+        # (~20k requests) and ConnectionTerminated errors keep firing
+        # until the container restarts. Discovered 2026-05-08 when the
+        # Brain approved 16 entries and 0 became fills.
+        self._book_client = self._make_book_client()
+        self._book_client_request_count = 0
+        # Cap on requests before a proactive client refresh — well under
+        # the typical HTTP/2 server-side max_streams (10k-20k).
+        self._book_client_max_requests = int(
+            os.getenv("SCALP_BOOK_CLIENT_MAX_REQUESTS", "5000")
+        )
+        self._stop = threading.Event()
+
+    @staticmethod
+    def _make_book_client():
+        """Return a fresh ClobClient for public book reads, or None if the
+        SDK isn't importable."""
         try:
             from py_clob_client_v2.client import ClobClient as _ClobClient
-            self._book_client = _ClobClient(
+            return _ClobClient(
                 host="https://clob.polymarket.com",
                 chain_id=137,
             )
         except (ImportError, Exception) as e:
-            logger.warning("ScalperDaemon: ClobClient unavailable for book reads: %s", e)
-            self._book_client = None
-        self._stop = threading.Event()
+            logger.warning("ScalperDaemon: ClobClient unavailable: %s", e)
+            return None
+
+    def _refresh_book_client_if_needed(self) -> None:
+        """Periodic refresh — replaces the client before HTTP/2
+        max_streams kicks in. Called every tick."""
+        self._book_client_request_count += 1
+        if self._book_client_request_count >= self._book_client_max_requests:
+            logger.info(
+                "ScalperDaemon: rotating _book_client after %d requests",
+                self._book_client_request_count,
+            )
+            self._book_client = self._make_book_client()
+            self._book_client_request_count = 0
 
     def stop(self) -> None:
         self._stop.set()
@@ -538,6 +869,24 @@ class ScalperDaemon:
                     last_discover = now
                 for row in self.dao.list_open():
                     slug = row["slug"]
+                    # Skip pairs the engine can't act on. Saves two
+                    # CLOB book fetches per cycle per pair, which is
+                    # the bulk of the 6250+ "404 No orderbook" errors
+                    # we observed: RECONCILE_NEEDED pairs are kept in
+                    # list_open() until an operator clears them, but
+                    # their markets have already resolved so the
+                    # /book endpoint returns 404. tick() already
+                    # short-circuits on these states; doing the same
+                    # check here avoids the wasted fetches.
+                    if row["state"] in (
+                        ScalperState.BOTH_FILLED,
+                        ScalperState.EXPIRED,
+                        ScalperState.REDEEMED,
+                        ScalperState.EXITED,
+                        ScalperState.SHADOW,
+                        ScalperState.RECONCILE_NEEDED,
+                    ):
+                        continue
                     if slug not in self.engine.pairs:
                         self.engine.add_pair(ScalpPair(
                             slug=slug, period_ts=row["period_ts"],
@@ -546,16 +895,38 @@ class ScalperDaemon:
                         ))
                     try:
                         if self._book_client is None:
-                            continue
+                            self._book_client = self._make_book_client()
+                            if self._book_client is None:
+                                continue
+                        self._refresh_book_client_if_needed()
                         book_up = self._book_client.get_order_book(row["up_token"])
                         book_dn = self._book_client.get_order_book(row["down_token"])
                         ask_up = self._best_ask(book_up)
                         ask_dn = self._best_ask(book_dn)
+                        bid_up = self._best_bid(book_up)
+                        bid_dn = self._best_bid(book_dn)
                         if ask_up and ask_dn:
                             self.engine.tick(slug, up_ask=ask_up, down_ask=ask_dn,
-                                             now_ms=int(now * 1000))
-                    except Exception:
-                        logger.exception("tick failed for %s", slug)
+                                             now_ms=int(now * 1000),
+                                             up_bid=bid_up, down_bid=bid_dn)
+                    except Exception as exc:
+                        # HTTP/2 ConnectionTerminated / RemoteProtocolError /
+                        # PolyApiException all indicate a dead client. Drop
+                        # it; the next tick rebuilds. Cheap, idempotent.
+                        msg = str(exc).lower()
+                        if any(s in msg for s in (
+                            "connectionterminated", "remoteprotocol",
+                            "request exception", "max_streams",
+                        )):
+                            logger.warning(
+                                "ScalperDaemon: connection error on %s — "
+                                "dropping book client (will rebuild next tick): %s",
+                                slug, type(exc).__name__,
+                            )
+                            self._book_client = None
+                            self._book_client_request_count = 0
+                        else:
+                            logger.exception("tick failed for %s", slug)
                 try:
                     self.heartbeat.parent.mkdir(parents=True, exist_ok=True)
                     self.heartbeat.touch()
@@ -578,6 +949,20 @@ class ScalperDaemon:
             else:
                 prices.append(float(a["price"]))
         return min(prices) if prices else None
+
+    @staticmethod
+    def _best_bid(book) -> Optional[float]:
+        bids = (getattr(book, "bids", None) if not isinstance(book, dict)
+                else book.get("bids", []))
+        if not bids:
+            return None
+        prices = []
+        for b in bids:
+            if hasattr(b, "price"):
+                prices.append(float(b.price))
+            else:
+                prices.append(float(b["price"]))
+        return max(prices) if prices else None
 
 
 if __name__ == "__main__":

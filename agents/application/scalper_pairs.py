@@ -14,13 +14,19 @@ class ScalperState:
     BOTH_FILLED = "both_filled"
     EXPIRED = "expired"
     REDEEMED = "redeemed"
+    EXITED = "exited"
     SHADOW = "shadow"
     RECONCILE_NEEDED = "reconcile_needed"
 
 
 # Not in TERMINAL_STATES intentionally: RECONCILE_NEEDED pairs remain in list_open()
 # until an operator verifies on-chain positions and manually clears the row.
-TERMINAL_STATES = (ScalperState.EXPIRED, ScalperState.REDEEMED, ScalperState.SHADOW)
+TERMINAL_STATES = (
+    ScalperState.EXPIRED,
+    ScalperState.REDEEMED,
+    ScalperState.EXITED,
+    ScalperState.SHADOW,
+)
 
 
 def _now_ts() -> int:

@@ -109,6 +109,9 @@ def derive_env_targets(report) -> Dict[str, Dict[str, str]]:
         "EXECUTE_SCALPER": "true" if scalper > 0 else "false",
         "SWARM_RESERVE_USDC": f"{swarm_total}",
     }
+    # Swarm config validator now accepts TOTAL_CAPITAL >= $1 (lowered
+    # from $20 in B1+, alongside per-agent order_size_usd dropping to
+    # $1). Anything > 0 is live; 0 means no swarm allocation → dryrun.
     swarm = {
         "TOTAL_CAPITAL": f"{swarm_total}",
         "BOT_MODE": "live" if swarm_total > 0 else "dryrun",

@@ -224,6 +224,12 @@ def _fmt_ms(ms):
     ).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _fmt_cents(value):
+    if value is None:
+        return "-"
+    return f"{float(value):.1f}\xa2"
+
+
 def _fmt_num(value, digits=4):
     if value is None:
         return "-"
@@ -365,13 +371,11 @@ def _swarm_body(state: dict) -> str:
                      '<th>note</th></tr></thead><tbody>')
         for r in unreconciled[:6]:
             oid = (r.get("order_id") or "")[:12]
-            price = r.get("price_cents")
-            price_s = f"{float(price):.4f}" if price is not None else "-"
             parts.append(
                 f'<tr><td>{_esc(_fmt_ms(r.get("updated_ms")))}</td>'
                 f'<td>{_esc(r.get("agent"))}</td>'
                 f'<td>{_esc(r.get("side"))} {_esc(r.get("outcome"))}</td>'
-                f'<td>{price_s}</td>'
+                f'<td>{_fmt_cents(r.get("price_cents"))}</td>'
                 f'<td>${float(r.get("size_usd") or 0):.2f}</td>'
                 f'<td>{_esc(oid)}</td>'
                 f'<td class="dim">{_esc((r.get("note") or "")[:34])}</td></tr>'
@@ -402,15 +406,14 @@ def _swarm_body(state: dict) -> str:
                      '<th>status</th><th>side</th><th>outcome</th><th>price</th>'
                      '<th>size</th><th>note</th></tr></thead><tbody>')
         for r in rp:
-            price = r.get("price_cents")
-            price_s = f"{float(price):.4f}" if price is not None else "-"
             parts.append(
                 f'<tr><td>{_esc(_fmt_ms(r.get("updated_ms")))}</td>'
                 f'<td>{_esc(r.get("agent"))}</td>'
                 f'<td>{_esc(r.get("status"))}</td>'
                 f'<td>{_esc(r.get("side"))}</td>'
                 f'<td>{_esc(r.get("outcome"))}</td>'
-                f'<td>{price_s}</td><td>${float(r.get("size_usd") or 0):.2f}</td>'
+                f'<td>{_fmt_cents(r.get("price_cents"))}</td>'
+                f'<td>${float(r.get("size_usd") or 0):.2f}</td>'
                 f'<td class="dim">{_esc((r.get("note") or "")[:36])}</td></tr>'
             )
         parts.append("</tbody></table>")
