@@ -125,6 +125,8 @@ SKIPPED_DRY_RUN = "skipped_dry_run"
 SCALPER_LEG = "scalper_leg"
 SCALPER_EXIT = "scalper_exit"
 BTC_DAILY_OPEN = "btc_daily_open"
+NEAR_RESOLUTION_OPEN = "near_resolution_open"
+NEWS_SHOCK_OPEN = "news_shock_open"
 # Resolution-sync statuses (added 2026-05-08): written when a Polymarket
 # market resolves and on-chain CTF balance hits dust on a token we held.
 # Realized P&L is recorded in `size_usdc` as the payout (shares × $1 if won,
@@ -327,7 +329,7 @@ class TradeLog:
         """Like filled_positions() but includes id, ts, and response_json.
         Used by position_manager to aggregate fills + read per-position
         overrides (e.g. tp_pct_override on manual entries)."""
-        open_statuses = (FILLED, BTC_DAILY_OPEN)
+        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN)
         placeholders = ",".join("?" for _ in open_statuses)
         sql = (
             "SELECT id, ts, market_id, token_id, side, price, size_usdc, "

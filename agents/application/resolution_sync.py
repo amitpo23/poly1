@@ -61,6 +61,8 @@ from typing import Optional
 from agents.application.trade_log import (
     BTC_DAILY_OPEN,
     FILLED,
+    NEAR_RESOLUTION_OPEN,
+    NEWS_SHOCK_OPEN,
     RESOLVED_LOSS,
     RESOLVED_NO,
     RESOLVED_YES,
@@ -106,7 +108,7 @@ class ResolutionSync:
     only for tokens that look stranded.
     """
 
-    OPEN_STATUSES = (FILLED, BTC_DAILY_OPEN, SCALPER_LEG)
+    OPEN_STATUSES = (FILLED, BTC_DAILY_OPEN, SCALPER_LEG, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN)
 
     def __init__(
         self,
@@ -450,11 +452,11 @@ class ResolutionSync:
             sql = (
                 "SELECT side, price, size_usdc, cycle_id, market_id "
                 "FROM trades WHERE token_id = ? "
-                "AND status IN (?, ?, ?) "
+                "AND status IN (?, ?, ?, ?, ?) "
                 "AND (error IS NULL OR error NOT LIKE 'SHADOW%')"
             )
             rows = conn.execute(
-                sql, (str(token_id), FILLED, BTC_DAILY_OPEN, SCALPER_LEG)
+                sql, (str(token_id), FILLED, BTC_DAILY_OPEN, SCALPER_LEG, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN)
             ).fetchall()
 
         total_shares = 0.0
