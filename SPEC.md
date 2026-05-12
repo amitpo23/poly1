@@ -196,6 +196,28 @@ Operator-controlled kill switch. Path configured by `KILL_SWITCH_FILE`.
 While the file exists, `RiskGate.ok()` returns `False` and no trades are
 attempted. `touch /srv/poly1/data/HALT` to halt; `rm` to resume.
 
+### Live stabilization preflight
+
+Before enabling any live entry agent, run:
+
+```bash
+.venv/bin/python scripts/trading_stability_preflight.py
+```
+
+The preflight is dependency-light and checks the current `.env` plus
+`data/trade_log.db` for the minimum live-readiness contract:
+
+- entry agents and allocator enforcement are frozen during stabilization;
+- `position_manager` is live exit-only;
+- `trading_supervisor` can enforce `HALT`;
+- no HALT file is already present;
+- open journal positions have `position_marks` and `position_manager` exit
+  `brain_decisions`;
+- settlement reconciliation has no critical action rows.
+
+Any `blocked` result is a no-trade condition. See
+`docs/LIVE_STABILIZATION_RUNBOOK_2026-05-12.md`.
+
 ### `data/logs/poly1.log`
 
 JSON-formatted application log, rotated at 10 MB × 5 files.
