@@ -196,7 +196,7 @@ class PositionManager:
         positions = self._aggregate_open_positions()
         for pos in positions:
             result["evaluated"] += 1
-            if self._already_closed(pos.token_id):
+            if self._already_closed(pos):
                 result["skipped_already_closed"] += 1
                 continue
             try:
@@ -379,7 +379,7 @@ class PositionManager:
 
     # ----------------------------------------------------------- closing
 
-    def _already_closed(self, token_id: str) -> bool:
+    def _already_closed(self, pos: AggregatedPosition) -> bool:
         """Idempotency guard — has a close-attempt row for this token been
         recorded? Prevents double-close even across daemon restarts.
 
@@ -394,15 +394,17 @@ class PositionManager:
         orderbook (market resolved or delisted). The dust-override must NOT
         trigger for such tokens — retrying would always 404.
         """
-        if not self.trade_log.has_close_attempt_for_token(token_id):
+        token_id = pos.token_id
+        after_id = max((int(i) for i in pos.journal_row_ids if i), default=0)
+        if not self.trade_log.has_close_attempt_for_token(token_id, after_id=after_id):
             return False
         # If the market resolved (no orderbook), skip on-chain dust check —
         # on-chain tokens are redeemable via CTF, not the CLOB.
-        if self.trade_log.has_resolved_marker_for_token(token_id):
+        if self.trade_log.has_resolved_marker_for_token(token_id, after_id=after_id):
             return True
         # Dust close does not warrant retry — position was evaluated as
         # sub-minimum notional; retrying always reproduces closed_dust.
-        if self.trade_log.has_dust_close_for_token(token_id):
+        if self.trade_log.has_dust_close_for_token(token_id, after_id=after_id):
             return True
         on_chain = self._on_chain_shares(token_id)
         if on_chain is None:

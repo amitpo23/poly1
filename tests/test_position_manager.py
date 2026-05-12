@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 from agents.application.position_manager import (
     PositionManager, PositionManagerConfig, AggregatedPosition,
-    CLOSED_TP, CLOSED_SL, CLOSED_TIMEOUT, CLOSE_FAILED,
+    CLOSED_TP, CLOSED_SL, CLOSED_TIMEOUT, CLOSED_DUST, CLOSE_FAILED,
 )
 from agents.application.trade_log import TradeLog, BTC_DAILY_OPEN, FILLED
 
@@ -229,7 +229,7 @@ class TestClosing(_TmpDB, unittest.TestCase):
         self.assertAlmostEqual(call.kwargs["limit_price"], 0.55 * 0.98, places=4)
         self.assertIn("order_type", call.kwargs)
 
-    def test_idempotency_already_closed_skips(self):
+    def test_already_closed_position_is_not_aggregated(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
         # Pre-mark the token as already closed
         self.tl.insert_terminal(
@@ -240,9 +240,30 @@ class TestClosing(_TmpDB, unittest.TestCase):
         mgr = PositionManager(polymarket=pm, trade_log=self.tl,
                               cfg=self._config(execute=True))
         result = mgr.check_and_close_positions()
-        self.assertEqual(result["skipped_already_closed"], 1)
+        self.assertEqual(result["evaluated"], 0)
+        self.assertEqual(result["skipped_already_closed"], 0)
         self.assertEqual(result["closed_tp"], 0)
         pm.sell_shares.assert_not_called()
+
+    def test_reentry_after_old_close_is_managed(self):
+        self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
+        self.tl.insert_terminal(
+            cycle_id="old-close", market_id="M1", status=CLOSED_DUST,
+            token_id="TOK", side="SELL", price=0.50, size_usdc=0.5,
+        )
+        self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
+
+        pm = self._polymarket({"TOK": 0.55})
+        mgr = PositionManager(polymarket=pm, trade_log=self.tl,
+                              cfg=self._config(execute=True))
+        result = mgr.check_and_close_positions()
+
+        self.assertEqual(result["evaluated"], 1)
+        self.assertEqual(result["skipped_already_closed"], 0)
+        self.assertEqual(result["closed_tp"], 1)
+        pm.sell_shares.assert_called_once()
+        call = pm.sell_shares.call_args
+        self.assertAlmostEqual(call.kwargs["shares"], 10.0, places=4)
 
     def test_failed_sell_writes_close_failed(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)

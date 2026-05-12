@@ -173,6 +173,76 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
         self.assertEqual(row["state"], "paper")
         self.assertEqual(row["sample_size"], 5)
 
+    def test_open_positions_start_after_latest_terminal_row(self):
+        log = TradeLog(db_path=self.db_path)
+        log.insert_terminal(
+            cycle_id="old-open",
+            market_id="M1",
+            token_id="TOK",
+            side="BUY",
+            price=0.50,
+            size_usdc=5.0,
+            confidence=0.8,
+            status=FILLED,
+        )
+        log.insert_terminal(
+            cycle_id="old-close",
+            market_id="M1",
+            token_id="TOK",
+            side="SELL",
+            price=0.50,
+            size_usdc=5.0,
+            status="closed_dust",
+        )
+        new_id = log.insert_terminal(
+            cycle_id="new-open",
+            market_id="M1",
+            token_id="TOK",
+            side="BUY",
+            price=0.25,
+            size_usdc=3.0,
+            confidence=0.8,
+            status=FILLED,
+        )
+
+        open_with_id = log.filled_positions_with_id()
+        self.assertEqual([r["id"] for r in open_with_id], [new_id])
+        self.assertEqual(len(log.filled_positions()), 1)
+        self.assertAlmostEqual(log.filled_positions()[0]["size_usdc"], 3.0)
+
+    def test_close_attempt_idempotency_can_be_scoped_after_entry(self):
+        log = TradeLog(db_path=self.db_path)
+        old_id = log.insert_terminal(
+            cycle_id="old-open",
+            market_id="M1",
+            token_id="TOK",
+            side="BUY",
+            price=0.50,
+            size_usdc=5.0,
+            status=FILLED,
+        )
+        log.insert_terminal(
+            cycle_id="old-close",
+            market_id="M1",
+            token_id="TOK",
+            side="SELL",
+            price=0.51,
+            size_usdc=5.1,
+            status="closed_take_profit",
+        )
+        new_id = log.insert_terminal(
+            cycle_id="new-open",
+            market_id="M1",
+            token_id="TOK",
+            side="BUY",
+            price=0.40,
+            size_usdc=4.0,
+            status=FILLED,
+        )
+
+        self.assertTrue(log.has_close_attempt_for_token("TOK", after_id=old_id))
+        self.assertFalse(log.has_close_attempt_for_token("TOK", after_id=new_id))
+
 
 class TestRiskGate(TempDataMixin, unittest.TestCase):
     def _gate(self, **kwargs):

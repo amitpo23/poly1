@@ -432,20 +432,35 @@ class TradeLog:
         Used by position_manager to aggregate fills + read per-position
         overrides (e.g. tp_pct_override on manual entries)."""
         open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN)
+        terminal_statuses = (
+            "closed_take_profit", "closed_stop_loss", "closed_timeout",
+            "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
+        )
         placeholders = ",".join("?" for _ in open_statuses)
+        terminal_placeholders = ",".join("?" for _ in terminal_statuses)
         sql = (
-            "SELECT id, ts, market_id, token_id, side, price, size_usdc, "
-            "status, response_json "
-            f"FROM trades WHERE status IN ({placeholders}) AND token_id IS NOT NULL "
-            "AND token_id != '' "
-            "AND (error IS NULL OR error NOT LIKE 'SHADOW%') "
-            "ORDER BY id"
+            "SELECT t.id, t.ts, t.market_id, t.token_id, t.side, t.price, "
+            "t.size_usdc, t.status, t.response_json "
+            "FROM trades t "
+            "LEFT JOIN ("
+            "  SELECT token_id, MAX(id) AS terminal_id FROM trades "
+            f"  WHERE status IN ({terminal_placeholders}) "
+            "  AND token_id IS NOT NULL AND token_id != '' "
+            "  GROUP BY token_id"
+            ") x ON x.token_id = t.token_id "
+            f"WHERE t.status IN ({placeholders}) AND t.token_id IS NOT NULL "
+            "AND t.token_id != '' "
+            "AND (t.error IS NULL OR t.error NOT LIKE 'SHADOW%') "
+            "AND t.id > COALESCE(x.terminal_id, 0) "
+            "ORDER BY t.id"
         )
         with self._lock, self._connect() as conn:
-            rows = conn.execute(sql, open_statuses).fetchall()
+            rows = conn.execute(sql, (*terminal_statuses, *open_statuses)).fetchall()
             return [dict(r) for r in rows]
 
-    def has_close_attempt_for_token(self, token_id: str) -> bool:
+    def has_close_attempt_for_token(
+        self, token_id: str, after_id: Optional[int] = None
+    ) -> bool:
         """Return True if a LIVE successful closed_* row exists for this
         token. Used by position_manager to avoid double-closing the same
         position across daemon cycles or restarts.
@@ -464,13 +479,19 @@ class TradeLog:
             "'closed_timeout','closed_dust',"
             "'resolved_yes','resolved_no','resolved_loss') "
             "AND (error IS NULL OR error NOT LIKE 'SHADOW%') "
-            "LIMIT 1"
         )
+        params: list = [str(token_id)]
+        if after_id is not None:
+            sql += "AND id > ? "
+            params.append(int(after_id))
+        sql += "LIMIT 1"
         with self._lock, self._connect() as conn:
-            row = conn.execute(sql, (str(token_id),)).fetchone()
+            row = conn.execute(sql, params).fetchone()
             return row is not None
 
-    def has_resolved_marker_for_token(self, token_id: str) -> bool:
+    def has_resolved_marker_for_token(
+        self, token_id: str, after_id: Optional[int] = None
+    ) -> bool:
         """Return True if the token has a resolved_* status row.
 
         Used by position_manager._already_closed to suppress the dust-override
@@ -480,13 +501,19 @@ class TradeLog:
         sql = (
             "SELECT 1 FROM trades WHERE token_id = ? "
             "AND status IN ('resolved_yes','resolved_no','resolved_loss') "
-            "LIMIT 1"
         )
+        params: list = [str(token_id)]
+        if after_id is not None:
+            sql += "AND id > ? "
+            params.append(int(after_id))
+        sql += "LIMIT 1"
         with self._lock, self._connect() as conn:
-            row = conn.execute(sql, (str(token_id),)).fetchone()
+            row = conn.execute(sql, params).fetchone()
             return row is not None
 
-    def has_dust_close_for_token(self, token_id: str) -> bool:
+    def has_dust_close_for_token(
+        self, token_id: str, after_id: Optional[int] = None
+    ) -> bool:
         """Return True if the most-recent terminal close for this token was
         closed_dust.
 
@@ -500,10 +527,14 @@ class TradeLog:
             "'closed_timeout','closed_dust',"
             "'resolved_yes','resolved_no','resolved_loss') "
             "AND (error IS NULL OR error NOT LIKE 'SHADOW%') "
-            "ORDER BY id DESC LIMIT 1"
         )
+        params: list = [str(token_id)]
+        if after_id is not None:
+            sql += "AND id > ? "
+            params.append(int(after_id))
+        sql += "ORDER BY id DESC LIMIT 1"
         with self._lock, self._connect() as conn:
-            row = conn.execute(sql, (str(token_id),)).fetchone()
+            row = conn.execute(sql, params).fetchone()
             return row is not None and row[0] == "closed_dust"
 
     def count_close_failed_for_token(self, token_id: str) -> int:
@@ -663,14 +694,27 @@ class TradeLog:
         of scalper positions must be added separately (e.g., from
         `scalper_pairs`) or scalper-deployed cash will read as drawdown.
         """
+        terminal_statuses = (
+            "closed_take_profit", "closed_stop_loss", "closed_timeout",
+            "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
+        )
+        terminal_placeholders = ",".join("?" for _ in terminal_statuses)
         sql = (
-            "SELECT market_id, token_id, side, price, size_usdc "
-            "FROM trades WHERE status = ? AND token_id IS NOT NULL "
-            "AND token_id != '' "
-            "ORDER BY id"
+            "SELECT t.market_id, t.token_id, t.side, t.price, t.size_usdc "
+            "FROM trades t "
+            "LEFT JOIN ("
+            "  SELECT token_id, MAX(id) AS terminal_id FROM trades "
+            f"  WHERE status IN ({terminal_placeholders}) "
+            "  AND token_id IS NOT NULL AND token_id != '' "
+            "  GROUP BY token_id"
+            ") x ON x.token_id = t.token_id "
+            "WHERE t.status = ? AND t.token_id IS NOT NULL "
+            "AND t.token_id != '' "
+            "AND t.id > COALESCE(x.terminal_id, 0) "
+            "ORDER BY t.id"
         )
         with self._lock, self._connect() as conn:
-            rows = conn.execute(sql, (FILLED,)).fetchall()
+            rows = conn.execute(sql, (*terminal_statuses, FILLED)).fetchall()
             return [dict(r) for r in rows]
 
     def recover_stranded_pendings(self, older_than_minutes: int = 10) -> int:

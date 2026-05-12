@@ -184,14 +184,21 @@ class ResolutionSync:
         with self.trade_log._lock, self.trade_log._connect() as conn:
             placeholders = ",".join(["?"] * len(self.OPEN_STATUSES))
             sql = (
-                f"SELECT DISTINCT token_id FROM trades "
+                f"SELECT token_id, MAX(id) AS latest_open_id FROM trades "
                 f"WHERE status IN ({placeholders}) AND token_id IS NOT NULL "
-                f"AND token_id != ''"
+                f"AND token_id != '' "
+                f"GROUP BY token_id"
             )
             rows = conn.execute(sql, self.OPEN_STATUSES).fetchall()
-        candidates = [r[0] for r in rows]
-        # Filter out tokens already terminally resolved/closed.
-        return [t for t in candidates if not self.trade_log.has_close_attempt_for_token(t)]
+        candidates = [(r["token_id"], int(r["latest_open_id"])) for r in rows]
+        # Filter out tokens already terminally resolved/closed after their
+        # latest open row. Old terminal rows must not suppress a re-entry.
+        return [
+            token_id for token_id, latest_open_id in candidates
+            if not self.trade_log.has_close_attempt_for_token(
+                token_id, after_id=latest_open_id
+            )
+        ]
 
     def _classify_token(self, token_id: str) -> Optional[dict]:
         """If on-chain balance is dust, query Gamma for resolution and

@@ -168,6 +168,14 @@ behaviour where stale fills from shadow-mode sessions blocked markets
 indefinitely after position_manager had already closed them on-chain.
 (Fixed 2026-05-12; previously any historical fill blocked forever.)
 
+**Open-position aggregation (`filled_positions*`):**
+Position-manager and risk-gate open rows are scoped to rows after the latest
+terminal close/resolution row for that `token_id`. Re-entering the same token
+after a prior `closed_dust`, `closed_take_profit`, `closed_stop_loss`,
+`closed_timeout`, or `resolved_*` row must produce a fresh managed position.
+Old terminal rows must not suppress new entries, and old pre-close fills must
+not inflate MTM/deployed-capital accounting.
+
 ### `data/llm_usage.jsonl`
 
 One JSON object per LLM call; consumed by `RiskGate.daily_token_usd`:
@@ -322,6 +330,11 @@ following the `post_order` HTTP call.
   skipped via dedupe for `dedupe_hours` (default 6).
 - The operator must verify on-chain whether the order actually executed
   before manually clearing the row.
+- Position close idempotency is row-scoped: `PositionManager._already_closed`
+  calls terminal-row helpers with `after_id=max(open journal row ids)`.
+  A stale close from a previous position on the same `token_id` cannot block a
+  new position from being evaluated or exited. Regression tests cover this
+  because it caused a missed +20.97% BTC-daily exit window on 2026-05-12.
 
 ## 10. Failure modes & responses
 

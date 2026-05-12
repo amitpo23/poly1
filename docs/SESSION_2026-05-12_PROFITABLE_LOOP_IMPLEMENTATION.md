@@ -108,6 +108,29 @@ This gives us a durable place to record:
 Promotion/demotion can now be written by `goal_status`, allocator, or future
 router jobs without inventing a second state store.
 
+### 8. Re-entry-Aware Position Idempotency
+
+Follow-up fix after the live-position review:
+
+- BTC daily position `#2290` had a real MFE of about +20.97% after entry, but
+  position management could skip evaluation because the same `token_id` had
+  older terminal rows (`closed_dust`/similar) from previous cycles.
+- `TradeLog.filled_positions_with_id()` and `TradeLog.filled_positions()` now
+  only return open rows after the latest terminal row for the same token.
+- `has_close_attempt_for_token(...)`, `has_resolved_marker_for_token(...)`,
+  and `has_dust_close_for_token(...)` accept `after_id`.
+- `PositionManager._already_closed(...)` scopes idempotency to terminal rows
+  after the current aggregated position's journal row ids.
+- `ResolutionSync._tokens_needing_check()` uses the latest open row id, so old
+  terminal rows no longer suppress resolution checks for re-entered tokens.
+
+Regression coverage:
+
+- a closed position is no longer aggregated as open,
+- a re-entry after old `closed_dust` is evaluated and can take profit,
+- risk/MTM helpers exclude fills that happened before the latest terminal row,
+- close-attempt idempotency can be scoped to "after this entry".
+
 ## Implemented in swarm
 
 Changed files in sister repo: `/Users/mymac/Desktop/poly/bot`.
@@ -165,6 +188,24 @@ poly1:
 ```
 
 Result: 56 tests passed.
+
+Follow-up re-entry-idempotency verification:
+
+```bash
+.venv/bin/python -m py_compile \
+  agents/application/trade_log.py \
+  agents/application/position_manager.py \
+  agents/application/resolution_sync.py
+```
+
+```bash
+.venv/bin/python -m unittest \
+  tests.test_position_manager \
+  tests.test_trader.TestTradeLog \
+  tests.test_trader.TestRiskGate -v
+```
+
+Result: 43 tests passed.
 
 Full poly1 test run was not possible in this local venv because these
 dependencies are missing:
