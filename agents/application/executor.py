@@ -12,6 +12,13 @@ import math
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+try:
+    import anthropic as _anthropic_sdk
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _ANTHROPIC_AVAILABLE = False
+
+_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
 
 logger = logging.getLogger(__name__)
@@ -97,7 +104,48 @@ class Executor:
         return self._polymarket
 
     def _invoke_tracked(self, messages, tag: str) -> str:
-        result = self.llm.invoke(messages)
+        try:
+            result = self.llm.invoke(messages)
+        except Exception as exc:
+            _is_quota = (
+                "insufficient_quota" in str(exc)
+                or "exceeded your current quota" in str(exc)
+                or "RateLimitError" in type(exc).__name__
+            )
+            anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+            if _is_quota and anthropic_key and _ANTHROPIC_AVAILABLE:
+                logger.warning(
+                    "OpenAI quota exhausted — falling back to %s (tag=%s)",
+                    _ANTHROPIC_MODEL,
+                    tag,
+                )
+                _client = _anthropic_sdk.Anthropic(api_key=anthropic_key)
+                # Convert LangChain messages (or plain string) to Anthropic format
+                _system = None
+                _anth_msgs = []
+                if isinstance(messages, str):
+                    # Plain string prompt — treat as a single user message
+                    _anth_msgs = [{"role": "user", "content": messages.strip()}]
+                else:
+                    for _m in messages:
+                        if isinstance(_m, SystemMessage):
+                            _system = _m.content
+                        elif isinstance(_m, HumanMessage):
+                            _anth_msgs.append({"role": "user", "content": _m.content.strip()})
+                        else:
+                            _content = getattr(_m, 'content', str(_m)).strip()
+                            if _content:  # skip empty assistant turns
+                                _anth_msgs.append({"role": "assistant", "content": _content})
+                _kwargs = {
+                    "model": _ANTHROPIC_MODEL,
+                    "max_tokens": 4096,
+                    "messages": _anth_msgs,
+                }
+                if _system:
+                    _kwargs["system"] = _system
+                _resp = _client.messages.create(**_kwargs)
+                return _resp.content[0].text
+            raise
         try:
             self._record_usage(result, tag)
         except Exception:
