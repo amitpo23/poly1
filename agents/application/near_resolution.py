@@ -153,6 +153,7 @@ class NearResolutionEngine:
 
         now_utc = datetime.now(timezone.utc)
         candidates = []
+        closest_hours: Optional[float] = None
         for m in markets:
             # Must be binary (exactly 2 outcomes)
             try:
@@ -180,6 +181,9 @@ class NearResolutionEngine:
                 hours_left = (end_dt - now_utc).total_seconds() / 3600.0
             except (ValueError, TypeError):
                 continue
+            # Track nearest future market for diagnostics
+            if hours_left > 0 and (closest_hours is None or hours_left < closest_hours):
+                closest_hours = hours_left
             if not (self.cfg.min_hours <= hours_left <= self.cfg.max_hours):
                 continue
 
@@ -221,7 +225,17 @@ class NearResolutionEngine:
                 "raw": m,
             })
 
-        logger.info("near_resolution: %d candidates after filters", len(candidates))
+        if len(candidates) == 0 and closest_hours is not None:
+            logger.info(
+                "near_resolution: 0 candidates — nearest binary market closes in %.1fh "
+                "(window %.1f–%.1fh, max_entry_price=%.2f)",
+                closest_hours,
+                self.cfg.min_hours,
+                self.cfg.max_hours,
+                self.cfg.max_entry_price,
+            )
+        else:
+            logger.info("near_resolution: %d candidates after filters", len(candidates))
         return candidates
 
     # ---------------------------------------------------------- Tavily check
