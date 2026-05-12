@@ -299,17 +299,21 @@ class PositionManager:
 
     def _evaluate_position(self, pos: AggregatedPosition) -> tuple[Optional[str], float]:
         """Return (reason, current_mid). reason is None if no action."""
+        mid_fetch_error: Optional[str] = None
         try:
             mid_resp = self.polymarket.client.get_midpoint(pos.token_id)
             if isinstance(mid_resp, dict):
                 mid = float(mid_resp.get("mid", pos.avg_entry_price))
             else:
                 mid = float(mid_resp)
+            if mid <= 0:
+                mid = pos.avg_entry_price
         except Exception as exc:
             logger.warning(
                 "midpoint fetch failed for %s: %s", pos.token_id[:18], exc
             )
-            return (None, pos.avg_entry_price)
+            mid = pos.avg_entry_price
+            mid_fetch_error = str(exc)
 
         mark = self.trade_log.upsert_position_mark(
             token_id=pos.token_id,
@@ -318,9 +322,15 @@ class PositionManager:
             current_price=mid,
             shares=pos.total_shares,
             status="open",
-            notes={"cost_basis_usdc": round(pos.total_cost_usdc, 6)},
+            notes={
+                "cost_basis_usdc": round(pos.total_cost_usdc, 6),
+                **({"midpoint_error": mid_fetch_error} if mid_fetch_error else {}),
+            },
         )
         peak = float(mark.get("max_price") or mid)
+
+        if mid_fetch_error:
+            return (None, mid)
 
         # Per-position TP override (set by manual_entry.py): bypass the
         # brain's compound exit logic. This is a deliberately simple
