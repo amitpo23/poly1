@@ -194,20 +194,31 @@ class TradeLog:
         return str(uuid.uuid4())
 
     def has_filled_position_for_market(self, market_id: str) -> bool:
-        """Return True if poly1 main has any FILLED row for this market,
-        regardless of age. Used to block 'averaging down' — if the LLM
-        already opened a position on this market and the market then
-        moved against us, we don't want to double the bet by reopening
-        when the dedupe window expires. We'd only want to reopen after
-        an exit (which currently doesn't exist — `maintain_positions`
-        is a stub). Once exit logic lands, this check should also
-        consult position state, not just journal rows.
+        """Return True if there is a FILLED row with no subsequent terminal
+        close row. A terminal row (closed_*, resolved_*) written after the
+        last FILLED row means the position has been exited, so re-entry is
+        allowed. This prevents the old 'block forever on any historical fill'
+        behaviour that left stale filled rows blocking markets indefinitely
+        after position_manager had already closed them.
         """
-        sql = (
-            "SELECT 1 FROM trades WHERE market_id = ? AND status = ? LIMIT 1"
+        _TERMINAL = (
+            "closed_take_profit", "closed_stop_loss", "closed_timeout",
+            "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
         )
+        terminal_ph = ",".join("?" * len(_TERMINAL))
+        sql = f"""
+            SELECT 1 FROM trades
+            WHERE market_id = ? AND status = 'filled'
+              AND id > COALESCE(
+                (SELECT MAX(id) FROM trades
+                 WHERE market_id = ? AND status IN ({terminal_ph})), 0
+              )
+            LIMIT 1
+        """
         with self._lock, self._connect() as conn:
-            row = conn.execute(sql, (str(market_id), FILLED)).fetchone()
+            row = conn.execute(
+                sql, (str(market_id), str(market_id), *_TERMINAL)
+            ).fetchone()
             return row is not None
 
     def has_active_trade_for_market(self, market_id: str, hours: int = 6) -> bool:

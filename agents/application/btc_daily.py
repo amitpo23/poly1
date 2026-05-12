@@ -101,6 +101,10 @@ class BtcDailyConfig:
     skip_on_strong_trend: bool = True
     trend_window_minutes: int = 30
     trend_threshold_pct: float = 0.008          # 0.8%
+    # Slippage kill-switch: give up on a market after this many consecutive
+    # slippage failures. Prevents tight-loop retries when the market has moved
+    # far from our anchor (e.g. ask=0.77 vs recommended=0.50).
+    max_slippage_skips: int = 3
     # Polling
     poll_sec: int = 5                            # entry-loop cadence
     # Heartbeat
@@ -119,6 +123,7 @@ class BtcDailyConfig:
             ).lower() == "true",
             trend_window_minutes=_env_int("BTC_DAILY_TREND_WINDOW_MIN", 30),
             trend_threshold_pct=_env_float("BTC_DAILY_TREND_THRESHOLD_PCT", 0.008),
+            max_slippage_skips=_env_int("BTC_DAILY_MAX_SLIPPAGE_SKIPS", 3),
             poll_sec=_env_int("BTC_DAILY_POLL_SEC", 5),
             heartbeat_path=os.getenv(
                 "BTC_DAILY_HEARTBEAT_PATH", "/app/data/btc_daily_heartbeat"
@@ -234,6 +239,9 @@ class BtcDailyEngine:
         self.open_position: Optional[OpenPosition] = None
         self.last_entry_ms: int = 0
         self._market_cache: dict[str, dict] = {}  # slug → market metadata
+        # Consecutive slippage failures per market_id — reset on success.
+        # When >= cfg.max_slippage_skips we stop retrying for this daemon run.
+        self._slippage_fails: dict[str, int] = {}
 
     # ------------------------------------------------------------------ entry
 
@@ -286,6 +294,13 @@ class BtcDailyEngine:
         # in the current daemon process; the journal check survives restarts
         # and prevents the 14-entries-on-one-token disaster from 2026-05-07.
         market_id = market_doc.get("market_id", "")
+        if self._slippage_fails.get(market_id, 0) >= self.cfg.max_slippage_skips:
+            logger.info(
+                "btc_daily: skip — %d consecutive slippage failures on %s, "
+                "market has moved; giving up until daemon restart",
+                self._slippage_fails[market_id], market_id,
+            )
+            return None
         if self.trade_log.has_filled_position_for_market(market_id):
             logger.info(
                 "btc_daily: skip — already holds filled position on market %s",
@@ -362,13 +377,26 @@ class BtcDailyEngine:
                 (market_doc["doc"], 0.0), recommendation,
             )
         except Exception as exc:
+            # Apply cooldown even on failure so we don't hammer the CLOB
+            # every 5 seconds on repeated slippage errors.
+            self.last_entry_ms = now_ms
             self.trade_log.mark(
                 pending_id, "failed", error=f"execute_market_order raised: {exc}"
             )
+            exc_msg = str(exc)
             logger.warning("btc_daily entry failed: %s", exc)
+            # Track consecutive slippage failures for the kill-switch.
+            if "max slippage" in exc_msg or "exceeds recommended price" in exc_msg:
+                self._slippage_fails[market_id] = (
+                    self._slippage_fails.get(market_id, 0) + 1
+                )
+                logger.info(
+                    "btc_daily: slippage fail #%d on %s (max=%d)",
+                    self._slippage_fails[market_id], market_id,
+                    self.cfg.max_slippage_skips,
+                )
             # If the market has no orderbook (resolved/delisted), evict cache
             # so the next cycle re-fetches and detects the closed state.
-            exc_msg = str(exc)
             if "status_code=404" in exc_msg or "No orderbook" in exc_msg:
                 slug = format_btc_daily_slug()
                 self._market_cache.pop(slug, None)
@@ -385,6 +413,8 @@ class BtcDailyEngine:
             return None
 
         self.trade_log.mark(pending_id, BTC_DAILY_OPEN, response=response)
+        # Successful entry — reset the slippage failure counter for this market.
+        self._slippage_fails.pop(market_id, None)
         entry_price = float(response.get("order_avg_price_estimate", 0.5))
         entry_size_usdc = float(response.get("amount_usdc", self.cfg.position_size_usdc))
         shares = entry_size_usdc / max(entry_price, 0.01)
