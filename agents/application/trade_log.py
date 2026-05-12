@@ -405,6 +405,42 @@ class TradeLog:
             row = conn.execute(sql, (str(token_id),)).fetchone()
             return row is not None
 
+    def has_dust_close_for_token(self, token_id: str) -> bool:
+        """Return True if the most-recent terminal close for this token was
+        closed_dust.
+
+        Used by position_manager._already_closed to suppress the dust-override
+        for positions already evaluated as sub-minimum notional.  Retrying a
+        dust close just produces another closed_dust row indefinitely.
+        """
+        sql = (
+            "SELECT status FROM trades WHERE token_id = ? "
+            "AND status IN ('closed_take_profit','closed_stop_loss',"
+            "'closed_timeout','closed_dust',"
+            "'resolved_yes','resolved_no','resolved_loss') "
+            "AND (error IS NULL OR error NOT LIKE 'SHADOW%') "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, (str(token_id),)).fetchone()
+            return row is not None and row[0] == "closed_dust"
+
+    def count_close_failed_for_token(self, token_id: str) -> int:
+        """Count close_failed rows for this token.
+
+        Used by position_manager to detect permanently-stuck positions: if a
+        FAK sell keeps bouncing (e.g., illiquid market, 400 'no orders found
+        to match with FAK order') beyond MAINTAIN_MAX_CLOSE_FAILURES cycles,
+        escalate to resolved_loss so the retry loop stops.
+        """
+        sql = (
+            "SELECT COUNT(*) FROM trades WHERE token_id = ? "
+            "AND status = 'close_failed'"
+        )
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, (str(token_id),)).fetchone()
+            return row[0] if row else 0
+
     def filled_positions(self) -> list:
         """Return one row per filled trade with token_id present.
 

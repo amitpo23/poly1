@@ -88,6 +88,9 @@ class PositionManagerConfig:
     # `mid × (1 - slippage)` so the order is competitive at the bid.
     sell_slippage: float = 0.02
     min_exit_notional_usdc: float = 1.0
+    # After this many consecutive close_failed rows for the same token,
+    # escalate to resolved_loss (illiquid market, FAK never matches).
+    max_close_failures: int = 10
     # Heartbeat path for healthcheck.
     heartbeat_path: str = "/app/data/position_manager_heartbeat"
     # When False, log decisions but don't actually post SELL orders.
@@ -102,6 +105,7 @@ class PositionManagerConfig:
             poll_seconds=_env_int("MAINTAIN_POLL_SEC", 60),
             sell_slippage=_env_float("MAINTAIN_SELL_SLIPPAGE", 0.02),
             min_exit_notional_usdc=_env_float("MAINTAIN_MIN_EXIT_NOTIONAL_USDC", 1.0),
+            max_close_failures=_env_int("MAINTAIN_MAX_CLOSE_FAILURES", 10),
             heartbeat_path=os.getenv(
                 "MAINTAIN_HEARTBEAT_PATH",
                 "/app/data/position_manager_heartbeat",
@@ -389,6 +393,10 @@ class PositionManager:
         # on-chain tokens are redeemable via CTF, not the CLOB.
         if self.trade_log.has_resolved_marker_for_token(token_id):
             return True
+        # Dust close does not warrant retry — position was evaluated as
+        # sub-minimum notional; retrying always reproduces closed_dust.
+        if self.trade_log.has_dust_close_for_token(token_id):
+            return True
         on_chain = self._on_chain_shares(token_id)
         if on_chain is None:
             return True
@@ -600,6 +608,31 @@ class PositionManager:
                 error=err_str,
             )
             return True  # treat as "handled" so errors counter stays clean
+
+        # Escalate to resolved_loss when FAK keeps bouncing for too many
+        # cycles (e.g., illiquid market: 400 "no orders found to match").
+        # On-chain tokens remain redeemable via CTF; further CLOB retries
+        # are pointless and spam the journal.
+        failed_count = self.trade_log.count_close_failed_for_token(pos.token_id)
+        if failed_count >= self.cfg.max_close_failures:
+            logger.error(
+                "position_manager: token=%s already has %d close_failed rows — "
+                "escalating to resolved_loss (illiquid/stuck). "
+                "Redeem on-chain via CTF if needed. error=%s",
+                pos.token_id[:18], failed_count, err_str,
+            )
+            self.trade_log.insert_terminal(
+                cycle_id=cycle_id,
+                market_id=pos.market_id,
+                status=RESOLVED_LOSS,
+                token_id=pos.token_id,
+                side="SELL",
+                price=sell_price,
+                size_usdc=0,
+                response=response,
+                error=f"escalated after {failed_count} close_failed: {err_str}",
+            )
+            return True
 
         self.trade_log.insert_terminal(
             cycle_id=cycle_id,
