@@ -154,6 +154,43 @@ Docker service: `trading-supervisor`, profiles `positions` and `supervisor`.
 It starts with the positions profile so live exits and exit supervision are
 activated together.
 
+### 10. Settlement Reconciler
+
+Added `agents/application/settlement_reconciler.py`.
+
+This daemon covers the class of failures that stop-loss cannot solve because
+the market may already be resolved, bidless, redeemable, or too small to
+recover economically.
+
+It reconciles every open journal token and writes one durable row to
+`settlement_reconciliation` with:
+
+- cost basis,
+- journal shares,
+- on-chain CTF shares when available,
+- best bid/ask,
+- recoverable value,
+- redeemable value,
+- gas/recovery threshold,
+- status/action.
+
+Statuses:
+
+- `active_managed` - live position with fresh exit evidence.
+- `active_unmanaged` - live/recoverable position without fresh exit evidence.
+- `redeemable` - resolved winner with on-chain shares left to redeem.
+- `lost_final` - resolved loser, no CLOB sell retry.
+- `dust_unrecoverable` - recoverable value below min/gas threshold.
+- `resolved_won_no_balance` - won but no balance remains; verify redeemed.
+- `reconcile_error` - classification failed.
+
+`TradingSupervisor` now reads recent settlement reconciliation rows. Critical
+statuses (`active_unmanaged`, `redeemable`, `reconcile_error`) trip HALT when
+`TRADING_SUPERVISOR_ENFORCE_HALT=true`.
+
+Docker service: `settlement-reconciler`, profiles `positions` and
+`settlement`.
+
 ## Implemented in swarm
 
 Changed files in sister repo: `/Users/mymac/Desktop/poly/bot`.
@@ -224,12 +261,13 @@ Follow-up re-entry-idempotency verification:
 ```bash
 .venv/bin/python -m unittest \
   tests.test_position_manager \
+  tests.test_settlement_reconciler \
   tests.test_trading_supervisor \
   tests.test_trader.TestTradeLog \
   tests.test_trader.TestRiskGate -v
 ```
 
-Result: 49 tests passed.
+Result: 57 tests passed.
 
 Supervisor live-state dry check:
 

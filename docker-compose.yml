@@ -137,6 +137,34 @@ services:
     stop_grace_period: 30s
     profiles: ["positions", "supervisor"]
 
+  settlement-reconciler:
+    build: .
+    image: poly1:local
+    container_name: poly1-settlement-reconciler
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+    command: ["python", "-m", "agents.application.settlement_reconciler"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/settlement_reconciler_heartbeat') < 900"]
+      interval: 120s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.15"
+    stop_grace_period: 30s
+    profiles: ["positions", "settlement"]
+
   dashboard:
     build: .
     image: poly1:local

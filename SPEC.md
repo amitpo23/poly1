@@ -266,9 +266,46 @@ open, it writes `KILL_SWITCH_FILE` so entry agents stop opening new risk.
 | `TRADING_SUPERVISOR_MIN_POSITION_AGE_SEC` | `45` | Grace period after a new fill before requiring the first exit evaluation. |
 | `TRADING_SUPERVISOR_CLOSE_FAILED_WINDOW_MIN` | `15` | Rolling window for close-failure storm detection. |
 | `TRADING_SUPERVISOR_CLOSE_FAILED_THRESHOLD` | `5` | Critical if recent `close_failed` rows exceed this count. |
+| `TRADING_SUPERVISOR_SETTLEMENT_MAX_AGE_MIN` | `15` | Max age for settlement rows that can trip supervisor control. |
 | `TRADING_SUPERVISOR_HEARTBEAT_PATH` | `/app/data/trading_supervisor_heartbeat` | Supervisor healthcheck heartbeat. |
 | `TRADING_SUPERVISOR_STATE_PATH` | `/app/data/trading_supervisor_status.json` | Latest supervisor state for dashboard/ops. |
 | `TRADING_SUPERVISOR_POSITION_MANAGER_HEARTBEAT` | `/app/data/position_manager_heartbeat` | Heartbeat file the supervisor watches. |
+
+### Settlement reconciler
+
+`agents/application/settlement_reconciler.py` reconciles journal positions
+against market state and, when available, on-chain CTF balances. It classifies
+positions that are no longer a normal stop-loss problem: resolved losses,
+redeemable winners, dust below recovery threshold, and active positions that
+are not being managed by the exit loop.
+
+It writes one row per token to `settlement_reconciliation` with:
+`status`, `action`, cost basis, journal shares, on-chain shares, bid/ask,
+recoverable value, redeemable value, gas estimate, and diagnostic JSON.
+
+Important statuses:
+
+| Status | Meaning | Supervisor action |
+|---|---|---|
+| `active_managed` | Market is live and exit evidence is fresh. | No halt. |
+| `active_unmanaged` | Market is live/recoverable but exit evidence is missing or stale. | Critical halt. |
+| `redeemable` | Market resolved in our favor and on-chain shares remain. | Critical halt until redeemed/handled. |
+| `lost_final` | Market resolved against us. | Record loss, no sell retry. |
+| `dust_unrecoverable` | Live bid exists but recoverable value is below threshold/gas. | No sell retry. |
+| `resolved_won_no_balance` | Market won, but on-chain shares are already gone/dust. | Verify redeemed. |
+| `reconcile_error` | Reconciler could not classify. | Critical halt. |
+
+| Var | Default | Notes |
+|---|---|---|
+| `SETTLEMENT_RECONCILER_ENABLED` | `true` | Disable only for maintenance/testing. |
+| `SETTLEMENT_RECONCILER_POLL_SEC` | `300` | Reconciliation cadence. |
+| `SETTLEMENT_RECONCILER_HEARTBEAT_PATH` | `/app/data/settlement_reconciler_heartbeat` | Healthcheck heartbeat. |
+| `SETTLEMENT_MIN_RECOVERABLE_USDC` | `1.0` | Below this, classify as dust/unrecoverable rather than trying to sell. |
+| `SETTLEMENT_GAS_ESTIMATE_USDC` | `0.05` | Recovery economics threshold helper. |
+| `SETTLEMENT_REDEEMABLE_SHARES_FLOOR` | `0.5` | Minimum winning shares before marking as redeemable. |
+| `SETTLEMENT_ON_CHAIN_DUST_FLOOR` | `0.5` | Dust threshold for balances. |
+| `SETTLEMENT_EXIT_EVIDENCE_GRACE_SEC` | `240` | Freshness window for `position_marks` and exit decisions. |
+| `SETTLEMENT_REQUIRE_EXIT_EVIDENCE` | `true` | Require position-manager evidence before classifying live positions as managed. |
 
 ### Persistence
 

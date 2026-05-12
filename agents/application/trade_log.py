@@ -172,6 +172,26 @@ CREATE TABLE IF NOT EXISTS agent_promotion_ledger (
     metadata_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_promotion_state ON agent_promotion_ledger(state, updated_ts);
+
+CREATE TABLE IF NOT EXISTS settlement_reconciliation (
+    token_id TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    action TEXT NOT NULL,
+    updated_ts TEXT NOT NULL,
+    latest_open_trade_id INTEGER,
+    cost_basis_usdc REAL,
+    journal_shares REAL,
+    on_chain_shares REAL,
+    best_bid REAL,
+    best_ask REAL,
+    recoverable_usdc REAL,
+    redeemable_usdc REAL,
+    gas_estimate_usdc REAL,
+    details_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_settlement_status_ts ON settlement_reconciliation(status, updated_ts);
+CREATE INDEX IF NOT EXISTS idx_settlement_market_ts ON settlement_reconciliation(market_id, updated_ts);
 """
 
 
@@ -680,6 +700,94 @@ class TradeLog:
                     json.dumps(metadata, default=str) if metadata is not None else None,
                 ),
             )
+
+    def upsert_settlement_reconciliation(
+        self,
+        *,
+        token_id: str,
+        market_id: str,
+        status: str,
+        action: str,
+        latest_open_trade_id: Optional[int] = None,
+        cost_basis_usdc: Optional[float] = None,
+        journal_shares: Optional[float] = None,
+        on_chain_shares: Optional[float] = None,
+        best_bid: Optional[float] = None,
+        best_ask: Optional[float] = None,
+        recoverable_usdc: Optional[float] = None,
+        redeemable_usdc: Optional[float] = None,
+        gas_estimate_usdc: Optional[float] = None,
+        details: Optional[dict] = None,
+    ) -> None:
+        details_json = json.dumps(details, default=str) if details is not None else None
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO settlement_reconciliation
+                    (token_id, market_id, status, action, updated_ts,
+                     latest_open_trade_id, cost_basis_usdc, journal_shares,
+                     on_chain_shares, best_bid, best_ask, recoverable_usdc,
+                     redeemable_usdc, gas_estimate_usdc, details_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(token_id) DO UPDATE SET
+                    market_id=excluded.market_id,
+                    status=excluded.status,
+                    action=excluded.action,
+                    updated_ts=excluded.updated_ts,
+                    latest_open_trade_id=excluded.latest_open_trade_id,
+                    cost_basis_usdc=excluded.cost_basis_usdc,
+                    journal_shares=excluded.journal_shares,
+                    on_chain_shares=excluded.on_chain_shares,
+                    best_bid=excluded.best_bid,
+                    best_ask=excluded.best_ask,
+                    recoverable_usdc=excluded.recoverable_usdc,
+                    redeemable_usdc=excluded.redeemable_usdc,
+                    gas_estimate_usdc=excluded.gas_estimate_usdc,
+                    details_json=excluded.details_json
+                """,
+                (
+                    str(token_id),
+                    str(market_id),
+                    status,
+                    action,
+                    _now(),
+                    latest_open_trade_id,
+                    cost_basis_usdc,
+                    journal_shares,
+                    on_chain_shares,
+                    best_bid,
+                    best_ask,
+                    recoverable_usdc,
+                    redeemable_usdc,
+                    gas_estimate_usdc,
+                    details_json,
+                ),
+            )
+
+    def latest_settlement_reconciliations(
+        self,
+        *,
+        max_age_minutes: Optional[float] = None,
+    ) -> list:
+        params: list = []
+        where = ""
+        if max_age_minutes is not None:
+            cutoff = (
+                datetime.now(timezone.utc)
+                - timedelta(minutes=float(max_age_minutes))
+            ).isoformat()
+            where = "WHERE updated_ts >= ?"
+            params.append(cutoff)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM settlement_reconciliation
+                {where}
+                ORDER BY updated_ts DESC
+                """,
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def filled_positions(self) -> list:
         """Return one row per filled trade with token_id present.

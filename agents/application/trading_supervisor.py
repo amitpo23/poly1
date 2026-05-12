@@ -70,6 +70,12 @@ class TradingSupervisorConfig:
     min_position_age_seconds: int = 45
     close_failed_window_minutes: int = 15
     close_failed_threshold: int = 5
+    settlement_max_age_minutes: int = 15
+    settlement_critical_statuses: tuple[str, ...] = (
+        "active_unmanaged",
+        "redeemable",
+        "reconcile_error",
+    )
     enforce_halt: bool = True
 
     @classmethod
@@ -105,6 +111,9 @@ class TradingSupervisorConfig:
             close_failed_threshold=_env_int(
                 "TRADING_SUPERVISOR_CLOSE_FAILED_THRESHOLD", 5
             ),
+            settlement_max_age_minutes=_env_int(
+                "TRADING_SUPERVISOR_SETTLEMENT_MAX_AGE_MIN", 15
+            ),
             enforce_halt=_env_bool("TRADING_SUPERVISOR_ENFORCE_HALT", True),
         )
 
@@ -126,6 +135,7 @@ class TradingSupervisor:
         self._check_position_manager_heartbeat(now, open_positions, issues)
         self._check_open_positions(now, open_positions, issues)
         self._check_close_failure_storm(issues)
+        self._check_settlement_reconciliation(issues)
 
         critical_issues = [i for i in issues if i.get("severity") == "critical"]
         halted = False
@@ -270,6 +280,26 @@ class TradingSupervisor:
                 "recent_close_failed": recent_failures,
                 "window_minutes": self.cfg.close_failed_window_minutes,
                 "threshold": self.cfg.close_failed_threshold,
+            })
+
+    def _check_settlement_reconciliation(self, issues: list[dict]) -> None:
+        rows = self.trade_log.latest_settlement_reconciliations(
+            max_age_minutes=self.cfg.settlement_max_age_minutes,
+        )
+        critical = set(self.cfg.settlement_critical_statuses)
+        for row in rows:
+            if row.get("status") not in critical:
+                continue
+            issues.append({
+                "severity": "critical",
+                "code": "settlement_reconciliation_requires_action",
+                "token_id": row.get("token_id"),
+                "market_id": row.get("market_id"),
+                "status": row.get("status"),
+                "action": row.get("action"),
+                "recoverable_usdc": row.get("recoverable_usdc"),
+                "redeemable_usdc": row.get("redeemable_usdc"),
+                "updated_ts": row.get("updated_ts"),
             })
 
     def _latest_position_mark(self, token_id: str) -> Optional[dict]:
