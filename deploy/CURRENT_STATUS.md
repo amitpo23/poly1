@@ -1,6 +1,78 @@
 # Current Status
 
-Date: 2026-05-11
+Date: 2026-05-12
+
+## Latest changes (2026-05-12 morning, unblock inactive agents)
+
+**Goal:** All 4 silent agents were reporting healthy but doing nothing.
+Root-cause diagnosed and fixed. Commits `437f9f6` + `08b1914`.
+
+### Changes shipped
+
+1. **wallet_watcher — Polymarket API migration** (`437f9f6`)
+   Leaderboard endpoint moved from `/leaderboard` (404) to
+   `/v1/leaderboard?timePeriod=ALL&orderBy=PNL&limit=N`.
+   Response schema changed: `pnl` replaces `profit`/`profitLoss`;
+   `tradesCount` field removed (now stored as `trades_30d: 0`).
+   Result: `leaderboard scan done — added=20 total_watched=20` ✅
+
+2. **news_signal — min_hits lowered 2→1** (`437f9f6`)
+   `match_news_to_markets()` was requiring 2+ keyword overlaps between
+   headlines and market question — too strict for short headlines.
+   Lowered to `min_hits=1`. Pipeline now reaches classification stage
+   and writes rows: `inserted=12` per scan ✅
+   *Note:* OpenAI `gpt-4o-mini` is rate-limited (429 transient).
+   Classification retries and succeeds intermittently. Rows are written
+   with `direction=neutral` on failure — acceptable degraded mode.
+
+3. **near_resolution — dual filter fix** (`437f9f6` + `08b1914`)
+   Two independent filters were eliminating all candidates:
+   - `NEAR_RESOLUTION_MIN_LIQUIDITY` 3000→500 USDC (`.env` + `.env.example`)
+   - `NEAR_RESOLUTION_MAX_HOURS` 36→336h (2 weeks). All active Polymarket
+     binary markets currently resolve 280–1924h from now; the 36h window
+     captured nothing. 336h catches Europa League, EPL, Texas primaries, etc.
+   Added diagnostic INFO log when 0 candidates pass time filter so the
+   agent is observable without code dives.
+   Result: `3 candidates after filters` ✅
+   Tavily filters them at `confidence 0.50 < 0.65` — conservative but correct.
+
+4. **swarm — mode=live** (previous session)
+   `BOT_MODE` env was stale (`mode=dryrun`). Fixed via `force-recreate`.
+   Swarm now boots `mode=live | capital=$4.5`.
+
+### Operational status (2026-05-12)
+
+All 11 containers `Up (healthy)`:
+
+| Container | Status |
+|-----------|--------|
+| poly1 (trader) | ✅ healthy, EXECUTE=false |
+| btc_daily | ✅ healthy, live |
+| position_manager | ✅ healthy |
+| near-resolution | ✅ healthy, 3 candidates/scan, Tavily filtering |
+| news-shock | ✅ healthy |
+| news-signal | ✅ healthy, inserted=12/scan, 429 transient |
+| wallet-watcher | ✅ healthy, 20 wallets tracked |
+| wallet-follow | ✅ healthy |
+| scalper | ✅ healthy |
+| dashboard | ✅ healthy |
+| grafana | ✅ healthy |
+
+**btc_daily** remains the only strategy with live execution evidence.
+**swarm** is live (`mode=live`) but small capital ($4.5).
+**near_resolution** is scanning and filtering — will execute when
+Tavily confidence crosses 0.65 threshold on a real event.
+
+### Open issues
+- `news_signal` OpenAI 429: transient rate-limit, not quota exhaustion
+  (200 OK seen alongside 429s, rows being inserted). Monitor.
+- `near_resolution` Tavily heuristic scores 0.50 on most results due
+  to common words ("yes", "no", "will") appearing in all news text.
+  Consider improving the confidence heuristic if agent stays idle for
+  >1 week once window has viable candidates.
+- SPEC.md §7 needs update for `NEAR_RESOLUTION_MAX_HOURS` (36→336).
+
+See `docs/SESSION_2026-05-11_AGENT_TRADING_STABILIZATION.md` for previous session.
 
 ## Latest changes (2026-05-11, agent trading stabilization)
 

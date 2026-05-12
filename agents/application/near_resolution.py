@@ -15,7 +15,7 @@ Storage: standard ``trades`` table, status ``near_resolution_open``.
 
 Environment variables (all optional, see defaults below):
   NEAR_RESOLUTION_MIN_HOURS       — min hours until market close (default 0.5)
-  NEAR_RESOLUTION_MAX_HOURS       — max hours until market close (default 36)
+  NEAR_RESOLUTION_MAX_HOURS       — max hours until market close (default 36; set 336 in .env since active markets close 280h+ away)
   NEAR_RESOLUTION_MAX_ENTRY_PRICE — max price for cheap side (default 0.15)
   NEAR_RESOLUTION_MIN_LIQUIDITY   — min $USDC book depth (default 3000)
   NEAR_RESOLUTION_MIN_CONFIDENCE  — Tavily threshold 0-1 (default 0.65)

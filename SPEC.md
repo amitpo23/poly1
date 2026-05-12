@@ -269,6 +269,22 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | `ALLOC_SYNC_MIN_DELTA_USDC` | `0.50` | Min per-agent USDC shift to trigger env write + container restart. Prevents thrashing on tiny allocation changes. |
 | `SWARM_ENV_PATH` | `/Users/mymac/Desktop/poly/bot/.env` | Host path to swarm `.env`; bind-mounted into the allocator-sync container. |
 
+### Near-resolution agent
+
+| Var | Default | Notes |
+|---|---|---|
+| `NEAR_RESOLUTION_MIN_HOURS` | `0.5` | Lower bound: markets closing in less than this are too close to act. |
+| `NEAR_RESOLUTION_MAX_HOURS` | `36.0` | **Effective: 336h (2 weeks)** — raised 2026-05-12 because all active Polymarket binary markets resolve >280h from now; original 36h filtered everything. |
+| `NEAR_RESOLUTION_MAX_ENTRY_PRICE` | `0.15` | Buy only the cheap side when priced at or below this. |
+| `NEAR_RESOLUTION_MIN_LIQUIDITY` | `3000.0` | **Effective: 500** — lowered 2026-05-12; most markets have <$3000 `volumeClob`. |
+| `NEAR_RESOLUTION_MIN_CONFIDENCE` | `0.65` | Tavily news-search confidence threshold before entering. |
+| `NEAR_RESOLUTION_POSITION_SIZE_USDC` | `2.5` | Per-trade size. |
+| `NEAR_RESOLUTION_RESERVE_USDC` | `15.0` | Capital ring-fenced for this agent. |
+| `NEAR_RESOLUTION_POLL_SEC` | `60` | Scan cadence. |
+| `NEAR_RESOLUTION_MAX_OPEN` | `3` | Max concurrent open positions. |
+| `NEAR_RESOLUTION_HEARTBEAT_PATH` | `/app/data/near_resolution_heartbeat` | Heartbeat file path. |
+| `EXECUTE_NEAR_RESOLUTION` | `false` | Set `true` to live-trade. |
+
 ## 8. LLM prompt contract
 
 `prompts.py:one_best_trade` requires the LLM to return JSON of the form:
