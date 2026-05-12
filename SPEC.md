@@ -151,6 +151,15 @@ CREATE INDEX idx_status_ts ON trades(status, ts);
 - `ACTIVE_STATUSES = TIME_BOUNDED_ACTIVE_STATUSES + UNBOUNDED_BLOCKING_STATUSES`
   is the union, kept for callers that just need "is this market blocked."
 
+**Re-entry after exit (`has_filled_position_for_market`):**  
+Returns `True` only if a `filled` row exists with `id > MAX(id)` of any
+terminal close row (`closed_*`, `resolved_*`) for that market. A
+terminal row written after the last fill means the position has been
+exited and the market is open for re-entry. This prevents the old
+behaviour where stale fills from shadow-mode sessions blocked markets
+indefinitely after position_manager had already closed them on-chain.
+(Fixed 2026-05-12; previously any historical fill blocked forever.)
+
 ### `data/llm_usage.jsonl`
 
 One JSON object per LLM call; consumed by `RiskGate.daily_token_usd`:
@@ -220,6 +229,10 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | `POLYMARKET_MAX_SLIPPAGE` | `0.03` | FOK market-buy slippage tolerance. Rejects if live ask exceeds model price by more than this fraction. |
 | `POLYMARKET_MIN_ORDER_USDC` | `1.0` | Skip orders smaller than this USDC amount. |
 | `POLYGON_RPC` | `https://polygon.drpc.org` | Polygon RPC endpoint. Override with paid Alchemy/Infura key for production. |
+| `MAINTAIN_TAKE_PROFIT_PCT` | `0.05` | Position manager: exit when position gains this fraction above entry price. |
+| `MAINTAIN_STOP_LOSS_PCT` | `0.03` | Position manager: exit when position drops this fraction below entry price. Tightened 2026-05-12 from 0.07 to reduce per-trade loss. |
+| `MAINTAIN_MAX_HOLD_HOURS` | `24` | Position manager: force-close after this many hours regardless of P&L. |
+| `BTC_DAILY_MAX_SLIPPAGE_SKIPS` | `3` | btc_daily: give up on a market after N consecutive slippage failures in one daemon run. Reset on successful entry. Prevents the 58-attempt tight-loop seen on market 2214715 (2026-05-11). |
 
 ### Persistence
 
