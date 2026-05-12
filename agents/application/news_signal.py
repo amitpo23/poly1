@@ -371,12 +371,17 @@ def collect_once(
     items = news_items if news_items is not None else fetch_news_items(
         query=query, limit=limit_news
     )
+    logger.info(
+        "news_signal: fetched %d news items, %d markets for matching",
+        len(items), len(markets) if hasattr(markets, "__len__") else "?",
+    )
     inserted = 0
 
     for item in items:
         matches = match_news_to_markets(
             item.headline, markets, min_relevance=min_relevance,
             max_matches=max_matches_per_item,
+            min_hits=1,
         )
         for market in matches:
             result = classifier.classify(item, market)

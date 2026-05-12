@@ -157,12 +157,12 @@ class WalletWatcherEngine:
     _scout_next_attempt: float = 0.0
     _SCOUT_BACKOFF_SEC: float = 1800.0  # 30 minutes after failure
 
-    # Candidate URLs to try for the leaderboard, in order.
-    _LEADERBOARD_URLS = [
-        DATA_API_URL + "/leaderboard?window=all&limit={limit}",
-        DATA_API_URL + "/leaderboard?timeframe=all&limit={limit}",
-        "https://gamma-api.polymarket.com/leaderboard?limit={limit}",
-    ]
+    # Polymarket v1 leaderboard (migrated 2026-05-12 from /leaderboard → /v1/leaderboard).
+    # Response fields: rank, proxyWallet, userName, vol, pnl, profileImage, verifiedBadge.
+    # Note: trade count is no longer provided; we gate only on pnl.
+    _LEADERBOARD_URL_TPL = (
+        DATA_API_URL + "/v1/leaderboard?timePeriod=ALL&orderBy=PNL&limit={limit}"
+    )
 
     def _scout_leaderboard(self) -> None:
         """Fetch public leaderboard and add high-performers to watch list."""
@@ -170,29 +170,24 @@ class WalletWatcherEngine:
         if now < self._scout_next_attempt:
             return  # Still in backoff window — skip silently.
 
-        data: list = []
-        last_exc: Optional[Exception] = None
-        for url_tpl in self._LEADERBOARD_URLS:
-            url = url_tpl.format(limit=self.cfg.scout_limit)
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "poly1-wallet-watcher/1.0"}
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    body = json.loads(resp.read())
-                if isinstance(body, list) and body:
-                    data = body
-                    break  # Found a working endpoint.
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                continue
-
-        if not data:
+        url = self._LEADERBOARD_URL_TPL.format(limit=self.cfg.scout_limit)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "poly1-wallet-watcher/1.0"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "wallet_watcher: leaderboard unavailable — backing off %ds: %s",
                 int(self._SCOUT_BACKOFF_SEC),
-                last_exc,
+                exc,
             )
+            self._scout_next_attempt = now + self._SCOUT_BACKOFF_SEC
+            return
+
+        if not isinstance(data, list) or not data:
+            logger.warning("wallet_watcher: leaderboard returned empty/unexpected payload")
             self._scout_next_attempt = now + self._SCOUT_BACKOFF_SEC
             return
 
@@ -201,23 +196,24 @@ class WalletWatcherEngine:
             addr = str(entry.get("proxyWallet") or entry.get("address") or "").lower()
             if not addr or not addr.startswith("0x"):
                 continue
-            profit = float(entry.get("profit") or entry.get("profitLoss") or 0.0)
-            trades = int(entry.get("tradesCount") or entry.get("numTrades") or 0)
+            # v1 API uses 'pnl' (profit & loss); trade count no longer available.
+            profit = float(entry.get("pnl") or entry.get("profit") or entry.get("profitLoss") or 0.0)
             if profit < self.cfg.scout_min_profit_usdc:
                 continue
-            if trades < self.cfg.scout_min_trades:
-                continue
+            # scout_min_trades threshold is not enforced (field removed from v1 API).
             if addr not in self._watched:
                 self._watched.add(addr)
                 added += 1
             # Cache stats for later signal enrichment
             self._wallet_stats[addr] = {
                 "profit_usdc": profit,
-                "trades_30d": trades,
+                "trades_30d": 0,  # not provided by v1 API
             }
 
-        if added:
-            logger.info("wallet_watcher: scouted %d new wallets (total=%d)", added, len(self._watched))
+        logger.info(
+            "wallet_watcher: leaderboard scan done — added=%d total_watched=%d",
+            added, len(self._watched),
+        )
 
     # ------------------------------------------------------- activity polling
 
