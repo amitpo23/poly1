@@ -274,9 +274,9 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | Var | Default | Notes |
 |---|---|---|
 | `NEAR_RESOLUTION_MIN_HOURS` | `0.5` | Lower bound: markets closing in less than this are too close to act. |
-| `NEAR_RESOLUTION_MAX_HOURS` | `36.0` | **Effective: 336h (2 weeks)** — raised 2026-05-12 because all active Polymarket binary markets resolve >280h from now; original 36h filtered everything. |
+| `NEAR_RESOLUTION_MAX_HOURS` | `336.0` | Two-week window; raised 2026-05-12 because active Polymarket binary markets were resolving >280h from scan time and the original 36h window filtered everything. |
 | `NEAR_RESOLUTION_MAX_ENTRY_PRICE` | `0.15` | Buy only the cheap side when priced at or below this. |
-| `NEAR_RESOLUTION_MIN_LIQUIDITY` | `3000.0` | **Effective: 500** — lowered 2026-05-12; most markets have <$3000 `volumeClob`. |
+| `NEAR_RESOLUTION_MIN_LIQUIDITY` | `500.0` | Lowered 2026-05-12; most viable near-resolution markets had <$3000 `volumeClob`. |
 | `NEAR_RESOLUTION_MIN_CONFIDENCE` | `0.65` | Tavily news-search confidence threshold before entering. |
 | `NEAR_RESOLUTION_POSITION_SIZE_USDC` | `2.5` | Per-trade size. |
 | `NEAR_RESOLUTION_RESERVE_USDC` | `15.0` | Capital ring-fenced for this agent. |

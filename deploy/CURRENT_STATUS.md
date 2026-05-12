@@ -21,9 +21,12 @@ Root-cause diagnosed and fixed. Commits `437f9f6` + `08b1914`.
    headlines and market question — too strict for short headlines.
    Lowered to `min_hits=1`. Pipeline now reaches classification stage
    and writes rows: `inserted=12` per scan ✅
-   *Note:* OpenAI `gpt-4o-mini` is rate-limited (429 transient).
-   Classification retries and succeeds intermittently. Rows are written
-   with `direction=neutral` on failure — acceptable degraded mode.
+   *Note:* OpenAI `gpt-4o-mini` is currently returning many 429
+   `insufficient_quota` responses. Some calls still returned 200 during
+   the checked window, but this should be treated as a quota/billing
+   capacity issue, not just a harmless transient rate limit. Rows are
+   still written with `direction=neutral` on failure — acceptable
+   degraded mode for signal capture, not for high-confidence trading.
 
 3. **near_resolution — dual filter fix** (`437f9f6` + `08b1914`)
    Two independent filters were eliminating all candidates:
@@ -39,6 +42,11 @@ Root-cause diagnosed and fixed. Commits `437f9f6` + `08b1914`.
 4. **swarm — mode=live** (previous session)
    `BOT_MODE` env was stale (`mode=dryrun`). Fixed via `force-recreate`.
    Swarm now boots `mode=live | capital=$4.5`.
+   Follow-up check on 2026-05-12 found one live submitted market-maker
+   order in `pending_orders`; `scripts/reconcile_orders.py --execute`
+   confirmed it was matched and wrote the local fill. The row now remains
+   `filled` as the intended safety brake until exit/settlement tracking
+   releases that market.
 
 ### Operational status (2026-05-12)
 
@@ -59,18 +67,21 @@ All 11 containers `Up (healthy)`:
 | grafana | ✅ healthy |
 
 **btc_daily** remains the only strategy with live execution evidence.
-**swarm** is live (`mode=live`) but small capital ($4.5).
+**swarm** is live (`mode=live`) but small capital ($4.5). One matched
+market-maker fill was reconciled locally on 2026-05-12.
 **near_resolution** is scanning and filtering — will execute when
 Tavily confidence crosses 0.65 threshold on a real event.
 
 ### Open issues
-- `news_signal` OpenAI 429: transient rate-limit, not quota exhaustion
-  (200 OK seen alongside 429s, rows being inserted). Monitor.
+- `news_signal` OpenAI 429: logs include `insufficient_quota`; monitor
+  billing/quota before trusting high-confidence classification volume.
 - `near_resolution` Tavily heuristic scores 0.50 on most results due
   to common words ("yes", "no", "will") appearing in all news text.
   Consider improving the confidence heuristic if agent stays idle for
   >1 week once window has viable candidates.
-- SPEC.md §7 needs update for `NEAR_RESOLUTION_MAX_HOURS` (36→336).
+- Swarm market-maker now has one `filled` safety-brake row after
+  reconciliation. Exit/settlement handling is still needed before that
+  market should be reused.
 
 See `docs/SESSION_2026-05-11_AGENT_TRADING_STABILIZATION.md` for previous session.
 

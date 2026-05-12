@@ -68,7 +68,7 @@ def _insert_signal(log: TradeLog, market_id: str, direction: str,
                 direction,
                 materiality,
                 0.8,
-                "classified",
+                "news_signal",
             ),
         )
 
@@ -124,6 +124,22 @@ class TestReadFreshSignals(_TmpDB, unittest.TestCase):
         _insert_signal(log, "MKT1", "bullish", 0.90, age_minutes=300)  # 5 hours ago
 
         cfg = _default_cfg(max_age_hours=2.0)
+        engine = NewsShockEngine(
+            polymarket=MagicMock(), trade_log=log, risk_gate=None, cfg=cfg
+        )
+        signals = engine._read_fresh_signals()
+        self.assertEqual(len(signals), 0)
+
+    def test_excludes_consumed_signals(self):
+        log = TradeLog(self.db_path)
+        _insert_signal(log, "MKT1", "bullish", 0.90, age_minutes=5)
+        with log._lock, log._connect() as conn:
+            conn.execute(
+                "UPDATE news_signals SET status = 'acted' WHERE market_id = ?",
+                ("MKT1",),
+            )
+
+        cfg = _default_cfg()
         engine = NewsShockEngine(
             polymarket=MagicMock(), trade_log=log, risk_gate=None, cfg=cfg
         )
@@ -220,6 +236,34 @@ class TestEVCalculation(_TmpDB, unittest.TestCase):
         _insert_signal(log, "MKT1", "bullish", 0.90)
         n = engine.maybe_enter_all()
         self.assertEqual(n, 0)
+
+    def test_signal_marked_acted_on_entry(self):
+        engine, log = self._engine_with_gamma(_fake_gamma_market(yes_price=0.30))
+        _insert_signal(log, "MKT1", "bullish", 0.90)
+        n = engine.maybe_enter_all()
+        self.assertEqual(n, 1)
+        with log._lock, log._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM news_signals WHERE market_id = ?",
+                ("MKT1",),
+            ).fetchone()
+        self.assertEqual(row["status"], "acted")
+
+    def test_signal_marked_skipped_on_dedupe(self):
+        engine, log = self._engine_with_gamma(_fake_gamma_market(yes_price=0.30))
+        log.insert_pending(
+            cycle_id="c0", market_id="MKT1", token_id="TOK_YES",
+            side="BUY", price=0.30, size_usdc=2.5, confidence=0.9,
+        )
+        _insert_signal(log, "MKT1", "bullish", 0.90)
+        n = engine.maybe_enter_all()
+        self.assertEqual(n, 0)
+        with log._lock, log._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM news_signals WHERE market_id = ?",
+                ("MKT1",),
+            ).fetchone()
+        self.assertEqual(row["status"], "skipped")
 
 
 if __name__ == "__main__":

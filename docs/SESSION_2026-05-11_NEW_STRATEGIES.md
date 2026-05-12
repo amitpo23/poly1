@@ -32,9 +32,9 @@ if confidence >= MIN_CONFIDENCE and RiskGate.ok() and not dedupe:
 ```
 EXECUTE_NEAR_RESOLUTION=false
 NEAR_RESOLUTION_MIN_HOURS=0.5
-NEAR_RESOLUTION_MAX_HOURS=36
+NEAR_RESOLUTION_MAX_HOURS=336
 NEAR_RESOLUTION_MAX_ENTRY_PRICE=0.15
-NEAR_RESOLUTION_MIN_LIQUIDITY=3000
+NEAR_RESOLUTION_MIN_LIQUIDITY=500
 NEAR_RESOLUTION_MIN_CONFIDENCE=0.65
 NEAR_RESOLUTION_POSITION_SIZE_USDC=2.5
 NEAR_RESOLUTION_RESERVE_USDC=15
@@ -60,6 +60,12 @@ bearish → SELL NO  → EV = materiality × yes_price
 enter if EV >= MIN_EV and entry_price <= MAX_ENTRY_PRICE
 status = news_shock_open
 ```
+
+2026-05-12 follow-up: `news_shock` now consumes only
+`news_signals.status='news_signal'` rows and marks processed signals as
+`acted` or `skipped`. This prevents the same high-materiality signal from
+being reconsidered every loop after it has already produced an entry or a
+terminal skip decision.
 
 **Key env vars:**
 ```

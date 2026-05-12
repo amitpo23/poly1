@@ -145,7 +145,7 @@ class NewsShockEngine:
                     "SELECT id, ts, market_id, market_question, direction, "
                     "materiality, relevance_score, headline, source "
                     "FROM news_signals "
-                    "WHERE materiality >= ? AND ts >= ? "
+                    "WHERE status = 'news_signal' AND materiality >= ? AND ts >= ? "
                     "AND direction IN ('bullish', 'bearish') "
                     "ORDER BY materiality DESC",
                     (self.cfg.min_score, cutoff_str),
@@ -154,6 +154,16 @@ class NewsShockEngine:
         except Exception as exc:
             logger.warning("news_shock: DB read failed: %s", exc)
             return []
+
+    def _mark_signal(self, signal_id: int, status: str) -> None:
+        try:
+            with self.trade_log._lock, self.trade_log._connect() as conn:
+                conn.execute(
+                    "UPDATE news_signals SET status = ? WHERE id = ?",
+                    (status, signal_id),
+                )
+        except Exception as exc:
+            logger.warning("news_shock: mark signal %d failed: %s", signal_id, exc)
 
     # --------------------------------------------------- Gamma market lookup
 
@@ -231,24 +241,29 @@ class NewsShockEngine:
         for market_id, sig in seen.items():
             if ns_open + entries_made >= self.cfg.max_open:
                 break
+            signal_id = sig["id"]
 
             # Dedupe: skip if already active on this market
             if self.trade_log.has_active_trade_for_market(market_id):
                 logger.debug("news_shock: dedupe skip %s", market_id)
+                self._mark_signal(signal_id, "skipped")
                 continue
 
             # Risk gate
             if self.risk_gate is not None and not self.risk_gate.ok():
                 logger.info("news_shock: risk gate blocked: %s", self.risk_gate.reason())
+                self._mark_signal(signal_id, "skipped")
                 break
 
             # Fetch current market data from Gamma
             mkt = self._gamma_market(market_id)
             if mkt is None:
+                self._mark_signal(signal_id, "skipped")
                 continue
 
             # Must be active and binary
             if not mkt.get("active") or mkt.get("closed"):
+                self._mark_signal(signal_id, "skipped")
                 continue
             try:
                 outcomes = json.loads(mkt.get("outcomes", "[]"))
@@ -259,8 +274,10 @@ class NewsShockEngine:
                     outcomes = ast.literal_eval(mkt.get("outcomes", "[]"))
                     tokens = ast.literal_eval(mkt.get("clobTokenIds", "[]"))
                 except Exception:
+                    self._mark_signal(signal_id, "skipped")
                     continue
             if len(outcomes) != 2 or len(tokens) != 2:
+                self._mark_signal(signal_id, "skipped")
                 continue
 
             # Get current prices
@@ -275,6 +292,7 @@ class NewsShockEngine:
             # Liquidity filter
             liquidity = float(mkt.get("volumeClob") or mkt.get("volume24hr") or 0)
             if liquidity < self.cfg.min_liquidity:
+                self._mark_signal(signal_id, "skipped")
                 continue
 
             direction = sig["direction"]
@@ -294,12 +312,14 @@ class NewsShockEngine:
                 entry_price = no_price
                 token_idx = 1
             else:
+                self._mark_signal(signal_id, "skipped")
                 continue
 
             if ev < self.cfg.min_ev:
                 logger.debug(
                     "news_shock: skip %s ev=%.3f < %.3f", market_id, ev, self.cfg.min_ev
                 )
+                self._mark_signal(signal_id, "skipped")
                 continue
 
             if entry_price > self.cfg.max_entry_price:
@@ -307,6 +327,7 @@ class NewsShockEngine:
                     "news_shock: skip %s entry_price=%.3f > %.3f",
                     market_id, entry_price, self.cfg.max_entry_price,
                 )
+                self._mark_signal(signal_id, "skipped")
                 continue
 
             # Build recommendation — yes_price is always the anchor
@@ -346,6 +367,7 @@ class NewsShockEngine:
                         f"dir={direction} materiality={materiality:.2f} ev={ev:.3f}"
                     ),
                 )
+                self._mark_signal(signal_id, "acted")
                 logger.info(
                     "news_shock SHADOW: %s %s dir=%s mat=%.2f ev=%.3f",
                     side, market_id, direction, materiality, ev,
@@ -363,6 +385,7 @@ class NewsShockEngine:
                     pending_id, "failed",
                     error=f"execute_market_order raised: {exc}",
                 )
+                self._mark_signal(signal_id, "skipped")
                 logger.warning("news_shock entry failed %s: %s", market_id, exc)
                 continue
 
@@ -371,9 +394,11 @@ class NewsShockEngine:
                     pending_id, "failed",
                     response=response, error="entry not matched",
                 )
+                self._mark_signal(signal_id, "skipped")
                 continue
 
             self.trade_log.mark(pending_id, NEWS_SHOCK_OPEN, response=response)
+            self._mark_signal(signal_id, "acted")
             logger.info(
                 "news_shock ENTRY: %s %s dir=%s mat=%.2f ev=%.3f",
                 side, market_id, direction, materiality, ev,
