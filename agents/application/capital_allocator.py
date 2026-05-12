@@ -236,7 +236,11 @@ class MarketIntelligence:
         try:
             if _table_exists(conn, "news_signals"):
                 row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM news_signals WHERE ts >= ?",
+                    """
+                    SELECT COUNT(*) AS n
+                    FROM news_signals
+                    WHERE ts >= ? AND status = 'news_signal'
+                    """,
                     (since_iso,),
                 ).fetchone()
                 snap.fresh_news_signals = int(row["n"] or 0) if row else 0

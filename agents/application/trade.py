@@ -24,6 +24,11 @@ from agents.polymarket.polymarket import Polymarket
 logger = logging.getLogger(__name__)
 
 
+def _is_ai_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "insufficient_quota" in text or "exceeded your current quota" in text
+
+
 class Trader:
     def __init__(
         self,
@@ -130,13 +135,43 @@ class Trader:
         events = self.polymarket.get_all_tradeable_events()
         logger.info("cycle %s: %d tradeable events", cycle_id, len(events))
 
-        filtered_events = self.agent.filter_events_with_rag(events)
+        try:
+            filtered_events = self.agent.filter_events_with_rag(events)
+        except Exception as exc:
+            if _is_ai_quota_error(exc):
+                logger.error(
+                    "cycle %s: AI event filter unavailable due quota; skipping cycle",
+                    cycle_id,
+                )
+                self.trade_log.insert_terminal(
+                    cycle_id,
+                    "__cycle__",
+                    SKIPPED_GATE,
+                    error=f"ai_filter_unavailable: {type(exc).__name__}: {exc}",
+                )
+                return
+            raise
         logger.info("cycle %s: %d events after RAG filter", cycle_id, len(filtered_events))
 
         markets = self.agent.map_filtered_events_to_markets(filtered_events)
         logger.info("cycle %s: %d markets mapped", cycle_id, len(markets))
 
-        filtered_markets = self.agent.filter_markets(markets)
+        try:
+            filtered_markets = self.agent.filter_markets(markets)
+        except Exception as exc:
+            if _is_ai_quota_error(exc):
+                logger.error(
+                    "cycle %s: AI market filter unavailable due quota; skipping cycle",
+                    cycle_id,
+                )
+                self.trade_log.insert_terminal(
+                    cycle_id,
+                    "__cycle__",
+                    SKIPPED_GATE,
+                    error=f"ai_filter_unavailable: {type(exc).__name__}: {exc}",
+                )
+                return
+            raise
         logger.info(
             "cycle %s: %d markets after filter", cycle_id, len(filtered_markets)
         )
@@ -250,6 +285,19 @@ class Trader:
             best_trade = self.agent.source_best_trade(market)
             recommendation = self.agent.parse_trade_recommendation(best_trade)
         except Exception as e:
+            if _is_ai_quota_error(e):
+                logger.error(
+                    "cycle %s: market %s AI trade analysis unavailable due quota",
+                    cycle_id,
+                    market_id,
+                )
+                self.trade_log.insert_terminal(
+                    cycle_id,
+                    market_id,
+                    SKIPPED_GATE,
+                    error=f"ai_analysis_unavailable: {type(e).__name__}: {e}",
+                )
+                return False
             logger.exception("cycle %s: market %s LLM/parse failed", cycle_id, market_id)
             self.trade_log.insert_terminal(
                 cycle_id, market_id, FAILED, error=f"llm_or_parse: {e}"

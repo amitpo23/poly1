@@ -323,7 +323,9 @@ following the `post_order` HTTP call.
 | LLM produces unparseable trade | `_evaluate_market` logs `FAILED`, sweep continues to next market |
 | Polymarket gamma API down | `get_all_tradeable_events` raises; sweep fails; `TraderDaemon` catches and proceeds to next cycle |
 | Wallet private key missing in dry-run | `Polymarket(live=False)` allowed, but `get_usdc_balance` still requires key — sweep fails with explicit error |
-| OpenAI rate-limited | Bubbles up; cycle fails; `RiskGate.ok` next cycle should still pass and retry |
+| OpenAI quota/rate limit during trader RAG or analysis | Writes `skipped_gate` with `ai_filter_unavailable` or `ai_analysis_unavailable`; the cycle/market is skipped without placing an order or crashing the daemon |
+| OpenAI quota/rate limit during `news_signal` classification | Writes `news_signals.status='classifier_failed'` and enters a cooldown (`NEWS_SIGNAL_QUOTA_COOLDOWN_SEC`, default 3600) instead of creating actionable neutral `news_signal` rows |
+| Allocator reads failed news classifications | `fresh_news_signals` ignores `classifier_failed`; only `status='news_signal'` counts as market-intelligence volume |
 | Disk full | Heartbeat fails to write → Docker healthcheck reports unhealthy |
 | `data/HALT` file present | `RiskGate.ok()` returns False; daemon keeps polling but never trades |
 

@@ -2,6 +2,84 @@
 
 Date: 2026-05-12
 
+## Latest changes (2026-05-12 13:47 IDT, live funnel diagnosis)
+
+**Question answered:** why are agents healthy but still not producing regular
+live trades/profit?
+
+### Findings
+
+1. **Main trader brain was crashing before market selection.**
+   The `poly1` trader fetched 297 tradeable events, then failed inside
+   Chroma/OpenAI embeddings with OpenAI `insufficient_quota`. This stopped the
+   cycle before ranked markets or orders were reached.
+
+2. **news_signal was creating false-looking neutral volume.**
+   The news source and market matcher worked, but classifier calls hit
+   `insufficient_quota`. The old degraded mode inserted rows as
+   `status=news_signal`, `direction=neutral`, `materiality=0.0`. That made the
+   dashboard look busy while `news_shock` had no actionable bullish/bearish
+   signals.
+
+3. **near_resolution is working but blocked by confidence.**
+   It repeatedly finds 3 candidates, then rejects all at Tavily confidence
+   `0.50 < 0.65`. This is conservative; lowering the gate would create trades
+   without confirmed edge.
+
+4. **wallet_follow has no fresh source trades.**
+   `wallet_watcher` tracks 20 wallets and scans every ~2 minutes, but added
+   0 fresh `wallet_signals` in the observed window, so `wallet_follow` has
+   nothing to act on.
+
+5. **swarm is live but stuck on its own safety brake.**
+   One market-maker order was reconciled as filled. The bot now repeatedly
+   skips that Hormuz market because a submitted/filled pending row exists. That
+   prevents duplicate exposure, but it also means no repeated trading there
+   until exit/settlement handling releases the market.
+
+6. **position exits are noisy but no longer actively looping.**
+   The 552 `close_failed` rows came from market `572733` before escalation to
+   `resolved_loss`. Recent position-manager logs show `skipped_already_closed`,
+   so this specific loop is stopped.
+
+### Changes shipped in this pass
+
+- `agents/application/trade.py`
+  - OpenAI quota failures in event filtering, market filtering, or per-market
+    trade analysis now write `skipped_gate` with `ai_filter_unavailable` or
+    `ai_analysis_unavailable` instead of crashing the daemon or marking the
+    market as a strategy failure.
+- `agents/application/news_signal.py`
+  - Classification quota failures now write `status=classifier_failed` rather
+    than actionable `news_signal` neutral rows.
+  - Added a cooldown after `insufficient_quota` so one bad quota state does not
+    hammer the API for every matched headline.
+- `agents/application/capital_allocator.py`
+  - `fresh_news_signals` now counts only `status='news_signal'` rows, so
+    `classifier_failed` diagnostics do not inflate allocator confidence.
+- `.dockerignore`
+  - Added to keep `.env`, local DBs, screenshots, and local caches out of the
+    built image. Runtime env still comes from docker-compose `env_file`.
+- `tests/test_news_signal.py` and `tests/test_trader.py`
+  - Added quota-degradation tests and isolated RiskGate reserve tests from live
+    env vars.
+
+### Current interpretation
+
+This is not a Docker health problem. The system is alive, but the alpha funnel
+is blocked by missing/failed intelligence:
+
+- AI-dependent paths cannot trade while OpenAI quota is exhausted.
+- Tavily-only near-resolution has candidates but no >0.65 confidence proof.
+- Wallet-follow has no fresh copied trades.
+- Scalper remains mostly shadow/no-edge; recent brain decisions are dominated
+  by `too_close_to_expiry` and `edge_score_too_low`.
+
+The right next step is not to loosen gates blindly. The next profitable-work
+step is to add a non-OpenAI research fallback/router that can produce a
+structured probability estimate from Tavily/RSS/Gamma/DB evidence, then let
+only positive-EV candidates reach paper/live probe.
+
 ## Latest changes (2026-05-12 morning, unblock inactive agents)
 
 **Goal:** All 4 silent agents were reporting healthy but doing nothing.

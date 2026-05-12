@@ -4,8 +4,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agents.application.news_signal import (
+    CLASSIFIER_FAILED_STATUS,
     NewsItem,
     NewsSignalClassifier,
+    NEWS_SIGNAL_STATUS,
     _coerce_json,
     collect_once,
     extract_keywords,
@@ -131,6 +133,7 @@ class TestNewsSignalStorage(unittest.TestCase):
         classifier.classify.return_value.reasoning = "News supports YES."
         classifier.classify.return_value.latency_ms = 123
         classifier.classify.return_value.model = "test-model"
+        classifier.classify.return_value.status = NEWS_SIGNAL_STATUS
 
         inserted = collect_once(
             query="OpenAI",
@@ -159,6 +162,27 @@ class TestNewsSignalClassifier(unittest.TestCase):
         result = classifier.classify(NewsItem("Bitcoin sells off"), market)
         self.assertEqual(result.direction, "bearish")
         self.assertEqual(result.materiality, 0.4)
+        self.assertEqual(result.status, NEWS_SIGNAL_STATUS)
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_classifier_quota_failure_marks_failed_and_cools_down(self, chat_openai):
+        llm = MagicMock()
+        llm.invoke.side_effect = RuntimeError("insufficient_quota")
+        chat_openai.return_value = llm
+
+        classifier = NewsSignalClassifier(model="test")
+        market = MagicMock()
+        market.question = "Will Bitcoin hit 100k?"
+        market.yes_price = 0.5
+
+        first = classifier.classify(NewsItem("Bitcoin rallies"), market)
+        second = classifier.classify(NewsItem("Bitcoin rallies again"), market)
+
+        self.assertEqual(first.status, CLASSIFIER_FAILED_STATUS)
+        self.assertEqual(first.direction, "neutral")
+        self.assertEqual(second.status, CLASSIFIER_FAILED_STATUS)
+        self.assertEqual(second.reasoning, "classification_error:insufficient_quota_cooldown")
+        self.assertEqual(llm.invoke.call_count, 1)
 
 
 if __name__ == "__main__":

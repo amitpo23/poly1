@@ -22,6 +22,7 @@ from agents.application.trade_log import TradeLog
 logger = logging.getLogger(__name__)
 
 NEWS_SIGNAL_STATUS = "news_signal"
+CLASSIFIER_FAILED_STATUS = "classifier_failed"
 
 DEFAULT_RSS_FEEDS = [
     "https://news.google.com/rss/search?q=OpenAI%20OR%20Anthropic%20OR%20Bitcoin%20OR%20Ethereum%20OR%20Fed%20OR%20Nvidia&hl=en-US&gl=US&ceid=US:en",
@@ -84,6 +85,7 @@ class ClassificationResult:
     reasoning: str
     latency_ms: int
     model: str
+    status: str = NEWS_SIGNAL_STATUS
 
 
 def extract_keywords(text: str) -> list[str]:
@@ -160,11 +162,23 @@ class NewsSignalClassifier:
             "OPENAI_MODEL", "gpt-4o-mini"
         )
         self.llm = ChatOpenAI(model=self.model, temperature=0)
+        self.quota_cooldown_sec = _env_int_ns("NEWS_SIGNAL_QUOTA_COOLDOWN_SEC", 3600)
+        self._quota_blocked_until = 0.0
 
     def classify(self, item: NewsItem, market: MarketCandidate) -> ClassificationResult:
         from langchain_core.messages import HumanMessage
 
         start = time.time()
+        now = time.time()
+        if now < self._quota_blocked_until:
+            return ClassificationResult(
+                direction="neutral",
+                materiality=0.0,
+                reasoning="classification_error:insufficient_quota_cooldown",
+                latency_ms=0,
+                model=self.model,
+                status=CLASSIFIER_FAILED_STATUS,
+            )
         prompt = CLASSIFICATION_PROMPT.format(
             question=market.question,
             yes_price=(
@@ -180,11 +194,15 @@ class NewsSignalClassifier:
                 direction = "neutral"
             materiality = max(0.0, min(1.0, float(payload.get("materiality", 0.0))))
             reasoning = str(payload.get("reasoning", ""))[:500]
+            status = NEWS_SIGNAL_STATUS
         except Exception as exc:
             logger.warning("news_signal classification failed: %s", exc)
+            if _is_insufficient_quota_error(exc):
+                self._quota_blocked_until = time.time() + self.quota_cooldown_sec
             direction = "neutral"
             materiality = 0.0
             reasoning = f"classification_error:{type(exc).__name__}"
+            status = CLASSIFIER_FAILED_STATUS
 
         return ClassificationResult(
             direction=direction,
@@ -192,6 +210,7 @@ class NewsSignalClassifier:
             reasoning=reasoning,
             latency_ms=int((time.time() - start) * 1000),
             model=self.model,
+            status=status,
         )
 
 
@@ -207,6 +226,11 @@ def _coerce_json(text: str) -> dict:
     if start >= 0 and end >= start:
         text = text[start:end + 1]
     return json.loads(text)
+
+
+def _is_insufficient_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "insufficient_quota" in text or "exceeded your current quota" in text
 
 
 def fetch_news_items(query: str, limit: int = 10) -> list[NewsItem]:
@@ -396,7 +420,7 @@ def collect_once(
                 relevance_score=market.relevance_score,
                 latency_ms=result.latency_ms,
                 model=result.model,
-                status=NEWS_SIGNAL_STATUS,
+                status=getattr(result, "status", NEWS_SIGNAL_STATUS),
                 reasoning=result.reasoning,
             )
             inserted += 1

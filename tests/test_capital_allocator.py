@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agents.application.capital_allocator import (
     CapitalAllocator,
+    MarketIntelligence,
     MarketIntelligenceSnapshot,
 )
 from agents.application.trade_log import TradeLog
@@ -173,6 +174,41 @@ class TestCapitalAllocator(unittest.TestCase):
         by_agent = {s.agent: s for s in report.agents}
         self.assertGreater(by_agent["scalper"].market_score, 0)
         self.assertIn("btc", report.market_intelligence["crypto"])
+
+    def test_market_intelligence_counts_only_actionable_news_signals(self):
+        log = TradeLog(self.poly_db)
+        log.insert_news_signal(
+            headline="OpenAI expands GPT-5 partner testing",
+            source="test",
+            market_id="m1",
+            market_question="Will OpenAI release GPT-5?",
+            direction="bullish",
+            materiality=0.8,
+            relevance_score=0.5,
+            status="news_signal",
+            reasoning="Relevant positive evidence.",
+        )
+        log.insert_news_signal(
+            headline="Classifier quota failed",
+            source="test",
+            market_id="m2",
+            market_question="Will Bitcoin hit 100k?",
+            direction="neutral",
+            materiality=0.0,
+            relevance_score=0.5,
+            status="classifier_failed",
+            reasoning="classification_error:insufficient_quota_cooldown",
+        )
+        with sqlite3.connect(self.poly_db) as conn:
+            conn.row_factory = sqlite3.Row
+            snap = MarketIntelligenceSnapshot()
+            MarketIntelligence()._load_local_signal_counts(
+                snap,
+                conn,
+                "1970-01-01T00:00:00+00:00",
+            )
+
+        self.assertEqual(snap.fresh_news_signals, 1)
 
     def test_db_only_mode_disables_market_score(self):
         class _Intel:

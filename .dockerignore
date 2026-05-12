@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+.env.*
+.openclaw
+.playwright-mcp
+.superpowers
+data
+local_db_events
+local_db_markets
+screenshots
+*.png
+*.md~
+__pycache__
+*.pyc
+.DS_Store

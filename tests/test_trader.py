@@ -205,7 +205,10 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
                          starting_balance_usdc=80.0,
                          scalper_reserve_usdc=20.0,
                          swarm_reserve_usdc=0.0,
-                         btc_daily_reserve_usdc=0.0)
+                         btc_daily_reserve_usdc=0.0,
+                         near_resolution_reserve_usdc=0.0,
+                         news_shock_reserve_usdc=0.0,
+                         wallet_follow_reserve_usdc=0.0)
         self.assertEqual(gate.available_for_trader(), 60.0)
 
     def test_scalper_reserve_setter_updates_reserves_dict(self):
@@ -225,7 +228,10 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
                          starting_balance_usdc=80.0,
                          scalper_reserve_usdc=0.0,
                          swarm_reserve_usdc=0.0,
-                         btc_daily_reserve_usdc=0.0)  # ignore env
+                         btc_daily_reserve_usdc=0.0,
+                         near_resolution_reserve_usdc=0.0,
+                         news_shock_reserve_usdc=0.0,
+                         wallet_follow_reserve_usdc=0.0)  # ignore env
         self.assertEqual(gate.available_for_trader(), 80.0)
 
     def test_min_floor_uses_available_after_reserve(self):
@@ -758,6 +764,95 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
         recent = tl.recent(limit=1)[0]
         self.assertEqual(recent["status"], SKIPPED_GATE)
         self.assertIn("broken_market_blacklist", recent["error"])
+
+    def test_ai_quota_failure_in_event_filter_skips_cycle_not_crash(self):
+        from agents.application.trade import Trader
+
+        with patch("agents.application.trade.Polymarket") as PMock, \
+                patch("agents.application.trade.Agent") as AgentMock, \
+                patch("agents.application.trade.Gamma"):
+            pm = PMock.return_value
+            pm.get_all_tradeable_events.return_value = [MagicMock()]
+            pm.get_usdc_balance.return_value = 50.0
+
+            agent = AgentMock.return_value
+            agent.filter_events_with_rag.side_effect = RuntimeError(
+                "Error code: 429 - insufficient_quota"
+            )
+
+            tl = TradeLog(self.db_path)
+            gate = RiskGate(
+                trade_log=tl, polymarket=pm,
+                starting_balance_usdc=0.0,
+                max_daily_loss_pct=0.99,
+                max_trades_per_hour=99,
+                min_usdc_floor=0.0,
+                max_daily_token_usd=999.0,
+                kill_switch_file=self.kill_path,
+                llm_usage_file=self.usage_path,
+            )
+            trader = Trader(
+                dry_run=False,
+                top_n=1,
+                max_trades_per_cycle=1,
+                min_confidence=0.7,
+                max_position_fraction=0.1,
+                trade_log=tl,
+                risk_gate=gate,
+            )
+
+            trader.one_best_trade_sweep()
+
+        recent = tl.recent(limit=1)[0]
+        self.assertEqual(recent["status"], SKIPPED_GATE)
+        self.assertEqual(recent["market_id"], "__cycle__")
+        self.assertIn("ai_filter_unavailable", recent["error"])
+        agent.map_filtered_events_to_markets.assert_not_called()
+
+    def test_ai_quota_failure_in_trade_analysis_skips_market_not_failed(self):
+        from agents.application.trade import Trader
+
+        with patch("agents.application.trade.Polymarket") as PMock, \
+                patch("agents.application.trade.Agent") as AgentMock, \
+                patch("agents.application.trade.Gamma"):
+            pm = PMock.return_value
+            pm.get_all_tradeable_events.return_value = []
+            pm.get_usdc_balance.return_value = 50.0
+
+            agent = AgentMock.return_value
+            agent.filter_events_with_rag.return_value = []
+            agent.map_filtered_events_to_markets.return_value = []
+            agent.filter_markets.return_value = [self._make_market(202, 0.05)]
+            agent.source_best_trade.side_effect = RuntimeError(
+                "Error code: 429 - insufficient_quota"
+            )
+
+            tl = TradeLog(self.db_path)
+            gate = RiskGate(
+                trade_log=tl, polymarket=pm,
+                starting_balance_usdc=0.0,
+                max_daily_loss_pct=0.99,
+                max_trades_per_hour=99,
+                min_usdc_floor=0.0,
+                max_daily_token_usd=999.0,
+                kill_switch_file=self.kill_path,
+                llm_usage_file=self.usage_path,
+            )
+            trader = Trader(
+                dry_run=False,
+                top_n=1,
+                max_trades_per_cycle=1,
+                min_confidence=0.7,
+                max_position_fraction=0.1,
+                trade_log=tl,
+                risk_gate=gate,
+            )
+
+            trader.one_best_trade_sweep()
+
+        recent = tl.recent(limit=1)[0]
+        self.assertEqual(recent["status"], SKIPPED_GATE)
+        self.assertIn("ai_analysis_unavailable", recent["error"])
 
 
 if __name__ == "__main__":
