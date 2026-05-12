@@ -17,6 +17,7 @@ from agents.application.trade_log import (
     SUBMITTED,
     TradeLog,
 )
+from agents.application.execution_safety import exitable_size_check
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.polymarket.polymarket import Polymarket
 
@@ -237,6 +238,13 @@ class Trader:
             ],
         )
         if hard_failures >= self.broken_market_failure_threshold:
+            self.trade_log.quarantine_market(
+                market_id,
+                reason=(
+                    f"hard_execution_failures={hard_failures} "
+                    f"in_{self.broken_market_window_hours}h"
+                ),
+            )
             logger.info(
                 "cycle %s: market %s skipped (broken-market failure threshold: %d)",
                 cycle_id,
@@ -251,6 +259,16 @@ class Trader:
                     f"broken_market_blacklist: {hard_failures} hard execution "
                     f"failures in {self.broken_market_window_hours}h"
                 ),
+            )
+            return False
+
+        if self.trade_log.is_market_quarantined(market_id):
+            logger.info("cycle %s: market %s skipped (quarantined)", cycle_id, market_id)
+            self.trade_log.insert_terminal(
+                cycle_id,
+                market_id,
+                SKIPPED_GATE,
+                error="market_quarantined_recent_hard_failure",
             )
             return False
 
@@ -349,6 +367,7 @@ class Trader:
 
         # Resolve which token_id will actually be traded so the log is accurate.
         token_id = None
+        metadata = {}
         try:
             metadata = market[0].dict()["metadata"]
             token_ids = ast.literal_eval(metadata["clob_token_ids"])
@@ -358,6 +377,58 @@ class Trader:
                 )
         except Exception:
             token_id = None
+
+        safety = exitable_size_check(
+            amount_usdc=float(recommendation.amount_usdc or 0.0),
+            entry_price=float(recommendation.price or 0.0),
+        )
+        if not safety.ok:
+            logger.info(
+                "cycle %s: market %s skipped by exitable-size gate: %s",
+                cycle_id,
+                market_id,
+                safety.reason,
+            )
+            self.trade_log.insert_terminal(
+                cycle_id,
+                market_id,
+                SKIPPED_GATE,
+                token_id=token_id,
+                side=recommendation.side,
+                price=recommendation.price,
+                size_usdc=recommendation.amount_usdc,
+                confidence=recommendation.confidence,
+                error=safety.reason,
+            )
+            return False
+
+        if (
+            not self.dry_run
+            and os.getenv("OPPORTUNITY_ROUTER_ENFORCE_LIVE", "true").lower()
+            in {"1", "true", "yes", "on"}
+        ):
+            from agents.application.opportunity_router import live_route_allowed
+
+            scout_db = os.getenv("SCOUT_DB", "./data/scout.db")
+            slug = str(metadata.get("slug") or metadata.get("market_slug") or market_id)
+            route = live_route_allowed(
+                db_path=scout_db,
+                market_slug=slug,
+                strategy="trader",
+            )
+            if not route.allowed:
+                self.trade_log.insert_terminal(
+                    cycle_id,
+                    market_id,
+                    SKIPPED_GATE,
+                    token_id=token_id,
+                    side=recommendation.side,
+                    price=recommendation.price,
+                    size_usdc=recommendation.amount_usdc,
+                    confidence=recommendation.confidence,
+                    error=f"opportunity_router_block:{route.reason}",
+                )
+                return False
 
         if self.dry_run:
             logger.info(

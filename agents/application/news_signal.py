@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 NEWS_SIGNAL_STATUS = "news_signal"
 CLASSIFIER_FAILED_STATUS = "classifier_failed"
+HEURISTIC_SIGNAL_STATUS = "heuristic_signal"
 
 DEFAULT_RSS_FEEDS = [
     "https://news.google.com/rss/search?q=OpenAI%20OR%20Anthropic%20OR%20Bitcoin%20OR%20Ethereum%20OR%20Fed%20OR%20Nvidia&hl=en-US&gl=US&ceid=US:en",
@@ -199,10 +200,15 @@ class NewsSignalClassifier:
             logger.warning("news_signal classification failed: %s", exc)
             if _is_insufficient_quota_error(exc):
                 self._quota_blocked_until = time.time() + self.quota_cooldown_sec
-            direction = "neutral"
-            materiality = 0.0
-            reasoning = f"classification_error:{type(exc).__name__}"
-            status = CLASSIFIER_FAILED_STATUS
+            fallback = heuristic_classify(item, market)
+            direction = fallback.direction
+            materiality = fallback.materiality
+            reasoning = f"classification_error:{type(exc).__name__}; {fallback.reasoning}"
+            status = (
+                HEURISTIC_SIGNAL_STATUS
+                if fallback.materiality > 0
+                else CLASSIFIER_FAILED_STATUS
+            )
 
         return ClassificationResult(
             direction=direction,
@@ -212,6 +218,56 @@ class NewsSignalClassifier:
             model=self.model,
             status=status,
         )
+
+
+def heuristic_classify(item: NewsItem, market: MarketCandidate) -> ClassificationResult:
+    """Deterministic fallback when the LLM is unavailable.
+
+    It is intentionally conservative and writes `heuristic_signal`, not
+    `news_signal`, so allocation can inspect it without treating it as a
+    live-trade approval.
+    """
+    headline = item.headline.lower()
+    positive_terms = {
+        "approved", "wins", "won", "passes", "passed", "launches", "launched",
+        "confirms", "confirmed", "settles", "settled", "returns", "returned",
+        "beats", "beat", "above", "yes",
+    }
+    negative_terms = {
+        "denies", "denied", "fails", "failed", "rejects", "rejected", "cancels",
+        "cancelled", "delays", "delayed", "below", "misses", "missed", "no",
+    }
+    hits = relevance_hits(item.headline, market.question)
+    if hits <= 0:
+        return ClassificationResult(
+            direction="neutral",
+            materiality=0.0,
+            reasoning="heuristic:no_keyword_overlap",
+            latency_ms=0,
+            model="heuristic",
+            status=CLASSIFIER_FAILED_STATUS,
+        )
+    pos = sum(1 for term in positive_terms if term in headline)
+    neg = sum(1 for term in negative_terms if term in headline)
+    if pos == neg:
+        direction = "neutral"
+        materiality = min(0.35, 0.08 * hits)
+    elif pos > neg:
+        direction = "bullish"
+        materiality = min(0.70, 0.18 + 0.08 * hits + 0.05 * (pos - neg))
+    else:
+        direction = "bearish"
+        materiality = min(0.70, 0.18 + 0.08 * hits + 0.05 * (neg - pos))
+    if market.yes_price is not None and (market.yes_price < 0.08 or market.yes_price > 0.92):
+        materiality = min(materiality, 0.35)
+    return ClassificationResult(
+        direction=direction,
+        materiality=round(materiality, 3),
+        reasoning=f"heuristic:hits={hits} pos={pos} neg={neg}",
+        latency_ms=0,
+        model="heuristic",
+        status=HEURISTIC_SIGNAL_STATUS,
+    )
 
 
 def _coerce_json(text: str) -> dict:

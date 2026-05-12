@@ -131,6 +131,47 @@ CREATE INDEX IF NOT EXISTS idx_wallet_signals_ts ON wallet_signals(ts);
 CREATE INDEX IF NOT EXISTS idx_wallet_signals_market ON wallet_signals(market_id, ts);
 CREATE INDEX IF NOT EXISTS idx_wallet_signals_status_ts ON wallet_signals(status, ts);
 CREATE INDEX IF NOT EXISTS idx_wallet_signals_wallet_ts ON wallet_signals(wallet_address, ts);
+
+CREATE TABLE IF NOT EXISTS position_marks (
+    token_id TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    first_seen_ts TEXT NOT NULL,
+    last_seen_ts TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    current_price REAL NOT NULL,
+    max_price REAL NOT NULL,
+    min_price REAL NOT NULL,
+    mfe_pct REAL NOT NULL,
+    mae_pct REAL NOT NULL,
+    peak_drawdown_pct REAL NOT NULL,
+    shares REAL,
+    status TEXT NOT NULL,
+    notes_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_position_marks_market ON position_marks(market_id);
+CREATE INDEX IF NOT EXISTS idx_position_marks_status_ts ON position_marks(status, last_seen_ts);
+
+CREATE TABLE IF NOT EXISTS market_quarantine (
+    market_id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    first_seen_ts TEXT NOT NULL,
+    last_seen_ts TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_market_quarantine_ts ON market_quarantine(last_seen_ts);
+
+CREATE TABLE IF NOT EXISTS agent_promotion_ledger (
+    agent TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    score REAL,
+    expected_value REAL,
+    realized_pnl_usdc REAL,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    updated_ts TEXT NOT NULL,
+    metadata_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_promotion_state ON agent_promotion_ledger(state, updated_ts);
 """
 
 
@@ -263,6 +304,35 @@ class TradeLog:
         with self._lock, self._connect() as conn:
             row = conn.execute(sql, params).fetchone()
             return int(row["n"])
+
+    def quarantine_market(self, market_id: str, reason: str) -> None:
+        now = _now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO market_quarantine
+                    (market_id, reason, first_seen_ts, last_seen_ts, count)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(market_id) DO UPDATE SET
+                    reason=excluded.reason,
+                    last_seen_ts=excluded.last_seen_ts,
+                    count=market_quarantine.count + 1
+                """,
+                (str(market_id), reason, now, now),
+            )
+
+    def is_market_quarantined(self, market_id: str, max_age_hours: int = 24) -> bool:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM market_quarantine
+                WHERE market_id = ? AND last_seen_ts >= ?
+                LIMIT 1
+                """,
+                (str(market_id), cutoff),
+            ).fetchone()
+            return row is not None
 
     def insert_pending(
         self,
@@ -451,6 +521,134 @@ class TradeLog:
         with self._lock, self._connect() as conn:
             row = conn.execute(sql, (str(token_id),)).fetchone()
             return row[0] if row else 0
+
+    def upsert_position_mark(
+        self,
+        *,
+        token_id: str,
+        market_id: str,
+        entry_price: float,
+        current_price: float,
+        shares: Optional[float] = None,
+        status: str = "open",
+        notes: Optional[dict] = None,
+    ) -> dict:
+        """Persist MFE/MAE state for a position and return the updated row."""
+        now = _now()
+        token_id = str(token_id)
+        entry = float(entry_price)
+        current = float(current_price)
+        notes_json = json.dumps(notes, default=str) if notes is not None else None
+        with self._lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM position_marks WHERE token_id = ?",
+                (token_id,),
+            ).fetchone()
+            if existing:
+                max_price = max(float(existing["max_price"]), current)
+                min_price = min(float(existing["min_price"]), current)
+                first_seen = existing["first_seen_ts"]
+            else:
+                max_price = current
+                min_price = current
+                first_seen = now
+            mfe = ((max_price - entry) / entry) if entry > 0 else 0.0
+            mae = ((min_price - entry) / entry) if entry > 0 else 0.0
+            peak_dd = ((max_price - current) / max_price) if max_price > 0 else 0.0
+            conn.execute(
+                """
+                INSERT INTO position_marks
+                    (token_id, market_id, first_seen_ts, last_seen_ts,
+                     entry_price, current_price, max_price, min_price,
+                     mfe_pct, mae_pct, peak_drawdown_pct, shares, status,
+                     notes_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(token_id) DO UPDATE SET
+                    market_id=excluded.market_id,
+                    last_seen_ts=excluded.last_seen_ts,
+                    entry_price=excluded.entry_price,
+                    current_price=excluded.current_price,
+                    max_price=excluded.max_price,
+                    min_price=excluded.min_price,
+                    mfe_pct=excluded.mfe_pct,
+                    mae_pct=excluded.mae_pct,
+                    peak_drawdown_pct=excluded.peak_drawdown_pct,
+                    shares=excluded.shares,
+                    status=excluded.status,
+                    notes_json=COALESCE(excluded.notes_json, position_marks.notes_json)
+                """,
+                (
+                    token_id,
+                    str(market_id),
+                    first_seen,
+                    now,
+                    entry,
+                    current,
+                    max_price,
+                    min_price,
+                    mfe,
+                    mae,
+                    peak_dd,
+                    shares,
+                    status,
+                    notes_json,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM position_marks WHERE token_id = ?",
+                (token_id,),
+            ).fetchone()
+            return dict(row)
+
+    def mark_position_closed(self, token_id: str, status: str = "closed") -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE position_marks SET status=?, last_seen_ts=? WHERE token_id=?",
+                (status, _now(), str(token_id)),
+            )
+
+    def upsert_agent_promotion(
+        self,
+        *,
+        agent: str,
+        state: str,
+        reason: str,
+        score: Optional[float] = None,
+        expected_value: Optional[float] = None,
+        realized_pnl_usdc: Optional[float] = None,
+        sample_size: int = 0,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Persist the latest promotion state for a trading/research agent."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_promotion_ledger
+                    (agent, state, reason, score, expected_value,
+                     realized_pnl_usdc, sample_size, updated_ts, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(agent) DO UPDATE SET
+                    state=excluded.state,
+                    reason=excluded.reason,
+                    score=excluded.score,
+                    expected_value=excluded.expected_value,
+                    realized_pnl_usdc=excluded.realized_pnl_usdc,
+                    sample_size=excluded.sample_size,
+                    updated_ts=excluded.updated_ts,
+                    metadata_json=excluded.metadata_json
+                """,
+                (
+                    agent,
+                    state,
+                    reason,
+                    score,
+                    expected_value,
+                    realized_pnl_usdc,
+                    int(sample_size),
+                    _now(),
+                    json.dumps(metadata, default=str) if metadata is not None else None,
+                ),
+            )
 
     def filled_positions(self) -> list:
         """Return one row per filled trade with token_id present.

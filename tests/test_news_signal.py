@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from agents.application.news_signal import (
     CLASSIFIER_FAILED_STATUS,
+    HEURISTIC_SIGNAL_STATUS,
     NewsItem,
     NewsSignalClassifier,
     NEWS_SIGNAL_STATUS,
@@ -12,6 +13,7 @@ from agents.application.news_signal import (
     collect_once,
     extract_keywords,
     fetch_rss_items,
+    heuristic_classify,
     match_news_to_markets,
 )
 from agents.application.trade_log import TradeLog
@@ -85,6 +87,15 @@ class TestNewsSignalLogic(unittest.TestCase):
         items = fetch_rss_items(limit=1, feeds=["https://feed.test/rss"])
         self.assertEqual(items[0].headline, "OpenAI headline")
         self.assertEqual(items[0].source, "Feed")
+
+    def test_heuristic_fallback_is_separate_from_live_signal(self):
+        market = MagicMock()
+        market.question = "Will Bitcoin hit 100k?"
+        market.yes_price = 0.5
+        result = heuristic_classify(NewsItem("Bitcoin approved spot rally"), market)
+        self.assertEqual(result.status, HEURISTIC_SIGNAL_STATUS)
+        self.assertEqual(result.direction, "bullish")
+        self.assertGreater(result.materiality, 0)
 
 
 class TestNewsSignalStorage(unittest.TestCase):

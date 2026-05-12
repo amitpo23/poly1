@@ -1,6 +1,13 @@
 import unittest
+import tempfile
+import sqlite3
+from pathlib import Path
 
-from agents.application.opportunity_router import OpportunityRouter, RouterConfig
+from agents.application.opportunity_router import (
+    OpportunityRouter,
+    RouterConfig,
+    live_route_allowed,
+)
 
 
 class TestOpportunityRouter(unittest.TestCase):
@@ -71,6 +78,28 @@ class TestOpportunityRouter(unittest.TestCase):
         self.assertTrue(
             any(r.startswith("probability_is_model_estimate") for r in route.reasons)
         )
+
+    def test_live_route_allowed_requires_fresh_live_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "scout.db")
+            self.assertFalse(
+                live_route_allowed(db_path=db_path, market_slug="m", strategy="trader").allowed
+            )
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(OpportunityRouter.ROUTE_SCHEMA)
+                conn.execute(
+                    """
+                    INSERT INTO opportunity_routes
+                        (created_ts, market_slug, market_id, strategy_match,
+                         route, score, risk_score, expected_value, slippage,
+                         error_margin, catalyst_score, reasons_json)
+                    VALUES (datetime('now'), 'm', '1', 'trader', 'live_probe',
+                            0.9, 0.1, 0.05, 0.01, 0.02, 0.0, '[]')
+                    """
+                )
+            self.assertTrue(
+                live_route_allowed(db_path=db_path, market_slug="m", strategy="trader").allowed
+            )
 
 
 if __name__ == "__main__":

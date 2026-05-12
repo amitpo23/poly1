@@ -70,6 +70,14 @@ class OpportunityRoute:
     reasons: list[str]
 
 
+@dataclass(frozen=True)
+class LiveRouteCheck:
+    allowed: bool
+    reason: str
+    route: Optional[str] = None
+    expected_value: Optional[float] = None
+
+
 class OpportunityRouter:
     ROUTE_SCHEMA = """
     CREATE TABLE IF NOT EXISTS opportunity_routes (
@@ -424,3 +432,47 @@ class OpportunityRouter:
             (name,),
         ).fetchone()
         return bool(row)
+
+
+def live_route_allowed(
+    *,
+    db_path: str,
+    market_slug: str,
+    strategy: str,
+    max_age_hours: float = 24.0,
+) -> LiveRouteCheck:
+    """Return whether a live entry is allowed by the latest router row.
+
+    Missing/stale routes block live trading. This is deliberate: agents should
+    gather research/paper evidence before spending capital.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return LiveRouteCheck(False, f"missing_router_db:{db_path}")
+    cutoff = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() - max_age_hours * 3600,
+        tz=timezone.utc,
+    ).isoformat(timespec="seconds")
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        if not OpportunityRouter._table_exists(conn, "opportunity_routes"):
+            return LiveRouteCheck(False, "missing_opportunity_routes")
+        row = conn.execute(
+            """
+            SELECT route, expected_value, reasons_json, created_ts
+            FROM opportunity_routes
+            WHERE market_slug = ?
+              AND (strategy_match = ? OR ? = '')
+              AND created_ts >= ?
+            ORDER BY created_ts DESC, id DESC
+            LIMIT 1
+            """,
+            (str(market_slug), str(strategy), str(strategy), cutoff),
+        ).fetchone()
+    if row is None:
+        return LiveRouteCheck(False, "no_fresh_live_probe_route")
+    route = str(row["route"] or "")
+    ev = row["expected_value"]
+    if route != "live_probe":
+        return LiveRouteCheck(False, f"route_is_{route}", route=route, expected_value=ev)
+    return LiveRouteCheck(True, "live_probe_allowed_by_router", route=route, expected_value=ev)

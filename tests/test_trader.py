@@ -131,6 +131,48 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
             2,
         )
 
+    def test_position_marks_track_mfe_mae_across_updates(self):
+        log = TradeLog(db_path=self.db_path)
+        first = log.upsert_position_mark(
+            token_id="tok",
+            market_id="m1",
+            entry_price=0.50,
+            current_price=0.55,
+            shares=10,
+        )
+        second = log.upsert_position_mark(
+            token_id="tok",
+            market_id="m1",
+            entry_price=0.50,
+            current_price=0.52,
+            shares=10,
+        )
+        self.assertAlmostEqual(first["mfe_pct"], 0.10)
+        self.assertAlmostEqual(second["max_price"], 0.55)
+        self.assertGreater(second["peak_drawdown_pct"], 0)
+
+    def test_market_quarantine_blocks_recent_bad_market(self):
+        log = TradeLog(db_path=self.db_path)
+        self.assertFalse(log.is_market_quarantined("bad"))
+        log.quarantine_market("bad", "404")
+        self.assertTrue(log.is_market_quarantined("bad"))
+
+    def test_agent_promotion_ledger_upsert(self):
+        log = TradeLog(db_path=self.db_path)
+        log.upsert_agent_promotion(
+            agent="scalper",
+            state="paper",
+            reason="negative_live_probe",
+            score=0.1,
+            sample_size=5,
+        )
+        with log._connect() as conn:
+            row = conn.execute(
+                "SELECT state, sample_size FROM agent_promotion_ledger WHERE agent='scalper'"
+            ).fetchone()
+        self.assertEqual(row["state"], "paper")
+        self.assertEqual(row["sample_size"], 5)
+
 
 class TestRiskGate(TempDataMixin, unittest.TestCase):
     def _gate(self, **kwargs):

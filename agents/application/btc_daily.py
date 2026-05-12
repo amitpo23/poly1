@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from agents.application.trade_log import TradeLog
+from agents.application.execution_safety import exitable_size_check
 
 
 logger = logging.getLogger(__name__)
@@ -306,6 +307,24 @@ class BtcDailyEngine:
                 "btc_daily: skip — already holds filled position on market %s",
                 market_id,
             )
+            return None
+
+        safety = exitable_size_check(
+            amount_usdc=self.cfg.position_size_usdc,
+            entry_price=0.50,
+        )
+        if not safety.ok:
+            self.trade_log.insert_terminal(
+                cycle_id=self.trade_log.new_cycle_id(),
+                market_id=market_id,
+                status="skipped_gate",
+                side=side,
+                price=0.50,
+                size_usdc=self.cfg.position_size_usdc,
+                confidence=0.7,
+                error=f"btc_daily_{safety.reason}",
+            )
+            logger.info("btc_daily: skip — %s", safety.reason)
             return None
 
         # Fix #3: skip if the candidate token has already decayed past the

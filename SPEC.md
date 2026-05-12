@@ -436,3 +436,28 @@ Stage 1 (live small): `EXECUTE_SCALPER=true`, leg=$2.50, **min 2 weeks**.
 Abort if cumulative PnL < -$15 at any point.
 
 Stage 2 (scale): leg=$5+ only after Stage 1 ends positive.
+
+## 16. Profitable-agent safety loop (2026-05-12)
+
+Live capital is gated by expected value and exitability, not by agent
+activity. The current hardening layer adds:
+
+| Component | Storage / module | Rule |
+|---|---|---|
+| Position profit monitor | `position_marks` in `trade_log.db` | Persist MFE/MAE and peak drawdown per token so restart does not erase trailing-exit context. |
+| Exitable-size gate | `agents/application/execution_safety.py` | Block live entries that are too small to exit after a normal stop-loss move. |
+| Market quarantine | `market_quarantine` in `trade_log.db` | Markets with repeated 404/no-orderbook/liquidity failures are blocked before another LLM/execution attempt. |
+| Router live gate | `OpportunityRouter.live_route_allowed` | In live mode, `Trader` requires a fresh `live_probe` route when `OPPORTUNITY_ROUTER_ENFORCE_LIVE=true`. |
+| Agent promotion ledger | `agent_promotion_ledger` in `trade_log.db` | Durable research/backtest/paper/live_probe/live_scaled/demoted state. |
+| News fallback | `heuristic_signal` rows | LLM failure produces research-grade heuristic rows, not live-grade `news_signal` rows. |
+
+Env vars:
+
+| Env var | Default | Meaning |
+|---|---:|---|
+| `MIN_EXITABLE_ENTRY_USDC` | `3.0` | Absolute minimum entry size for live agents. |
+| `MIN_EXITABLE_STOP_LOSS_PCT` | `0.07` | Stop-loss move assumed for exitability math. |
+| `MIN_EXIT_NOTIONAL_USDC` | `1.0` | Minimum practical exit notional. |
+| `MIN_EXITABLE_SAFETY_BUFFER` | `1.25` | Buffer above exchange/strategy minimum. |
+| `MAINTAIN_MAX_CLOSE_FAILURES` | `3` | Close failures before terminal escalation. |
+| `OPPORTUNITY_ROUTER_ENFORCE_LIVE` | `true` | Require fresh `live_probe` route for live `Trader` entries. |

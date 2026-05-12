@@ -90,7 +90,7 @@ class PositionManagerConfig:
     min_exit_notional_usdc: float = 1.0
     # After this many consecutive close_failed rows for the same token,
     # escalate to resolved_loss (illiquid market, FAK never matches).
-    max_close_failures: int = 10
+    max_close_failures: int = 3
     # Heartbeat path for healthcheck.
     heartbeat_path: str = "/app/data/position_manager_heartbeat"
     # When False, log decisions but don't actually post SELL orders.
@@ -105,7 +105,7 @@ class PositionManagerConfig:
             poll_seconds=_env_int("MAINTAIN_POLL_SEC", 60),
             sell_slippage=_env_float("MAINTAIN_SELL_SLIPPAGE", 0.02),
             min_exit_notional_usdc=_env_float("MAINTAIN_MIN_EXIT_NOTIONAL_USDC", 1.0),
-            max_close_failures=_env_int("MAINTAIN_MAX_CLOSE_FAILURES", 10),
+            max_close_failures=_env_int("MAINTAIN_MAX_CLOSE_FAILURES", 3),
             heartbeat_path=os.getenv(
                 "MAINTAIN_HEARTBEAT_PATH",
                 "/app/data/position_manager_heartbeat",
@@ -311,9 +311,16 @@ class PositionManager:
             )
             return (None, pos.avg_entry_price)
 
-        prior_peak = self._max_price_by_token.get(pos.token_id, pos.avg_entry_price)
-        peak = max(prior_peak, mid)
-        self._max_price_by_token[pos.token_id] = peak
+        mark = self.trade_log.upsert_position_mark(
+            token_id=pos.token_id,
+            market_id=pos.market_id,
+            entry_price=pos.avg_entry_price,
+            current_price=mid,
+            shares=pos.total_shares,
+            status="open",
+            notes={"cost_basis_usdc": round(pos.total_cost_usdc, 6)},
+        )
+        peak = float(mark.get("max_price") or mid)
 
         # Per-position TP override (set by manual_entry.py): bypass the
         # brain's compound exit logic. This is a deliberately simple
@@ -475,6 +482,7 @@ class PositionManager:
                     f"{self.cfg.min_exit_notional_usdc:.4f}"
                 ),
             )
+            self.trade_log.mark_position_closed(pos.token_id, status=CLOSED_DUST)
             logger.info(
                 "position_manager dust skip: token=%s notional=$%.4f",
                 pos.token_id[:18], shares_to_sell * sell_price,
@@ -570,6 +578,7 @@ class PositionManager:
                 size_usdc=shares_to_sell * sell_price,
                 response=response_with_pnl,
             )
+            self.trade_log.mark_position_closed(pos.token_id, status=status_value)
             logger.info(
                 "position_manager CLOSE [%s]: token=%s entry=%.4f mid=%.4f "
                 "shares=%.2f status=%s",
@@ -607,6 +616,7 @@ class PositionManager:
                 response=response,
                 error=err_str,
             )
+            self.trade_log.mark_position_closed(pos.token_id, status=RESOLVED_LOSS)
             return True  # treat as "handled" so errors counter stays clean
 
         # Escalate to resolved_loss when FAK keeps bouncing for too many
@@ -632,6 +642,7 @@ class PositionManager:
                 response=response,
                 error=f"escalated after {failed_count} close_failed: {err_str}",
             )
+            self.trade_log.mark_position_closed(pos.token_id, status=RESOLVED_LOSS)
             return True
 
         self.trade_log.insert_terminal(

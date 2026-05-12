@@ -184,6 +184,23 @@ class TestEvaluation(_TmpDB, unittest.TestCase):
         reason, mid = mgr._evaluate_position(pos)
         self.assertEqual(reason, "take_profit")
 
+    def test_profit_peak_survives_engine_recreation(self):
+        pm = self._polymarket({"TOK_X": 0.56})
+        mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
+        pos = self._make_position("TOK_X", entry_price=0.50)
+        mgr._evaluate_position(pos)
+
+        pm2 = self._polymarket({"TOK_X": 0.54})
+        mgr2 = PositionManager(polymarket=pm2, trade_log=self.tl, cfg=self._config())
+        reason, _ = mgr2._evaluate_position(pos)
+        self.assertEqual(reason, "take_profit")
+        with self.tl._connect() as conn:
+            row = conn.execute(
+                "SELECT max_price, peak_drawdown_pct FROM position_marks WHERE token_id='TOK_X'"
+            ).fetchone()
+        self.assertAlmostEqual(row["max_price"], 0.56)
+        self.assertGreater(row["peak_drawdown_pct"], 0.0)
+
 
 class TestClosing(_TmpDB, unittest.TestCase):
     def test_shadow_mode_logs_decision_no_sell_call(self):

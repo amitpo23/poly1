@@ -171,7 +171,13 @@ class ScalpPair:
 import uuid  # noqa: E402
 
 from agents.application.exit_executor import ExitExecutor  # noqa: E402
-from agents.application.trade_log import SCALPER_EXIT, SCALPER_LEG, TradeLog  # noqa: E402
+from agents.application.execution_safety import exitable_size_check  # noqa: E402
+from agents.application.trade_log import (  # noqa: E402
+    SCALPER_EXIT,
+    SCALPER_LEG,
+    SKIPPED_GATE,
+    TradeLog,
+)
 from agents.application.scalper_pairs import ScalperPairsDAO, ScalperState  # noqa: E402
 from agents.application.market_brain import CryptoSignalFeed, ExitPosition, MarketBrain  # noqa: E402
 from agents.utils.objects import TradeRecommendation  # noqa: E402
@@ -239,6 +245,19 @@ class ScalperEngine:
         intended_price: float,
     ) -> dict:
         """Attempt one FAK leg. Always increments attempts; only increments qty/cost on success."""
+        safety = exitable_size_check(amount_usdc=usdc, entry_price=intended_price)
+        if not safety.ok:
+            self.log.insert_terminal(
+                cycle_id=f"scalp_gate:{slug}:{side}",
+                market_id=slug,
+                status=SKIPPED_GATE,
+                token_id=token,
+                side="BUY",
+                price=intended_price,
+                size_usdc=usdc,
+                error=f"scalper_{safety.reason}",
+            )
+            return {"filled": False, "error": safety.reason}
         if not self.execute:
             # Shadow mode: log hypothetical leg, don't call CLOB
             cycle_id = f"scalp:{slug}:{side}"
