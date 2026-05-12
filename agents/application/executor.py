@@ -23,6 +23,8 @@ _ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
 logger = logging.getLogger(__name__)
 
+from agents.application.anthropic_compat import to_anthropic_messages as _to_anthropic_messages
+
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.connectors.chroma import PolymarketRAG as Chroma
 from agents.utils.objects import SimpleEvent, SimpleMarket, TradeRecommendation
@@ -121,21 +123,7 @@ class Executor:
                 )
                 _client = _anthropic_sdk.Anthropic(api_key=anthropic_key)
                 # Convert LangChain messages (or plain string) to Anthropic format
-                _system = None
-                _anth_msgs = []
-                if isinstance(messages, str):
-                    # Plain string prompt — treat as a single user message
-                    _anth_msgs = [{"role": "user", "content": messages.strip()}]
-                else:
-                    for _m in messages:
-                        if isinstance(_m, SystemMessage):
-                            _system = _m.content
-                        elif isinstance(_m, HumanMessage):
-                            _anth_msgs.append({"role": "user", "content": _m.content.strip()})
-                        else:
-                            _content = getattr(_m, 'content', str(_m)).strip()
-                            if _content:  # skip empty assistant turns
-                                _anth_msgs.append({"role": "assistant", "content": _content})
+                _system, _anth_msgs = _to_anthropic_messages(messages)
                 _kwargs = {
                     "model": _ANTHROPIC_MODEL,
                     "max_tokens": 4096,
