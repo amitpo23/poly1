@@ -109,6 +109,34 @@ services:
     stop_grace_period: 30s
     profiles: ["positions"]
 
+  trading-supervisor:
+    build: .
+    image: poly1:local
+    container_name: poly1-trading-supervisor
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+    command: ["python", "-m", "agents.application.trading_supervisor"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/trading_supervisor_heartbeat') < 180"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 128m
+    cpus: "0.10"
+    stop_grace_period: 30s
+    profiles: ["positions", "supervisor"]
+
   dashboard:
     build: .
     image: poly1:local

@@ -250,6 +250,26 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | `MAINTAIN_MAX_HOLD_HOURS` | `24` | Position manager: force-close after this many hours regardless of P&L. |
 | `BTC_DAILY_MAX_SLIPPAGE_SKIPS` | `3` | btc_daily: give up on a market after N consecutive slippage failures in one daemon run. Reset on successful entry. Prevents the 58-attempt tight-loop seen on market 2214715 (2026-05-11). |
 
+### Trading supervisor
+
+`agents/application/trading_supervisor.py` is a control-plane safety daemon,
+not a trading strategy. It checks that every open journal position is being
+managed by `position_manager`. If the exit path goes stale while capital is
+open, it writes `KILL_SWITCH_FILE` so entry agents stop opening new risk.
+
+| Var | Default | Notes |
+|---|---|---|
+| `TRADING_SUPERVISOR_POLL_SEC` | `60` | Supervisor loop cadence. |
+| `TRADING_SUPERVISOR_ENFORCE_HALT` | `true` | When true, critical exit-path failures write `KILL_SWITCH_FILE`. |
+| `TRADING_SUPERVISOR_EVAL_GRACE_SEC` | `180` | Max age for position-manager `brain_decisions` / `position_marks` on open positions. |
+| `TRADING_SUPERVISOR_STALE_HEARTBEAT_SEC` | `180` | Max acceptable age for `position_manager` heartbeat when open positions exist. |
+| `TRADING_SUPERVISOR_MIN_POSITION_AGE_SEC` | `45` | Grace period after a new fill before requiring the first exit evaluation. |
+| `TRADING_SUPERVISOR_CLOSE_FAILED_WINDOW_MIN` | `15` | Rolling window for close-failure storm detection. |
+| `TRADING_SUPERVISOR_CLOSE_FAILED_THRESHOLD` | `5` | Critical if recent `close_failed` rows exceed this count. |
+| `TRADING_SUPERVISOR_HEARTBEAT_PATH` | `/app/data/trading_supervisor_heartbeat` | Supervisor healthcheck heartbeat. |
+| `TRADING_SUPERVISOR_STATE_PATH` | `/app/data/trading_supervisor_status.json` | Latest supervisor state for dashboard/ops. |
+| `TRADING_SUPERVISOR_POSITION_MANAGER_HEARTBEAT` | `/app/data/position_manager_heartbeat` | Heartbeat file the supervisor watches. |
+
 ### Persistence
 
 | Var | Default |

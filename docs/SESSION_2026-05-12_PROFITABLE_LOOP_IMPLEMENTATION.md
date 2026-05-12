@@ -131,6 +131,29 @@ Regression coverage:
 - risk/MTM helpers exclude fills that happened before the latest terminal row,
 - close-attempt idempotency can be scoped to "after this entry".
 
+### 9. Trading Supervisor Guard
+
+Added `agents/application/trading_supervisor.py`.
+
+This daemon is a control-plane guard, not a strategy. It watches the live exit
+path and can trip the kill switch when the system has open capital but no fresh
+evidence that `position_manager` is managing it.
+
+Checks:
+
+- `position_manager` heartbeat exists and is fresh when positions are open,
+- every open position has a recent `position_mark`,
+- every open position has a recent `position_manager` exit `brain_decision`,
+- repeated recent `close_failed` rows trigger a critical guard event.
+
+On critical failure with `TRADING_SUPERVISOR_ENFORCE_HALT=true`, it writes
+`KILL_SWITCH_FILE` and journals a `supervisor_halt` row. The latest state is
+also written to `TRADING_SUPERVISOR_STATE_PATH` for dashboard/ops use.
+
+Docker service: `trading-supervisor`, profiles `positions` and `supervisor`.
+It starts with the positions profile so live exits and exit supervision are
+activated together.
+
 ## Implemented in swarm
 
 Changed files in sister repo: `/Users/mymac/Desktop/poly/bot`.
@@ -201,11 +224,29 @@ Follow-up re-entry-idempotency verification:
 ```bash
 .venv/bin/python -m unittest \
   tests.test_position_manager \
+  tests.test_trading_supervisor \
   tests.test_trader.TestTradeLog \
   tests.test_trader.TestRiskGate -v
 ```
 
-Result: 43 tests passed.
+Result: 49 tests passed.
+
+Supervisor live-state dry check:
+
+```bash
+TRADING_SUPERVISOR_POSITION_MANAGER_HEARTBEAT=data/position_manager_heartbeat \
+TRADING_SUPERVISOR_STATE_PATH=data/trading_supervisor_status.json \
+TRADING_SUPERVISOR_HEARTBEAT_PATH=data/trading_supervisor_heartbeat \
+KILL_SWITCH_FILE=data/HALT \
+.venv/bin/python -m agents.application.trading_supervisor \
+  --once --json --no-enforce
+```
+
+Result: critical as expected on current data, without writing HALT because
+`--no-enforce` was used. It detected open trade `2290` with no
+`position_mark` and no `position_manager` exit decision after entry. This is
+the exact class of fault the supervisor is meant to catch before new capital is
+allowed to keep entering.
 
 Full poly1 test run was not possible in this local venv because these
 dependencies are missing:
