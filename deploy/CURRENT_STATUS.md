@@ -2,6 +2,30 @@
 
 Date: 2026-05-12
 
+## Active /goal
+
+`/goal` is now defined in
+`docs/GOAL_PROFITABLE_AGENT_LOOP.md`:
+
+> every approved agent must become evidence-profitable before it receives
+> scalable capital.
+
+The loop is tracked with:
+
+```bash
+python scripts/python/goal_status.py --hours 24
+```
+
+or continuously:
+
+```bash
+python scripts/python/goal_status.py --hours 24 --watch --interval 900
+```
+
+Current interpretation: the goal is open until every approved agent is either
+`profitable` or intentionally unfunded/disabled. This is a discipline loop,
+not a promise of profit and not permission to loosen gates blindly.
+
 ## Latest changes (2026-05-12 13:47 IDT, live funnel diagnosis)
 
 **Question answered:** why are agents healthy but still not producing regular

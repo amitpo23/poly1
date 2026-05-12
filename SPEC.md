@@ -6,6 +6,14 @@ Autonomous Polymarket trading bot. An LLM pipeline scores binary prediction
 markets, and a daemon executes market orders within configurable risk limits.
 Targeted use case: $50–$200 capital running 24/7 on a single VPS.
 
+Active operating goal:
+
+- `/goal`: make every approved agent evidence-profitable before scalable
+  capital allocation. See `docs/GOAL_PROFITABLE_AGENT_LOOP.md`.
+- Track the loop with `python scripts/python/goal_status.py --hours 24`.
+- The loop remains open until every approved agent is `profitable` or
+  intentionally disabled/unfunded.
+
 ## 2. High-level architecture
 
 ```
