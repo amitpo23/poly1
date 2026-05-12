@@ -400,3 +400,59 @@ def collect_once(
         inserted, query, datetime.now(timezone.utc).isoformat(),
     )
     return inserted
+
+
+# ---------------------------------------------------------------------------
+# Daemon entry-point
+# ---------------------------------------------------------------------------
+
+
+def _env_int_ns(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+if __name__ == "__main__":
+    import signal
+    import threading
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
+    _poll_sec = _env_int_ns("NEWS_SIGNAL_POLL_SEC", 900)   # 15 minutes default
+    _query = os.getenv("NEWS_SIGNAL_QUERY", "crypto OR bitcoin OR ethereum OR AI OR fed OR nvidia")
+    _heartbeat_path = os.getenv("NEWS_SIGNAL_HEARTBEAT_PATH", "/app/data/news_signal_heartbeat")
+
+    _stop = threading.Event()
+
+    def _handle_sigterm(*_) -> None:
+        logger.info("news_signal: SIGTERM received — stopping")
+        _stop.set()
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    logger.info("news_signal: daemon starting — poll=%ds query=%r", _poll_sec, _query)
+
+    while not _stop.is_set():
+        try:
+            collect_once(query=_query)
+        except Exception as exc:
+            logger.exception("news_signal: unhandled error: %s", exc)
+
+        # Heartbeat
+        try:
+            os.makedirs(os.path.dirname(_heartbeat_path) or ".", exist_ok=True)
+            with open(_heartbeat_path, "w") as _hb:
+                _hb.write(datetime.now(timezone.utc).isoformat())
+        except OSError:
+            pass
+
+        _stop.wait(_poll_sec)
+
+    logger.info("news_signal: stopped cleanly")

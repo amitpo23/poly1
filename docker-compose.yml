@@ -227,6 +227,35 @@ services:
     stop_grace_period: 30s
     profiles: ["news_shock"]
 
+  news-signal:
+    build: .
+    image: poly1:local
+    container_name: poly1-news-signal
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      TZ: UTC
+      NEWS_SIGNAL_POLL_SEC: "900"
+    command: ["python", "-m", "agents.application.news_signal"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/news_signal_heartbeat') < 1800"]
+      interval: 120s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 384m
+    cpus: "0.50"
+    stop_grace_period: 30s
+    profiles: ["news_shock"]
+
   wallet-watcher:
     build: .
     image: poly1:local

@@ -389,6 +389,22 @@ class TradeLog:
             row = conn.execute(sql, (str(token_id),)).fetchone()
             return row is not None
 
+    def has_resolved_marker_for_token(self, token_id: str) -> bool:
+        """Return True if the token has a resolved_* status row.
+
+        Used by position_manager._already_closed to suppress the dust-override
+        for markets with no CLOB orderbook (resolved/delisted). On-chain tokens
+        for such markets must be redeemed via the CTF contract, not sold via CLOB.
+        """
+        sql = (
+            "SELECT 1 FROM trades WHERE token_id = ? "
+            "AND status IN ('resolved_yes','resolved_no','resolved_loss') "
+            "LIMIT 1"
+        )
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, (str(token_id),)).fetchone()
+            return row is not None
+
     def filled_positions(self) -> list:
         """Return one row per filled trade with token_id present.
 

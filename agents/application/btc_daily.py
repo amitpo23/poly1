@@ -366,6 +366,15 @@ class BtcDailyEngine:
                 pending_id, "failed", error=f"execute_market_order raised: {exc}"
             )
             logger.warning("btc_daily entry failed: %s", exc)
+            # If the market has no orderbook (resolved/delisted), evict cache
+            # so the next cycle re-fetches and detects the closed state.
+            exc_msg = str(exc)
+            if "status_code=404" in exc_msg or "No orderbook" in exc_msg:
+                slug = format_btc_daily_slug()
+                self._market_cache.pop(slug, None)
+                logger.info(
+                    "btc_daily: evicted stale cache for %s (no orderbook)", slug
+                )
             return None
 
         if not response or not response.get("status") in ("matched", "filled"):
@@ -429,6 +438,13 @@ class BtcDailyEngine:
                 logger.warning("btc_daily: no market for slug %s", slug)
                 return None
             m = data[0]
+            # Skip closed/resolved markets — no orderbook exists.
+            if not m.get("active", True) or m.get("closed", False):
+                logger.info(
+                    "btc_daily: market %s is closed/inactive — skipping",
+                    m.get("id", slug),
+                )
+                return None
             import ast
             tokens = ast.literal_eval(m["clobTokenIds"])
             outcomes = ast.literal_eval(m["outcomes"])

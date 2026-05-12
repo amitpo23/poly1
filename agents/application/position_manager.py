@@ -36,7 +36,7 @@ from typing import Optional
 
 from agents.application.exit_executor import ExitExecutor
 from agents.application.market_brain import BrainConfig, ExitPosition, MarketBrain
-from agents.application.trade_log import TradeLog
+from agents.application.trade_log import TradeLog, RESOLVED_LOSS
 
 
 logger = logging.getLogger(__name__)
@@ -378,9 +378,17 @@ class PositionManager:
         and retry the close. Discovered 2026-05-07 when a $0.0034
         timeout fill on token 115755 left 33.15 shares stranded but
         marked the position closed forever.
+
+        Exception: resolved_loss marks a market that no longer has a CLOB
+        orderbook (market resolved or delisted). The dust-override must NOT
+        trigger for such tokens — retrying would always 404.
         """
         if not self.trade_log.has_close_attempt_for_token(token_id):
             return False
+        # If the market resolved (no orderbook), skip on-chain dust check —
+        # on-chain tokens are redeemable via CTF, not the CLOB.
+        if self.trade_log.has_resolved_marker_for_token(token_id):
+            return True
         on_chain = self._on_chain_shares(token_id)
         if on_chain is None:
             return True
@@ -566,6 +574,33 @@ class PositionManager:
         # live order resting. The next cycle can retry if the condition remains.
         clob_status = exit_result.status if exit_result is not None else "exception"
         response = exit_result.response if exit_result is not None else None
+        err_str = err or f"sell not matched: {clob_status}"
+
+        # 404 / no-orderbook means the market resolved or was delisted. The
+        # CLOB will never accept a sell; on-chain tokens are redeemable via
+        # the CTF contract, not via CLOB. Write RESOLVED_LOSS so that:
+        # (a) has_close_attempt_for_token → True on next cycle, AND
+        # (b) the dust-override in _already_closed does NOT re-trigger
+        #     (RESOLVED_LOSS is a terminal marker even with leftover tokens).
+        if "status_code=404" in err_str or "No orderbook" in err_str:
+            logger.warning(
+                "position_manager: token=%s market resolved/delisted (no orderbook)"
+                " — marking resolved_loss to stop retries",
+                pos.token_id[:18],
+            )
+            self.trade_log.insert_terminal(
+                cycle_id=cycle_id,
+                market_id=pos.market_id,
+                status=RESOLVED_LOSS,
+                token_id=pos.token_id,
+                side="SELL",
+                price=sell_price,
+                size_usdc=0,
+                response=response,
+                error=err_str,
+            )
+            return True  # treat as "handled" so errors counter stays clean
+
         self.trade_log.insert_terminal(
             cycle_id=cycle_id,
             market_id=pos.market_id,
@@ -575,7 +610,7 @@ class PositionManager:
             price=sell_price,
             size_usdc=0,
             response=response,
-            error=err or f"sell not matched: {clob_status}",
+            error=err_str,
         )
         return False
 

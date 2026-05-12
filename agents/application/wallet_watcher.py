@@ -153,24 +153,47 @@ class WalletWatcherEngine:
 
     # ------------------------------------------------------ leaderboard scout
 
+    # Backoff state: don't spam warnings every 2 min when leaderboard is down.
+    _scout_next_attempt: float = 0.0
+    _SCOUT_BACKOFF_SEC: float = 1800.0  # 30 minutes after failure
+
+    # Candidate URLs to try for the leaderboard, in order.
+    _LEADERBOARD_URLS = [
+        DATA_API_URL + "/leaderboard?window=all&limit={limit}",
+        DATA_API_URL + "/leaderboard?timeframe=all&limit={limit}",
+        "https://gamma-api.polymarket.com/leaderboard?limit={limit}",
+    ]
+
     def _scout_leaderboard(self) -> None:
         """Fetch public leaderboard and add high-performers to watch list."""
-        try:
-            params = urllib.parse.urlencode({
-                "window": "all",
-                "limit": self.cfg.scout_limit,
-            })
-            url = f"{DATA_API_URL}/leaderboard?{params}"
+        now = time.time()
+        if now < self._scout_next_attempt:
+            return  # Still in backoff window — skip silently.
+
+        data: list = []
+        last_exc: Optional[Exception] = None
+        for url_tpl in self._LEADERBOARD_URLS:
+            url = url_tpl.format(limit=self.cfg.scout_limit)
             req = urllib.request.Request(
                 url, headers={"User-Agent": "poly1-wallet-watcher/1.0"}
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
-        except Exception as exc:
-            logger.warning("wallet_watcher: leaderboard fetch failed: %s", exc)
-            return
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    body = json.loads(resp.read())
+                if isinstance(body, list) and body:
+                    data = body
+                    break  # Found a working endpoint.
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                continue
 
-        if not isinstance(data, list):
+        if not data:
+            logger.warning(
+                "wallet_watcher: leaderboard unavailable — backing off %ds: %s",
+                int(self._SCOUT_BACKOFF_SEC),
+                last_exc,
+            )
+            self._scout_next_attempt = now + self._SCOUT_BACKOFF_SEC
             return
 
         added = 0
