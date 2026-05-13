@@ -201,7 +201,7 @@ attempted. `touch /srv/poly1/data/HALT` to halt; `rm` to resume.
 Before enabling any live entry agent, run:
 
 ```bash
-.venv/bin/python scripts/trading_stability_preflight.py
+.venv/bin/python scripts/trading_stability_preflight.py --mode live
 ```
 
 The preflight is dependency-light and checks the current `.env` plus
@@ -217,6 +217,12 @@ The preflight is dependency-light and checks the current `.env` plus
 
 Any `blocked` result is a no-trade condition. See
 `docs/LIVE_STABILIZATION_RUNBOOK_2026-05-12.md`.
+
+During stabilization freeze, `data/HALT` should exist and the expected check is:
+
+```bash
+.venv/bin/python scripts/trading_stability_preflight.py --mode freeze
+```
 
 ### `data/logs/poly1.log`
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pre-live stability checks for the poly1 trading stack.
+"""Stability checks for the poly1 trading stack.
 
 This script is intentionally dependency-light: it uses stdlib only so it can
 run before the application virtualenv is fully installed.
@@ -94,7 +94,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def check_freeze_config(env: dict[str, str]) -> list[CheckResult]:
+def check_freeze_config(env: dict[str, str], *, mode: str) -> list[CheckResult]:
     results: list[CheckResult] = []
     live_flags = [key for key in ENTRY_EXECUTE_FLAGS if _is_true(env.get(key))]
     live_reserves = [
@@ -106,14 +106,27 @@ def check_freeze_config(env: dict[str, str]) -> list[CheckResult]:
     supervisor_enforces = _is_true(env.get("TRADING_SUPERVISOR_ENFORCE_HALT"))
     maintain_live = _is_true(env.get("EXECUTE_MAINTAIN"))
 
-    results.append(CheckResult(
-        "entry_agents_frozen",
-        not live_flags and not live_reserves and not allocator_enforces,
-        "live flags/reserves disabled"
-        if not live_flags and not live_reserves and not allocator_enforces
-        else f"live_flags={live_flags} live_reserves={live_reserves} "
-             f"allocator_enforces={allocator_enforces}",
-    ))
+    if mode == "freeze":
+        results.append(CheckResult(
+            "entry_agents_frozen",
+            not live_flags and not live_reserves and not allocator_enforces,
+            "live flags/reserves disabled"
+            if not live_flags and not live_reserves and not allocator_enforces
+            else f"live_flags={live_flags} live_reserves={live_reserves} "
+                 f"allocator_enforces={allocator_enforces}",
+        ))
+    else:
+        approved_live_flags = [
+            key for key in live_flags
+            if key != "EXECUTE"
+        ]
+        results.append(CheckResult(
+            "live_entry_scope_explicit",
+            _is_true(env.get("EXECUTE")) and len(approved_live_flags) <= 1,
+            "global EXECUTE=true and at most one entry agent enabled"
+            if _is_true(env.get("EXECUTE")) and len(approved_live_flags) <= 1
+            else f"EXECUTE={env.get('EXECUTE')} live_entry_flags={approved_live_flags}",
+        ))
     results.append(CheckResult(
         "exit_manager_live",
         maintain_live,
@@ -220,16 +233,26 @@ def check_settlement(conn: sqlite3.Connection) -> list[CheckResult]:
     ]
 
 
-def check_halt_state(env: dict[str, str], root: Path) -> list[CheckResult]:
+def check_halt_state(env: dict[str, str], root: Path, *, mode: str) -> list[CheckResult]:
     raw = env.get("KILL_SWITCH_FILE", "./data/HALT")
     path = Path(raw)
     if not path.is_absolute():
         path = root / path
+    exists = path.exists()
+    if mode == "freeze":
+        return [
+            CheckResult(
+                "halt_file_present",
+                exists,
+                f"HALT present at {path}" if exists
+                else f"HALT missing at {path}; freeze lacks physical brake",
+            )
+        ]
     return [
         CheckResult(
             "halt_file_absent",
-            not path.exists(),
-            f"HALT absent at {path}" if not path.exists()
+            not exists,
+            f"HALT absent at {path}" if not exists
             else f"HALT present at {path}",
         )
     ]
@@ -240,6 +263,12 @@ def main() -> int:
     parser.add_argument("--root", default=".", help="repo root")
     parser.add_argument("--env", default=".env", help="env file relative to root")
     parser.add_argument("--db", default="data/trade_log.db", help="SQLite DB relative to root")
+    parser.add_argument(
+        "--mode",
+        choices=("freeze", "live"),
+        default="freeze",
+        help="freeze expects HALT + no live entries; live expects explicit entry scope + no HALT",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON")
     args = parser.parse_args()
 
@@ -248,8 +277,8 @@ def main() -> int:
     db_path = root / args.db
 
     results: list[CheckResult] = []
-    results.extend(check_freeze_config(env))
-    results.extend(check_halt_state(env, root))
+    results.extend(check_freeze_config(env, mode=args.mode))
+    results.extend(check_halt_state(env, root, mode=args.mode))
 
     if not db_path.exists():
         results.append(CheckResult("trade_log_db_exists", False, f"missing {db_path}"))
@@ -262,13 +291,14 @@ def main() -> int:
     ok = all(result.ok for result in results)
     payload = {
         "ts": _utc_now_iso(),
+        "mode": args.mode,
         "status": "ok" if ok else "blocked",
         "checks": [result.__dict__ for result in results],
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        print(f"trading_stability_preflight: {payload['status']}")
+        print(f"trading_stability_preflight[{args.mode}]: {payload['status']}")
         for result in results:
             marker = "OK" if result.ok else "BLOCKED"
             print(f"- {marker} {result.name}: {result.detail}")

@@ -8,6 +8,9 @@ operators.
 
 The system is in **Phase 1 stability freeze**.
 
+`data/HALT` must exist in this phase. It is the physical brake that protects
+against stale containers that were started before `.env` changes were applied.
+
 Allowed:
 
 - `position_manager` live exit-only (`EXECUTE_MAINTAIN=true`)
@@ -51,7 +54,7 @@ Do not re-enable live entries until the gates below pass.
 Run before any live probe:
 
 ```bash
-.venv/bin/python scripts/trading_stability_preflight.py
+.venv/bin/python scripts/trading_stability_preflight.py --mode freeze
 ```
 
 To verify the tracked freeze profile without reading private `.env` secrets:
@@ -63,17 +66,26 @@ To verify the tracked freeze profile without reading private `.env` secrets:
 Expected freeze output:
 
 ```text
-trading_stability_preflight: ok
+trading_stability_preflight[freeze]: ok
 - OK entry_agents_frozen: live flags/reserves disabled
 - OK exit_manager_live: EXECUTE_MAINTAIN=true
 - OK supervisor_enforces_halt: TRADING_SUPERVISOR_ENFORCE_HALT=true
-- OK halt_file_absent: HALT absent at ...
+- OK halt_file_present: HALT present at ...
 - OK trade_log_db_exists: ...
 - OK open_positions_accounted: open=0
 - OK settlement_requires_no_action: no critical settlement rows
 ```
 
 If the script returns `blocked`, do not trade. Fix the listed issue first.
+
+For a live probe, first recreate containers from the approved env, then remove
+`data/HALT`, then run:
+
+```bash
+.venv/bin/python scripts/trading_stability_preflight.py --mode live
+```
+
+`--mode live` must pass before any entry-agent profile is started.
 
 ## Why This Exists
 
@@ -134,3 +146,20 @@ against the private/package source that supplies the V2 client.
 Do not treat local full-suite failures caused by missing `py_clob_client_v2` as
 strategy failures. Do treat them as a deployment-readiness blocker until the
 runtime source is explicit and reproducible.
+
+## Runtime Rule
+
+Changing `.env` is not a runtime change. Existing containers keep their old
+environment until they are recreated. After any config change, run a recreate
+for the affected services and verify the live env inside the container:
+
+```bash
+/Applications/Docker.app/Contents/Resources/bin/docker compose \
+  --profile positions up -d --force-recreate \
+  position_manager trading-supervisor settlement-reconciler
+
+/Applications/Docker.app/Contents/Resources/bin/docker exec \
+  poly1-trading-supervisor env | rg 'EXECUTE|RESERVE|TRADING_SUPERVISOR|MAINTAIN'
+```
+
+No entry-agent container should be running during freeze.
