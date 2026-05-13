@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -308,6 +309,52 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
         pm.get_usdc_balance.return_value = 100.0
         gate = self._gate(polymarket=pm)
         self.assertTrue(gate.ok())
+
+    def test_runtime_control_freeze_blocks(self):
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "freeze",
+            "allowed_live_agents": [],
+            "config_hash": "freeze-hash",
+        }))
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0
+        gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+        self.assertFalse(gate.ok())
+        self.assertIn("mode=freeze", gate.reason())
+
+    def test_runtime_control_hash_mismatch_blocks(self):
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "live_probe",
+            "allowed_live_agents": ["btc_daily"],
+            "config_hash": "expected-hash",
+        }))
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0
+        with patch.dict(os.environ, {
+            "RUNTIME_AGENT": "btc_daily",
+            "RUNTIME_CONFIG_HASH": "stale-hash",
+        }, clear=False):
+            gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+            self.assertFalse(gate.ok())
+            self.assertIn("hash mismatch", gate.reason())
+
+    def test_runtime_control_allows_approved_agent_hash(self):
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "live_probe",
+            "allowed_live_agents": ["btc_daily"],
+            "config_hash": "expected-hash",
+        }))
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0
+        with patch.dict(os.environ, {
+            "RUNTIME_AGENT": "btc_daily",
+            "RUNTIME_CONFIG_HASH": "expected-hash",
+        }, clear=False):
+            gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+            self.assertTrue(gate.ok(), msg=f"unexpected block: {gate.reason()}")
 
     def test_available_for_trader_subtracts_scalper_reserve(self):
         log = TradeLog(db_path=self.db_path)

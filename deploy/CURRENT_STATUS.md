@@ -1243,3 +1243,90 @@ Restart swarm dry-run service:
 cd ~/Desktop/poly/bot
 BOT_MODE=dryrun LOG_LEVEL=INFO /Applications/Docker.app/Contents/Resources/bin/docker compose up -d swarm
 ```
+
+## Runtime Control Stabilization - 2026-05-13
+
+Status: **freeze active; no live entry agents running**.
+
+Why: a stale container kept old live env after `.env` changed and opened one
+BTC daily trade on 2026-05-13. The system now uses a generated runtime control
+layer instead of manual env edits.
+
+Current control files:
+
+- `deploy/.env.runtime` - generated Docker override env, no secrets.
+- `data/runtime_control.json` - shared file read by `RiskGate` before entries.
+- `data/HALT` - physical brake; must exist during freeze.
+
+Current runtime hash:
+
+```text
+18e59d789c9ae259
+```
+
+Current running containers:
+
+- `poly1-position-manager` - healthy, exit-only.
+- `poly1-trading-supervisor` - healthy, `enforce_halt=true`, `open_positions=0`.
+- `poly1-settlement-reconciler` - healthy, checked 0 active positions.
+- dashboards/read-only services may run.
+
+Entry containers must stay stopped during freeze:
+
+- `poly1`
+- `poly1-btc-daily`
+- `poly1-scalper`
+- `poly1-news-shock`
+- `poly1-near-resolution`
+- `poly1-wallet-follow`
+- `polymarket-swarm`
+
+Use these commands only:
+
+```bash
+.venv/bin/python scripts/runtime_control.py freeze \
+  --note "stability freeze before live probe"
+
+.venv/bin/python scripts/trading_stability_preflight.py --mode freeze
+```
+
+For a live probe, generate exactly one approved agent and budget first. Do not
+arm it until the operator approves:
+
+```bash
+.venv/bin/python scripts/runtime_control.py live-probe \
+  --agent btc_daily \
+  --budget 5 \
+  --note "approved live probe"
+```
+
+After approval only:
+
+```bash
+.venv/bin/python scripts/runtime_control.py live-probe \
+  --agent btc_daily \
+  --budget 5 \
+  --note "approved live probe" \
+  --arm
+
+/Applications/Docker.app/Contents/Resources/bin/docker compose \
+  --profile positions --profile btc_daily up -d --force-recreate \
+  position_manager trading-supervisor settlement-reconciler btc_daily
+
+.venv/bin/python scripts/trading_stability_preflight.py --mode live
+```
+
+Verification completed in this session:
+
+- Docker Compose config renders successfully with `.env` plus
+  `deploy/.env.runtime`.
+- Docker image `poly1:local` rebuilt successfully.
+- Safety containers recreated from the new image.
+- Container env shows `RUNTIME_MODE=freeze`,
+  `RUNTIME_CONFIG_HASH=18e59d789c9ae259`, all entry execute flags false, all
+  entry reserves zero, and `EXECUTE_MAINTAIN=true`.
+- `trading_stability_preflight.py --mode freeze` passes.
+- `trading_stability_preflight.py --mode live` is blocked as expected while
+  freeze/HALT are active.
+- `tests.test_trader.TestRiskGate` passes, including runtime-control freeze
+  and stale-hash blocking tests.

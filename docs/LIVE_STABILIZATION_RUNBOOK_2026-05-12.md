@@ -8,8 +8,17 @@ operators.
 
 The system is in **Phase 1 stability freeze**.
 
-`data/HALT` must exist in this phase. It is the physical brake that protects
-against stale containers that were started before `.env` changes were applied.
+`scripts/runtime_control.py freeze` is the source of truth for this phase. It
+writes:
+
+- `deploy/.env.runtime` - secret-free Docker env overrides
+- `data/runtime_control.json` - shared control file read by `RiskGate`
+- `data/HALT` - the physical brake
+
+`data/HALT` must exist in this phase. `RiskGate` also reads
+`data/runtime_control.json` on every entry check, so a stale container with old
+environment variables is still blocked unless its `RUNTIME_CONFIG_HASH` matches
+the current control file and its `RUNTIME_AGENT` is explicitly allowed.
 
 Allowed:
 
@@ -28,7 +37,17 @@ Blocked:
 
 ## Local Safety Defaults
 
-The local `.env` was changed for freeze mode:
+Do not edit `deploy/.env.runtime` by hand. Regenerate it with:
+
+```bash
+.venv/bin/python scripts/runtime_control.py freeze \
+  --note "stability freeze before live probe"
+```
+
+Docker Compose loads `.env` first and `deploy/.env.runtime` second, so the
+runtime file overrides private local defaults without committing secrets.
+
+The generated freeze-mode runtime sets:
 
 - `EXECUTE=false`
 - `EXECUTE_SCALPER=false`
@@ -43,9 +62,9 @@ The local `.env` was changed for freeze mode:
 - `TRADING_SUPERVISOR_EVAL_GRACE_SEC=180`
 - `TRADING_SUPERVISOR_STALE_HEARTBEAT_SEC=180`
 
-The tracked, secret-free reference is
-`deploy/env.stability.freeze`. Use it as the source of truth for freeze-mode
-overrides; do not commit private `.env` files.
+The tracked, secret-free reference is `deploy/env.stability.freeze`, but the
+active runtime source is `deploy/.env.runtime` plus
+`data/runtime_control.json`. Do not commit private `.env` files.
 
 Do not re-enable live entries until the gates below pass.
 
@@ -55,12 +74,6 @@ Run before any live probe:
 
 ```bash
 .venv/bin/python scripts/trading_stability_preflight.py --mode freeze
-```
-
-To verify the tracked freeze profile without reading private `.env` secrets:
-
-```bash
-.venv/bin/python scripts/trading_stability_preflight.py --env deploy/env.stability.freeze
 ```
 
 Expected freeze output:
@@ -78,8 +91,28 @@ trading_stability_preflight[freeze]: ok
 
 If the script returns `blocked`, do not trade. Fix the listed issue first.
 
-For a live probe, first recreate containers from the approved env, then remove
-`data/HALT`, then run:
+For a live probe, choose exactly one approved entry agent and generate the
+runtime profile:
+
+```bash
+.venv/bin/python scripts/runtime_control.py live-probe \
+  --agent btc_daily \
+  --budget 5 \
+  --note "approved live probe"
+```
+
+This writes the live-probe runtime but leaves `data/HALT` in place. After human
+approval, arm the probe:
+
+```bash
+.venv/bin/python scripts/runtime_control.py live-probe \
+  --agent btc_daily \
+  --budget 5 \
+  --note "approved live probe" \
+  --arm
+```
+
+Then recreate containers from the approved env and run:
 
 ```bash
 .venv/bin/python scripts/trading_stability_preflight.py --mode live
@@ -149,9 +182,9 @@ runtime source is explicit and reproducible.
 
 ## Runtime Rule
 
-Changing `.env` is not a runtime change. Existing containers keep their old
-environment until they are recreated. After any config change, run a recreate
-for the affected services and verify the live env inside the container:
+Changing `.env` is not a runtime change, and direct `.env` edits are not the
+approved way to change trading mode. Use `scripts/runtime_control.py`, recreate
+the affected services, then verify the live env inside the container:
 
 ```bash
 /Applications/Docker.app/Contents/Resources/bin/docker compose \
@@ -159,7 +192,7 @@ for the affected services and verify the live env inside the container:
   position_manager trading-supervisor settlement-reconciler
 
 /Applications/Docker.app/Contents/Resources/bin/docker exec \
-  poly1-trading-supervisor env | rg 'EXECUTE|RESERVE|TRADING_SUPERVISOR|MAINTAIN'
+  poly1-trading-supervisor env | rg 'RUNTIME|EXECUTE|RESERVE|TRADING_SUPERVISOR|MAINTAIN'
 ```
 
 No entry-agent container should be running during freeze.

@@ -196,6 +196,35 @@ Operator-controlled kill switch. Path configured by `KILL_SWITCH_FILE`.
 While the file exists, `RiskGate.ok()` returns `False` and no trades are
 attempted. `touch /srv/poly1/data/HALT` to halt; `rm` to resume.
 
+### Runtime control plane
+
+Trading mode is controlled through `scripts/runtime_control.py`, not by manual
+`.env` edits. The script writes `deploy/.env.runtime` and
+`data/runtime_control.json`.
+
+Docker Compose loads `.env` first and `deploy/.env.runtime` second, so the
+generated runtime profile overrides local defaults without exposing secrets.
+`RiskGate` reads `data/runtime_control.json` on every entry check and blocks
+unless:
+
+- mode is trade-enabled (`paper`, `live_probe`, or `live`);
+- `RUNTIME_AGENT` is listed in `allowed_live_agents`;
+- container `RUNTIME_CONFIG_HASH` matches the current control file hash.
+
+Freeze mode must be entered with:
+
+```bash
+.venv/bin/python scripts/runtime_control.py freeze
+```
+
+A live probe must be generated for exactly one approved entry agent:
+
+```bash
+.venv/bin/python scripts/runtime_control.py live-probe --agent btc_daily --budget 5
+```
+
+Pass `--arm` only after human approval; it removes `data/HALT`.
+
 ### Live stabilization preflight
 
 Before enabling any live entry agent, run:
@@ -204,10 +233,12 @@ Before enabling any live entry agent, run:
 .venv/bin/python scripts/trading_stability_preflight.py --mode live
 ```
 
-The preflight is dependency-light and checks the current `.env` plus
-`data/trade_log.db` for the minimum live-readiness contract:
+The preflight is dependency-light and checks `.env`,
+`deploy/.env.runtime`, `data/runtime_control.json`, and `data/trade_log.db`
+for the minimum live-readiness contract:
 
 - entry agents and allocator enforcement are frozen during stabilization;
+- runtime control mode and config hash match the intended mode;
 - `position_manager` is live exit-only;
 - `trading_supervisor` can enforce `HALT`;
 - no HALT file is already present;

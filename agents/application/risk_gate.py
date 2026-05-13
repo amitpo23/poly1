@@ -54,6 +54,7 @@ class RiskGate:
         near_resolution_reserve_usdc: Optional[float] = None,
         news_shock_reserve_usdc: Optional[float] = None,
         wallet_follow_reserve_usdc: Optional[float] = None,
+        runtime_control_file: Optional[str] = None,
     ):
         self.trade_log = trade_log
         self.polymarket = polymarket
@@ -87,6 +88,10 @@ class RiskGate:
         )
         self.llm_usage_file = Path(
             llm_usage_file or os.getenv("LLM_USAGE_FILE", "./data/llm_usage.jsonl")
+        )
+        self.runtime_control_file = Path(
+            runtime_control_file
+            or os.getenv("RUNTIME_CONTROL_PATH", "/app/data/runtime_control.json")
         )
         # Capital reservation ledger. Each strategy that draws from the
         # shared deposit-wallet pUSD pool gets a slice via a *_RESERVE_USDC
@@ -231,6 +236,10 @@ class RiskGate:
 
     def reason(self) -> Optional[str]:
         """Return None if all gates pass, else a short string describing the first failure."""
+        runtime_reason = self.runtime_control_reason()
+        if runtime_reason:
+            return runtime_reason
+
         if self.kill_switch_file.exists():
             return f"kill switch file present: {self.kill_switch_file}"
 
@@ -272,6 +281,46 @@ class RiskGate:
             return (
                 f"daily LLM cost ${self.daily_token_usd():.2f} >= "
                 f"max ${self.max_daily_token_usd:.2f}"
+            )
+
+        return None
+
+    def runtime_control_reason(self) -> Optional[str]:
+        """Block entry when the runtime control-plane disallows this process.
+
+        The control file lives on the shared data volume, so it protects against
+        containers that were started with stale environment variables. A stale
+        entry container will still read the latest control file before placing a
+        trade.
+        """
+        if not self.runtime_control_file.exists():
+            return None
+
+        try:
+            control = json.loads(self.runtime_control_file.read_text())
+        except Exception as exc:
+            return f"runtime control unreadable: {exc}"
+
+        mode = str(control.get("mode") or "").strip()
+        if mode == "freeze":
+            return "runtime control mode=freeze blocks live entries"
+
+        if mode not in {"paper", "live_probe", "live"}:
+            return f"runtime control mode {mode!r} is not trade-enabled"
+
+        agent = os.getenv("RUNTIME_AGENT", "").strip()
+        allowed = [str(a).strip() for a in control.get("allowed_live_agents") or []]
+        if not agent:
+            return "runtime control missing RUNTIME_AGENT"
+        if agent not in allowed:
+            return f"runtime control blocks agent {agent!r}; allowed={allowed}"
+
+        expected_hash = str(control.get("config_hash") or "").strip()
+        actual_hash = os.getenv("RUNTIME_CONFIG_HASH", "").strip()
+        if expected_hash and actual_hash != expected_hash:
+            return (
+                "runtime config hash mismatch: "
+                f"container={actual_hash or '<unset>'} control={expected_hash}"
             )
 
         return None

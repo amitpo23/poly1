@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "default_mode": "freeze",
+  "entry_agents": {
+    "trader": {
+      "execute_flag": "EXECUTE",
+      "reserve_flag": null
+    },
+    "scalper": {
+      "execute_flag": "EXECUTE_SCALPER",
+      "reserve_flag": "SCALPER_RESERVE_USDC"
+    },
+    "btc_daily": {
+      "execute_flag": "EXECUTE_BTC_DAILY",
+      "reserve_flag": "BTC_DAILY_RESERVE_USDC"
+    },
+    "near_resolution": {
+      "execute_flag": "EXECUTE_NEAR_RESOLUTION",
+      "reserve_flag": "NEAR_RESOLUTION_RESERVE_USDC"
+    },
+    "news_shock": {
+      "execute_flag": "EXECUTE_NEWS_SHOCK",
+      "reserve_flag": "NEWS_SHOCK_RESERVE_USDC"
+    },
+    "wallet_follow": {
+      "execute_flag": "EXECUTE_WALLET_FOLLOW",
+      "reserve_flag": "WALLET_FOLLOW_RESERVE_USDC"
+    }
+  },
+  "freeze": {
+    "allowed_live_agents": [],
+    "requires_halt": true
+  },
+  "live_probe": {
+    "max_live_agents": 1,
+    "requires_halt": false,
+    "default_budget_usdc": 5.0
+  }
+}

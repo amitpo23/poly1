@@ -79,6 +79,19 @@ def _parse_env(path: Path) -> dict[str, str]:
     return out
 
 
+def _parse_env_files(root: Path, spec: str) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for raw in spec.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        path = Path(item)
+        if not path.is_absolute():
+            path = root / path
+        merged.update(_parse_env(path))
+    return merged
+
+
 def _is_true(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -258,10 +271,55 @@ def check_halt_state(env: dict[str, str], root: Path, *, mode: str) -> list[Chec
     ]
 
 
+def check_runtime_control(env: dict[str, str], root: Path, *, mode: str) -> list[CheckResult]:
+    raw = env.get("RUNTIME_CONTROL_PATH", "./data/runtime_control.json")
+    path = Path(raw)
+    if str(path).startswith("/app/"):
+        path = root / str(path).removeprefix("/app/")
+    elif not path.is_absolute():
+        path = root / path
+
+    if not path.exists():
+        return [CheckResult("runtime_control_present", False, f"missing {path}")]
+    try:
+        control = json.loads(path.read_text())
+    except Exception as exc:
+        return [CheckResult("runtime_control_parseable", False, str(exc))]
+
+    expected_hash = str(control.get("config_hash") or "").strip()
+    actual_hash = env.get("RUNTIME_CONFIG_HASH", "").strip()
+    control_mode = str(control.get("mode") or "").strip()
+    expected_modes = {"freeze"} if mode == "freeze" else {"live_probe", "live"}
+    allowed_live_agents = control.get("allowed_live_agents") or []
+    results = [
+        CheckResult(
+            "runtime_control_mode",
+            control_mode in expected_modes,
+            f"mode={control_mode or '<unset>'} expected={sorted(expected_modes)}",
+        ),
+        CheckResult(
+            "runtime_config_hash_matches",
+            bool(expected_hash) and expected_hash == actual_hash,
+            f"env={actual_hash or '<unset>'} control={expected_hash or '<unset>'}",
+        ),
+    ]
+    if mode != "freeze":
+        results.append(CheckResult(
+            "runtime_live_agent_scope",
+            len(allowed_live_agents) == 1,
+            f"allowed_live_agents={allowed_live_agents}",
+        ))
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".", help="repo root")
-    parser.add_argument("--env", default=".env", help="env file relative to root")
+    parser.add_argument(
+        "--env",
+        default=".env,deploy/.env.runtime",
+        help="comma-separated env files, later files override earlier ones",
+    )
     parser.add_argument("--db", default="data/trade_log.db", help="SQLite DB relative to root")
     parser.add_argument(
         "--mode",
@@ -273,11 +331,12 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
-    env = _parse_env(root / args.env)
+    env = _parse_env_files(root, args.env)
     db_path = root / args.db
 
     results: list[CheckResult] = []
     results.extend(check_freeze_config(env, mode=args.mode))
+    results.extend(check_runtime_control(env, root, mode=args.mode))
     results.extend(check_halt_state(env, root, mode=args.mode))
 
     if not db_path.exists():

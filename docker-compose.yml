@@ -5,9 +5,12 @@ services:
     container_name: poly1
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: trader
     volumes:
       - ./data:/app/data
       - ./local_db_events:/app/local_db_events
@@ -27,9 +30,12 @@ services:
     container_name: poly1-scalper
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: scalper
     command: ["python", "-m", "agents.application.scalper"]
     volumes:
       - ./data:/app/data
@@ -55,9 +61,12 @@ services:
     container_name: poly1-btc-daily
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: btc_daily
     command: ["python", "-m", "agents.application.btc_daily"]
     volumes:
       - ./data:/app/data
@@ -83,9 +92,12 @@ services:
     container_name: poly1-position-manager
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: position_manager
     command: ["python", "-m", "agents.application.position_manager"]
     volumes:
       - ./data:/app/data
@@ -115,9 +127,12 @@ services:
     container_name: poly1-trading-supervisor
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: trading_supervisor
     command: ["python", "-m", "agents.application.trading_supervisor"]
     volumes:
       - ./data:/app/data
@@ -143,9 +158,12 @@ services:
     container_name: poly1-settlement-reconciler
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: settlement_reconciler
     command: ["python", "-m", "agents.application.settlement_reconciler"]
     volumes:
       - ./data:/app/data
@@ -176,10 +194,13 @@ services:
       --server.headless true
     ports:
       - "8050:8050"
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
       SWARM_DB: /swarm/data/swarm.db
+      RUNTIME_AGENT: dashboard
     volumes:
       - ./data:/app/data
       - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/swarm/data:ro
@@ -200,9 +221,12 @@ services:
     container_name: poly1-allocator-sync
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: allocator_sync
       # Path inside container to the host-mounted poly1 .env file.
       # The daemon reads allocator output and writes these files directly.
       POLY1_ENV_PATH: /app/host/poly1.env
@@ -233,9 +257,12 @@ services:
     container_name: poly1-near-resolution
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: near_resolution
     command: ["python", "-m", "agents.application.near_resolution"]
     volumes:
       - ./data:/app/data
@@ -261,9 +288,12 @@ services:
     container_name: poly1-news-shock
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: news_shock
     command: ["python", "-m", "agents.application.news_shock"]
     volumes:
       - ./data:/app/data
@@ -289,10 +319,13 @@ services:
     container_name: poly1-news-signal
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
       NEWS_SIGNAL_POLL_SEC: "900"
+      RUNTIME_AGENT: news_signal
     command: ["python", "-m", "agents.application.news_signal"]
     volumes:
       - ./data:/app/data
@@ -318,9 +351,12 @@ services:
     container_name: poly1-wallet-watcher
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: wallet_watcher
     command: ["python", "-m", "agents.application.wallet_watcher"]
     volumes:
       - ./data:/app/data
@@ -346,9 +382,12 @@ services:
     container_name: poly1-wallet-follow
     restart: unless-stopped
     init: true
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       TZ: UTC
+      RUNTIME_AGENT: wallet_follow
     command: ["python", "-m", "agents.application.wallet_follow"]
     volumes:
       - ./data:/app/data
