@@ -1330,3 +1330,7 @@ Verification completed in this session:
   freeze/HALT are active.
 - `tests.test_trader.TestRiskGate` passes, including runtime-control freeze
   and stale-hash blocking tests.
+
+Agent handoff:
+
+- `docs/AGENT_HANDOFF_2026-05-13_RUNTIME_CONTROL.md`
