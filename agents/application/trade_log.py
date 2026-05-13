@@ -388,13 +388,23 @@ class TradeLog:
         status: str,
         response: Optional[dict] = None,
         error: Optional[str] = None,
+        price: Optional[float] = None,
+        size_usdc: Optional[float] = None,
     ) -> None:
         response_json = json.dumps(response, default=str) if response is not None else None
         with self._lock, self._connect() as conn:
+            fields = ["status = ?", "response_json = ?", "error = ?", "ts = ?"]
+            params: list = [status, response_json, error, _now()]
+            if price is not None:
+                fields.append("price = ?")
+                params.append(float(price))
+            if size_usdc is not None:
+                fields.append("size_usdc = ?")
+                params.append(float(size_usdc))
+            params.append(trade_id)
             conn.execute(
-                "UPDATE trades SET status = ?, response_json = ?, error = ?, ts = ? "
-                "WHERE id = ?",
-                (status, response_json, error, _now(), trade_id),
+                f"UPDATE trades SET {', '.join(fields)} WHERE id = ?",
+                params,
             )
 
     def insert_terminal(

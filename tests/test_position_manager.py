@@ -35,7 +35,8 @@ class _TmpDB:
             status=FILLED,
         )
 
-    def _insert_btc_daily_open(self, market_id, token_id, side, price, cost):
+    def _insert_btc_daily_open(self, market_id, token_id, side, price, cost,
+                               response=None):
         self.tl.insert_terminal(
             cycle_id="btc-cycle",
             market_id=market_id,
@@ -45,6 +46,7 @@ class _TmpDB:
             size_usdc=cost,
             confidence=0.7,
             status=BTC_DAILY_OPEN,
+            response=response,
         )
 
     def _config(self, **overrides):
@@ -106,6 +108,52 @@ class TestAggregation(_TmpDB, unittest.TestCase):
         self.assertEqual(len(positions), 1)
         self.assertEqual(positions[0].token_id, "TOK_BTC")
         self.assertAlmostEqual(positions[0].total_cost_usdc, 3.0)
+
+    def test_btc_daily_open_uses_actual_fill_price_from_response(self):
+        self._insert_btc_daily_open(
+            "BTC_DAILY",
+            "TOK_BTC",
+            "BUY",
+            0.50,
+            3.0,
+            response={
+                "order_avg_price_estimate": 0.33,
+                "price_recommended": 0.50,
+            },
+        )
+        pm = self._polymarket({"TOK_BTC": 0.31})
+        mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
+        positions = mgr._aggregate_open_positions()
+        self.assertEqual(len(positions), 1)
+        self.assertAlmostEqual(positions[0].avg_entry_price, 0.33, places=4)
+        self.assertAlmostEqual(positions[0].total_shares, 3.0 / 0.33, places=4)
+
+    def test_btc_daily_actual_fill_prevents_false_stop_loss(self):
+        self._insert_btc_daily_open(
+            "BTC_DAILY",
+            "TOK_BTC",
+            "BUY",
+            0.50,
+            3.0,
+            response={
+                "order_avg_price_estimate": 0.33,
+                "price_recommended": 0.50,
+            },
+        )
+        pm = self._polymarket({"TOK_BTC": 0.31})
+        mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
+        result = mgr.check_and_close_positions()
+        self.assertEqual(result["evaluated"], 1)
+        self.assertEqual(result["closed_sl"], 0)
+        pm.sell_shares.assert_not_called()
+        with self.tl._connect() as conn:
+            mark = conn.execute(
+                "SELECT entry_price, current_price, status FROM position_marks "
+                "WHERE token_id='TOK_BTC'"
+            ).fetchone()
+        self.assertAlmostEqual(mark["entry_price"], 0.33, places=4)
+        self.assertAlmostEqual(mark["current_price"], 0.31, places=4)
+        self.assertEqual(mark["status"], "open")
 
     def test_shadow_btc_daily_open_is_not_managed(self):
         trade_id = self.tl.insert_pending(

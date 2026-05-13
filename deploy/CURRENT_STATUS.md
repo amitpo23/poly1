@@ -1428,6 +1428,23 @@ Important finding:
 - Before another live probe, fix/verify entry-price accounting so exit logic
   compares current market price to actual fill price, not the strategy anchor.
 
+Accounting fix applied:
+
+- `btc_daily` now marks successful live entries with:
+  - `price=order_avg_price_estimate`
+  - `size_usdc=amount_usdc`
+  - response metadata `actual_entry_price`
+  - response metadata `price_accounting=actual_token_fill_price`
+- `position_manager` now prefers `actual_entry_price` /
+  `order_avg_price_estimate` from `response_json` when aggregating open
+  positions. It only falls back to legacy `BUY price` / `SELL 1-price`
+  semantics when no actual fill price is available.
+- Regression tests cover the probe case:
+  - strategy anchor `0.50`
+  - actual fill `0.33`
+  - current midpoint `0.31`
+  - expected result: no false stop-loss at `-38%`; entry is treated as `0.33`.
+
 Rollback completed:
 
 - `runtime_control.py freeze --note "pause after first btc_daily live probe for trade review"`

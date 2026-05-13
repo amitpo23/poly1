@@ -235,22 +235,14 @@ class PositionManager:
                 continue
             side = r.get("side") or "BUY"
             price = float(r.get("price") or 0.5)
-            # Convert the LLM's "SELL" semantic into the actual entry price
-            # of the token we hold (token_ids[1] at 1 - price).
-            entry = price if side == "BUY" else (1.0 - price)
-            if entry <= 0:
-                continue
-            shares = cost / entry
-            ts_str = r.get("ts") or ""
-            try:
-                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
-            except Exception:
-                ts = time.time()
-            # Per-position overrides via response_json. Manual entries set
-            # these; algorithmic entries leave them None and inherit the
-            # global config / brain logic.
+            # Per-position overrides and execution metadata. Manual entries set
+            # TP/no-SL fields; live CLOB entries include
+            # order_avg_price_estimate / actual_entry_price. Those execution
+            # prices are the actual token entry price and must not be inverted
+            # for semantic SELL rows.
             tp_override: Optional[float] = None
             no_sl_flag = False
+            actual_entry_price: Optional[float] = None
             rj = r.get("response_json")
             if rj:
                 try:
@@ -260,8 +252,29 @@ class PositionManager:
                             tp_override = float(payload["tp_pct_override"])
                         if payload.get("no_sl"):
                             no_sl_flag = True
+                        for key in ("actual_entry_price", "order_avg_price_estimate"):
+                            if payload.get(key) is not None:
+                                candidate = float(payload[key])
+                                if candidate > 0:
+                                    actual_entry_price = candidate
+                                    break
                 except (TypeError, ValueError, _json.JSONDecodeError):
                     pass
+            # Convert the LLM's "SELL" semantic into the actual entry price
+            # of the token we hold (token_ids[1] at 1 - price).
+            entry = (
+                actual_entry_price
+                if actual_entry_price is not None
+                else price if side == "BUY" else (1.0 - price)
+            )
+            if entry <= 0:
+                continue
+            shares = cost / entry
+            ts_str = r.get("ts") or ""
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                ts = time.time()
             existing = by_token.get(tok)
             if existing is None:
                 by_token[tok] = AggregatedPosition(

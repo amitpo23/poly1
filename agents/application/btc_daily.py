@@ -431,11 +431,22 @@ class BtcDailyEngine:
             )
             return None
 
-        self.trade_log.mark(pending_id, BTC_DAILY_OPEN, response=response)
-        # Successful entry — reset the slippage failure counter for this market.
-        self._slippage_fails.pop(market_id, None)
         entry_price = float(response.get("order_avg_price_estimate", 0.5))
         entry_size_usdc = float(response.get("amount_usdc", self.cfg.position_size_usdc))
+        response = {
+            **response,
+            "actual_entry_price": entry_price,
+            "price_accounting": "actual_token_fill_price",
+        }
+        self.trade_log.mark(
+            pending_id,
+            BTC_DAILY_OPEN,
+            response=response,
+            price=entry_price,
+            size_usdc=entry_size_usdc,
+        )
+        # Successful entry — reset the slippage failure counter for this market.
+        self._slippage_fails.pop(market_id, None)
         shares = entry_size_usdc / max(entry_price, 0.01)
         token_id = response.get("token_id", token_id_for_log)
 
