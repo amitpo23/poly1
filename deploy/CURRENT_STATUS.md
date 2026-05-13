@@ -1512,6 +1512,16 @@ Immediate verification:
 - no new trade row during the first short observation window;
 - latest trade id remains `2389`.
 
+Follow-up check:
+
+- `btc_daily` remained healthy after about two hours of runtime.
+- `trading_stability_preflight.py --mode live`: still ok.
+- `trading_supervisor_status.json`: still `status=ok`, `open_positions=0`,
+  `enforce_halt=true`.
+- No new trade row was created; latest trade id remains `2389`.
+- Conclusion: continue waiting. The agent is correctly not forcing a trade
+  without a BTC trigger. Do not loosen filters just to create activity.
+
 Expected behavior:
 
 - `btc_daily` should wait for its BTC trigger and not force a trade.
