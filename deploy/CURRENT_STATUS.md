@@ -1334,3 +1334,84 @@ Verification completed in this session:
 Agent handoff:
 
 - `docs/AGENT_HANDOFF_2026-05-13_RUNTIME_CONTROL.md`
+
+## First Live Probe After Runtime Stabilization - 2026-05-13
+
+Status: **active live probe**.
+
+Activated by operator request after the runtime-control stabilization work.
+
+Scope:
+
+- approved live agent: `btc_daily`
+- budget: `$5.00`
+- runtime mode: `live_probe`
+- runtime hash: `848149a2cf114b38`
+- `data/HALT`: absent by design while probe is armed
+- all other entry agents remain disabled:
+  - `EXECUTE_SCALPER=false`
+  - `EXECUTE_NEAR_RESOLUTION=false`
+  - `EXECUTE_NEWS_SHOCK=false`
+  - `EXECUTE_WALLET_FOLLOW=false`
+
+Running services:
+
+- `poly1-btc-daily` - live probe entry agent
+- `poly1-position-manager` - live exit manager
+- `poly1-trading-supervisor` - halt-enforcing safety daemon
+- `poly1-settlement-reconciler` - reconciliation safety daemon
+
+Activation commands used:
+
+```bash
+.venv/bin/python scripts/runtime_control.py live-probe \
+  --agent btc_daily \
+  --budget 5 \
+  --note "operator approved first live probe after runtime stabilization" \
+  --arm
+
+.venv/bin/python scripts/trading_stability_preflight.py --mode live
+
+/Applications/Docker.app/Contents/Resources/bin/docker compose \
+  --profile positions --profile btc_daily up -d --force-recreate \
+  position_manager trading-supervisor settlement-reconciler btc_daily
+```
+
+Verification immediately after activation:
+
+- `trading_stability_preflight.py --mode live`: ok
+- `poly1-btc-daily`: healthy
+- `poly1-position-manager`: healthy
+- `poly1-trading-supervisor`: healthy
+- `poly1-settlement-reconciler`: healthy
+- `trading_supervisor_status.json`: `status=ok`, `open_positions=0`,
+  `enforce_halt=true`
+- `poly1-btc-daily` env confirms:
+  - `RUNTIME_AGENT=btc_daily`
+  - `RUNTIME_MODE=live_probe`
+  - `RUNTIME_CONFIG_HASH=848149a2cf114b38`
+  - `EXECUTE=true`
+  - `EXECUTE_BTC_DAILY=true`
+  - `BTC_DAILY_RESERVE_USDC=5.0`
+
+Initial trade result:
+
+- no new trade row has been created since activation;
+- latest trade id remains `2387`;
+- `btc_daily` is alive and waiting for its BTC movement trigger;
+- this is expected: the agent should not force a trade without its signal.
+
+Rollback to freeze:
+
+```bash
+.venv/bin/python scripts/runtime_control.py freeze \
+  --note "stop first live probe"
+
+/Applications/Docker.app/Contents/Resources/bin/docker compose \
+  --profile positions --profile btc_daily up -d --force-recreate \
+  position_manager trading-supervisor settlement-reconciler btc_daily
+
+/Applications/Docker.app/Contents/Resources/bin/docker compose stop btc_daily
+
+.venv/bin/python scripts/trading_stability_preflight.py --mode freeze
+```
