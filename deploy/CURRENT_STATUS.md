@@ -1337,7 +1337,7 @@ Agent handoff:
 
 ## First Live Probe After Runtime Stabilization - 2026-05-13
 
-Status: **active live probe**.
+Status: **completed and paused back to freeze for review**.
 
 Activated by operator request after the runtime-control stabilization work.
 
@@ -1396,10 +1396,44 @@ Verification immediately after activation:
 
 Initial trade result:
 
-- no new trade row has been created since activation;
-- latest trade id remains `2387`;
-- `btc_daily` is alive and waiting for its BTC movement trigger;
-- this is expected: the agent should not force a trade without its signal.
+- `btc_daily` opened one live probe position:
+  - entry row: `2388`
+  - time: `2026-05-13T13:36:13.670579+00:00`
+  - market: `2231495`
+  - side: `BUY`
+  - recommended/logged price: `0.50`
+  - CLOB order price: `0.34`
+  - estimated average fill: `0.33`
+  - size: `$3.00`
+- `position_manager` closed the position:
+  - close row: `2389`
+  - time: `2026-05-13T13:36:30.613499+00:00`
+  - reason: `closed_stop_loss`
+  - close price logged: `0.3038`
+  - actual proceeds: `$1.80`
+  - strategy PnL logged: about `-$1.18`
+- `trading_supervisor` remained healthy:
+  - `status=ok`
+  - `open_positions=0`
+  - `enforce_halt=true`
+
+Important finding:
+
+- The entry row stores `price=0.50`, while the execution response reports
+  `order_avg_price_estimate=0.33` and `order_price=0.34`.
+- The position-manager stop-loss decision used `entry_price=0.50` and
+  `current_price=0.31`, producing `pnl_pct=-0.38`.
+- This means the exit calculation likely used the recommendation anchor
+  instead of the actual fill price for this `btc_daily_open` row.
+- Before another live probe, fix/verify entry-price accounting so exit logic
+  compares current market price to actual fill price, not the strategy anchor.
+
+Rollback completed:
+
+- `runtime_control.py freeze --note "pause after first btc_daily live probe for trade review"`
+- `data/HALT` exists again.
+- `poly1-btc-daily` is stopped.
+- `trading_stability_preflight.py --mode freeze` passes.
 
 Rollback to freeze:
 
