@@ -1466,3 +1466,57 @@ Rollback to freeze:
 
 .venv/bin/python scripts/trading_stability_preflight.py --mode freeze
 ```
+
+## Second BTC Daily Live Probe - 2026-05-13
+
+Status: **active live probe**.
+
+Purpose: verify the fill-price accounting fix from commit `e51f20a` under a
+small live probe.
+
+Scope:
+
+- approved live agent: `btc_daily`
+- budget: `$5.00`
+- trade size: `$3.00`
+- runtime mode: `live_probe`
+- runtime hash: `848149a2cf114b38`
+- `data/HALT`: absent by design while probe is armed
+- all other entry agents remain disabled
+
+Activation commands used:
+
+```bash
+.venv/bin/python scripts/runtime_control.py live-probe \
+  --agent btc_daily \
+  --budget 5 \
+  --note "second btc_daily live probe after fill-price accounting fix" \
+  --arm
+
+.venv/bin/python scripts/trading_stability_preflight.py --mode live
+
+/Applications/Docker.app/Contents/Resources/bin/docker compose \
+  --profile positions --profile btc_daily up -d --force-recreate \
+  position_manager trading-supervisor settlement-reconciler btc_daily
+```
+
+Immediate verification:
+
+- `trading_stability_preflight.py --mode live`: ok
+- `poly1-btc-daily`: healthy
+- `poly1-position-manager`: healthy
+- `poly1-trading-supervisor`: healthy
+- `poly1-settlement-reconciler`: healthy
+- `trading_supervisor_status.json`: `status=ok`, `open_positions=0`,
+  `enforce_halt=true`
+- no new trade row during the first short observation window;
+- latest trade id remains `2389`.
+
+Expected behavior:
+
+- `btc_daily` should wait for its BTC trigger and not force a trade.
+- If a new trade opens, the entry row should store actual fill accounting:
+  `price=order_avg_price_estimate` and response metadata
+  `price_accounting=actual_token_fill_price`.
+- `position_manager` should evaluate TP/SL against actual fill price, not the
+  0.50 strategy anchor.
