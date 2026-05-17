@@ -960,6 +960,45 @@ class TradeLog:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def market_brain_decisions(
+        self, market_id: str, hours: float = 6, limit: int = 5
+    ) -> list:
+        """Return recent external_conviction brain decisions for a specific market.
+
+        Used by the entry gate to skip markets where external signals disapprove.
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT approved, score, reason, agent, ts FROM brain_decisions "
+                "WHERE market_id = ? AND ts >= ? "
+                "ORDER BY id DESC LIMIT ?",
+                (str(market_id), cutoff, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def market_news_signals(
+        self, market_id: str, hours: float = 24, limit: int = 5
+    ) -> list:
+        """Return recent news signals for a specific market.
+
+        Used to enrich the LLM prompt context at entry and exit.
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT headline, direction, materiality, reasoning, ts "
+                "FROM news_signals "
+                "WHERE market_id = ? AND ts >= ? AND status != 'classifier_failed' "
+                "ORDER BY id DESC LIMIT ?",
+                (str(market_id), cutoff, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def update_brain_decision_outcome(
         self,
         decision_id: int,

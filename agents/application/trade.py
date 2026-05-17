@@ -299,6 +299,11 @@ class Trader:
             )
             return False
 
+        # External conviction gate: if recent signals from external_conviction
+        # agent disapprove this market, skip the LLM call entirely.
+        if self._conviction_blocks_entry(cycle_id, market_id):
+            return False
+
         try:
             best_trade = self.agent.source_best_trade(market)
             recommendation = self.agent.parse_trade_recommendation(best_trade)
@@ -500,6 +505,36 @@ class Trader:
         self.trade_log.mark(trade_id, terminal, response=result)
         logger.info("cycle %s: market %s TRADED %s", cycle_id, market_id, result)
         return True
+
+    def _conviction_blocks_entry(self, cycle_id: str, market_id: str) -> bool:
+        """Return True and log if recent external_conviction signals disapprove.
+
+        Only blocks when ALL recent signals disapprove (i.e. at least one
+        disapproval and no approvals). If there are no signals, allow through —
+        the absence of signal is not a veto.
+        """
+        try:
+            decisions = self.trade_log.market_brain_decisions(market_id, hours=6)
+        except Exception:
+            logger.exception("conviction gate DB query failed for %s", market_id)
+            return False
+        if not decisions:
+            return False
+        n_approve = sum(1 for d in decisions if d.get("approved"))
+        n_reject = sum(1 for d in decisions if not d.get("approved"))
+        if n_reject > 0 and n_approve == 0:
+            reason = decisions[0].get("reason", "")
+            logger.info(
+                "cycle %s: market %s skipped (conviction gate: %d disapproval(s),"
+                " reason=%s)",
+                cycle_id, market_id, n_reject, reason,
+            )
+            self.trade_log.insert_terminal(
+                cycle_id, market_id, SKIPPED_GATE,
+                error=f"conviction_gate: {n_reject} disapproval(s): {reason}",
+            )
+            return True
+        return False
 
     def maintain_positions(self):
         """Inline position-management call. Delegates to PositionManager.

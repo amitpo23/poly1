@@ -173,6 +173,12 @@ class PositionManager:
             trade_log=self.trade_log,
         )
         self._max_price_by_token: dict[str, float] = {}
+        # Tracks when we last ran the LLM exit check per token (unix timestamp).
+        self._last_llm_exit_check: dict[str, float] = {}
+        self._llm_exit_interval: int = _env_int("MAINTAIN_LLM_EXIT_INTERVAL_SEC", 300)
+        # Lazy-init: LLM client for exit evaluation (only built on first use).
+        self._llm = None
+        self._prompter = None
 
     # --------------------------------------------------------------- public
 
@@ -206,7 +212,10 @@ class PositionManager:
                 result["errors"] += 1
                 continue
             if reason is None:
-                continue
+                # Rule-based logic says hold — check LLM reasoning every N minutes.
+                reason = self._llm_exit_check(pos, mid)
+                if reason is None:
+                    continue
             ok = self._close_position(pos, reason, mid)
             if ok:
                 if reason == "take_profit":
@@ -380,6 +389,113 @@ class PositionManager:
             "timeout": "timeout",
         }
         return (reason_map.get(decision.reason), mid)
+
+    # --------------------------------------------------------- LLM exit check
+
+    def _get_llm(self):
+        """Lazy-init the LLM client (same model as executor)."""
+        if self._llm is None:
+            from langchain_openai import ChatOpenAI
+            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            self._llm = ChatOpenAI(model=model, temperature=0)
+        return self._llm
+
+    def _get_prompter(self):
+        if self._prompter is None:
+            from agents.application.prompts import Prompter
+            self._prompter = Prompter()
+        return self._prompter
+
+    def _llm_exit_check(self, pos: AggregatedPosition, mid: float) -> Optional[str]:
+        """Ask the LLM every N minutes whether to exit a position.
+
+        Returns a close reason string ("stop_loss" / "take_profit") if the
+        LLM recommends exit, or None to hold.  Never raises — errors are
+        logged and treated as HOLD.
+        """
+        now = time.time()
+        last = self._last_llm_exit_check.get(pos.token_id, 0.0)
+        if now - last < self._llm_exit_interval:
+            return None
+        self._last_llm_exit_check[pos.token_id] = now
+
+        try:
+            hold_hours = (now - pos.earliest_ts) / 3600.0
+
+            # Gather context from DB
+            news_rows = self.trade_log.market_news_signals(pos.market_id, hours=24)
+            news_context = "; ".join(
+                f"{r['headline']} [{r['direction']}, materiality={r['materiality']}]"
+                for r in news_rows
+            ) if news_rows else ""
+
+            conviction_rows = self.trade_log.market_brain_decisions(pos.market_id, hours=6)
+            conviction_context = "; ".join(
+                f"approved={r['approved']} score={r.get('score','?')} reason={r.get('reason','')}"
+                for r in conviction_rows
+            ) if conviction_rows else ""
+
+            # Fetch market question from the journal if available
+            question = pos.market_id  # fallback
+            try:
+                ns = self.trade_log.market_news_signals(pos.market_id, hours=168, limit=1)
+                if ns and ns[0].get("market_question"):
+                    question = ns[0]["market_question"]
+            except Exception:
+                pass
+
+            prompt = self._get_prompter().should_exit_position(
+                question=question,
+                side=pos.side,
+                entry_price=pos.avg_entry_price,
+                current_price=mid,
+                hold_hours=hold_hours,
+                news_context=news_context,
+                conviction_context=conviction_context,
+            )
+
+            llm = self._get_llm()
+            response = llm.invoke(prompt)
+            raw = response.content if hasattr(response, "content") else str(response)
+
+            import json as _json
+            import re as _re
+            m = _re.search(r"\{.*?\}", raw, _re.DOTALL)
+            if not m:
+                logger.warning("llm_exit_check: no JSON in response for %s", pos.token_id[:18])
+                return None
+            data = _json.loads(m.group())
+            action = data.get("action", "HOLD").upper()
+            reason_text = data.get("reason", "LLM exit")
+            confidence = float(data.get("confidence", 0.5))
+
+            logger.info(
+                "llm_exit_check: token=%s action=%s confidence=%.2f reason=%s",
+                pos.token_id[:18], action, confidence, reason_text,
+            )
+
+            self.trade_log.insert_brain_decision(
+                agent="position_manager_llm",
+                strategy="llm_exit_evaluation",
+                decision_type="exit",
+                market_id=pos.market_id,
+                token_id=pos.token_id,
+                approved=(action == "EXIT"),
+                reason=reason_text,
+                score=confidence,
+                action=action,
+            )
+
+            if action == "EXIT":
+                pnl_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
+                return "take_profit" if pnl_pct >= 0 else "stop_loss"
+
+        except Exception:
+            logger.exception(
+                "llm_exit_check failed for token %s (non-fatal, holding)",
+                pos.token_id[:18],
+            )
+        return None
 
     def _record_exit_brain_decision(self, pos: AggregatedPosition, decision) -> None:
         try:

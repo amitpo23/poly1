@@ -250,3 +250,40 @@ class Prompter:
         Outcomes: Yes or No
         
         """
+
+    def should_exit_position(
+        self,
+        question: str,
+        side: str,
+        entry_price: float,
+        current_price: float,
+        hold_hours: float,
+        news_context: str = "",
+        conviction_context: str = "",
+    ) -> str:
+        pnl_pct = (current_price - entry_price) / max(entry_price, 1e-9) * 100
+        direction = "UP" if current_price > entry_price else "DOWN"
+        return f"""
+You are a disciplined Polymarket trader reviewing an open position.
+
+Market question: {question}
+Your side: {side} (BUY = you win if outcome resolves YES; SELL = you win if outcome resolves NO)
+Entry price: {entry_price:.4f}
+Current price: {current_price:.4f}
+Price movement: {direction} {abs(pnl_pct):.1f}% from entry
+Time held: {hold_hours:.1f} hours
+{f"Recent news: {news_context}" if news_context else "Recent news: none available"}
+{f"External signals: {conviction_context}" if conviction_context else "External signals: none available"}
+
+Assess whether this position should be held or exited NOW.
+Consider:
+- Is the price moving against your thesis?
+- Has any new information invalidated your original reasoning?
+- Is the remaining upside worth the current downside risk?
+- Is the market approaching resolution with the wrong outcome?
+
+Respond with valid JSON only:
+{{"action": "HOLD" or "EXIT", "reason": "one sentence", "confidence": 0.0-1.0}}
+
+Example: {{"action": "EXIT", "reason": "Price moved against thesis and news confirms negative outcome", "confidence": 0.78}}
+"""
