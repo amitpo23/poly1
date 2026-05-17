@@ -27,10 +27,12 @@ Environment variables (all optional, see defaults below):
   WALLET_FOLLOW_PROFIT_SCALE     — profit $ for full confidence (default 1000)
   WALLET_FOLLOW_MIN_EV           — min expected value (default 0.03)
   WALLET_FOLLOW_MAX_ENTRY_PRICE  — max entry price for the token (default 0.70)
+  WALLET_FOLLOW_MAX_DRIFT         — max yes_price drift vs wallet entry price (default 0.10)
   WALLET_FOLLOW_MIN_LIQUIDITY    — min $USDC volume (default 3000)
+  WALLET_FOLLOW_MIN_TRADES       — min wallet trades in 30d (default 5)
   WALLET_FOLLOW_POSITION_SIZE_USDC — size per trade (default 2.5)
   WALLET_FOLLOW_RESERVE_USDC     — capital reserved for this agent (default 15)
-  WALLET_FOLLOW_MAX_AGE_HOURS    — max signal age to act on (default 4)
+  WALLET_FOLLOW_MAX_AGE_HOURS    — max signal age to act on (default 1)
   WALLET_FOLLOW_POLL_SEC         — loop cadence in seconds (default 60)
   WALLET_FOLLOW_MAX_OPEN         — max concurrent open positions (default 3)
   WALLET_FOLLOW_HEARTBEAT_PATH   — file path for heartbeat (default /app/data/wallet_follow_heartbeat)
@@ -93,10 +95,12 @@ class WalletFollowConfig:
     profit_scale: float = 1000.0
     min_ev: float = 0.03
     max_entry_price: float = 0.70
+    max_drift: float = 0.10
+    min_wallet_trades: int = 5
     min_liquidity: float = 3000.0
     position_size_usdc: float = 2.5
     reserve_usdc: float = 15.0
-    max_age_hours: float = 4.0
+    max_age_hours: float = 1.0
     poll_sec: int = 60
     max_open: int = 3
     heartbeat_path: str = "/app/data/wallet_follow_heartbeat"
@@ -108,10 +112,12 @@ class WalletFollowConfig:
             profit_scale=_env_float("WALLET_FOLLOW_PROFIT_SCALE", 1000.0),
             min_ev=_env_float("WALLET_FOLLOW_MIN_EV", 0.03),
             max_entry_price=_env_float("WALLET_FOLLOW_MAX_ENTRY_PRICE", 0.70),
+            max_drift=_env_float("WALLET_FOLLOW_MAX_DRIFT", 0.10),
+            min_wallet_trades=_env_int("WALLET_FOLLOW_MIN_TRADES", 5),
             min_liquidity=_env_float("WALLET_FOLLOW_MIN_LIQUIDITY", 3000.0),
             position_size_usdc=_env_float("WALLET_FOLLOW_POSITION_SIZE_USDC", 2.5),
             reserve_usdc=_env_float("WALLET_FOLLOW_RESERVE_USDC", 15.0),
-            max_age_hours=_env_float("WALLET_FOLLOW_MAX_AGE_HOURS", 4.0),
+            max_age_hours=_env_float("WALLET_FOLLOW_MAX_AGE_HOURS", 1.0),
             poll_sec=_env_int("WALLET_FOLLOW_POLL_SEC", 60),
             max_open=_env_int("WALLET_FOLLOW_MAX_OPEN", 3),
             heartbeat_path=os.getenv(
@@ -273,6 +279,16 @@ class WalletFollowEngine:
                 self._mark_signal(signal_id, "skipped")
                 continue
 
+            # Wallet quality filter: ignore lucky wallets with too few trades
+            wallet_trades = int(sig.get("wallet_trades_30d") or 0)
+            if wallet_trades < self.cfg.min_wallet_trades:
+                logger.debug(
+                    "wallet_follow: skip %s — wallet only %d trades in 30d (min=%d)",
+                    market_id, wallet_trades, self.cfg.min_wallet_trades,
+                )
+                self._mark_signal(signal_id, "skipped")
+                continue
+
             # Risk gate
             if self.risk_gate is not None and not self.risk_gate.ok():
                 logger.info("wallet_follow: risk gate blocked: %s", self.risk_gate.reason())
@@ -312,6 +328,33 @@ class WalletFollowEngine:
             except (json.JSONDecodeError, IndexError, TypeError, ValueError):
                 yes_price = float(sig.get("yes_price") or 0.5)
                 no_price = 1.0 - yes_price
+
+            # Price-drift check: if the market has already moved > max_drift in the
+            # wallet's direction since they entered, the trade is already priced in.
+            wallet_entry_price = sig.get("wallet_entry_price")
+            if wallet_entry_price is not None:
+                try:
+                    wep = float(wallet_entry_price)
+                    drift = yes_price - wep
+                    direction_raw = sig.get("direction", "")
+                    if direction_raw == "bullish" and drift > self.cfg.max_drift:
+                        logger.info(
+                            "wallet_follow: skip %s — bullish already priced in "
+                            "(entry=%.3f current=%.3f drift=+%.3f)",
+                            market_id, wep, yes_price, drift,
+                        )
+                        self._mark_signal(signal_id, "skipped")
+                        continue
+                    if direction_raw == "bearish" and drift < -self.cfg.max_drift:
+                        logger.info(
+                            "wallet_follow: skip %s — bearish already priced in "
+                            "(entry=%.3f current=%.3f drift=%.3f)",
+                            market_id, wep, yes_price, drift,
+                        )
+                        self._mark_signal(signal_id, "skipped")
+                        continue
+                except (TypeError, ValueError):
+                    pass
 
             # Liquidity filter
             liquidity = float(mkt.get("volumeClob") or mkt.get("volume24hr") or 0)
