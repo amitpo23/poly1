@@ -668,6 +668,51 @@ class TradeLog:
                 (status, _now(), str(token_id)),
             )
 
+    def set_no_sl_for_straddle_partner(
+        self, straddle_id: str, closed_token_id: str
+    ) -> int:
+        """Patch the open straddle partner leg to add ``no_sl=True``.
+
+        Called by position_manager after a straddle leg exits at TP.  The
+        partner leg's cost is now covered; removing the stop-loss lets it
+        hold to its own TP without being prematurely cut by a temporary
+        adverse move.
+
+        Returns the number of rows updated (normally 0 or 1).
+        """
+        select_sql = (
+            "SELECT id, response_json FROM trades "
+            "WHERE status = ? AND token_id != ? "
+            "AND response_json LIKE ?"
+        )
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                select_sql,
+                (NEAR_RESOLUTION_OPEN, closed_token_id, f"%{straddle_id}%"),
+            ).fetchall()
+            updated = 0
+            for row in rows:
+                rj = row["response_json"]
+                try:
+                    payload = json.loads(rj) if rj else {}
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("straddle_id") != straddle_id:
+                    continue
+                payload["no_sl"] = True
+                conn.execute(
+                    "UPDATE trades SET response_json = ? WHERE id = ?",
+                    (json.dumps(payload), row["id"]),
+                )
+                updated += 1
+                logger.debug(
+                    "trade_log: set no_sl on straddle partner row_id=%d straddle_id=%s",
+                    row["id"], straddle_id,
+                )
+            return updated
+
     def upsert_agent_promotion(
         self,
         *,

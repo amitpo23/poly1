@@ -89,7 +89,7 @@ class NearResolutionConfig:
     min_entry_price: float = 0.10
     # Straddle: enter BOTH YES and NO when market is genuinely uncertain
     # and the price sum is low enough to guarantee mathematical edge.
-    straddle_max_sum: float = 0.92    # YES_ask + NO_ask < this to straddle
+    straddle_max_sum: float = 0.88    # YES_ask + NO_ask < this to straddle
     straddle_min_each: float = 0.30   # each leg must be ≥ this
     direction_min_confidence: float = 0.65  # LLM confidence < this → try straddle
     # Limit how many markets we run LLM on per cycle (API cost control)
@@ -109,7 +109,7 @@ class NearResolutionConfig:
             max_hours=_env_float("NEAR_RESOLUTION_MAX_HOURS", 720.0),
             max_entry_price=_env_float("NEAR_RESOLUTION_MAX_ENTRY_PRICE", 0.65),
             min_entry_price=_env_float("NEAR_RESOLUTION_MIN_ENTRY_PRICE", 0.10),
-            straddle_max_sum=_env_float("NEAR_RESOLUTION_STRADDLE_MAX_SUM", 0.92),
+            straddle_max_sum=_env_float("NEAR_RESOLUTION_STRADDLE_MAX_SUM", 0.88),
             straddle_min_each=_env_float("NEAR_RESOLUTION_STRADDLE_MIN_EACH", 0.30),
             direction_min_confidence=_env_float(
                 "NEAR_RESOLUTION_DIRECTION_MIN_CONFIDENCE", 0.65
@@ -150,6 +150,9 @@ class NearResolutionEngine:
         # Lazy-init LLM (same pattern as position_manager)
         self._llm = None
         self._prompter = None
+        # LLM result cache: question → (result_dict, unix_ts)
+        # Prevents re-analysing the same market every 60 s (5-min TTL).
+        self._llm_cache: dict = {}
 
     # ------------------------------------------------------------------ scan
 
@@ -334,6 +337,14 @@ class NearResolutionEngine:
         Falls back to {"direction": "uncertain", "confidence": 0.5} on any error.
         """
         fallback = {"direction": "uncertain", "confidence": 0.5, "reasoning": "llm_unavailable"}
+        # Cache check — skip LLM if we analysed this market recently.
+        _now_ts = time.time()
+        cached = self._llm_cache.get(question)
+        if cached is not None:
+            _cached_result, _cached_ts = cached
+            if _now_ts - _cached_ts < 300:  # 5-minute TTL
+                logger.debug("near_resolution: LLM cache hit for '%s'", question[:60])
+                return _cached_result
         self._init_llm()
         if self._llm is None:
             return fallback
@@ -361,7 +372,9 @@ class NearResolutionEngine:
                 "near_resolution: LLM direction=%s conf=%.2f for '%s'",
                 direction, confidence, question[:60],
             )
-            return {"direction": direction, "confidence": confidence, "reasoning": reasoning}
+            result = {"direction": direction, "confidence": confidence, "reasoning": reasoning}
+            self._llm_cache[question] = (result, time.time())
+            return result
         except Exception as exc:
             logger.warning("near_resolution: LLM direction failed for '%s': %s", question[:60], exc)
             return fallback

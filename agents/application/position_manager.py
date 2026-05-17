@@ -131,6 +131,10 @@ class AggregatedPosition:
     # rule. None means "use global config / brain".
     tp_pct_override: Optional[float] = None
     no_sl: bool = False
+    # When set, this position is one leg of a straddle. After the first
+    # leg exits at TP, the partner leg's stop-loss is removed so it can
+    # run freely to its own TP (its cost is already covered by the TP exit).
+    straddle_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +255,7 @@ class PositionManager:
             # for semantic SELL rows.
             tp_override: Optional[float] = None
             no_sl_flag = False
+            straddle_id_val: Optional[str] = None
             actual_entry_price: Optional[float] = None
             rj = r.get("response_json")
             if rj:
@@ -261,6 +266,8 @@ class PositionManager:
                             tp_override = float(payload["tp_pct_override"])
                         if payload.get("no_sl"):
                             no_sl_flag = True
+                        if payload.get("straddle_id"):
+                            straddle_id_val = str(payload["straddle_id"])
                         for key in ("actual_entry_price", "order_avg_price_estimate"):
                             if payload.get(key) is not None:
                                 candidate = float(payload[key])
@@ -297,6 +304,7 @@ class PositionManager:
                     journal_row_ids=[r.get("id")] if r.get("id") else [],
                     tp_pct_override=tp_override,
                     no_sl=no_sl_flag,
+                    straddle_id=straddle_id_val,
                 )
             else:
                 # Weighted-average entry price across all fills on this token.
@@ -315,6 +323,8 @@ class PositionManager:
                     existing.tp_pct_override = tp_override
                 if no_sl_flag:
                     existing.no_sl = True
+                if straddle_id_val and not existing.straddle_id:
+                    existing.straddle_id = straddle_id_val
         return list(by_token.values())
 
     # ----------------------------------------------------------- evaluate
@@ -720,6 +730,18 @@ class PositionManager:
                 response=response_with_pnl,
             )
             self.trade_log.mark_position_closed(pos.token_id, status=status_value)
+            # Straddle TP: remove stop-loss on the partner leg so it can
+            # run to its own TP — its cost is already covered by this exit.
+            if reason == "take_profit" and pos.straddle_id:
+                patched = self.trade_log.set_no_sl_for_straddle_partner(
+                    pos.straddle_id, pos.token_id
+                )
+                if patched:
+                    logger.info(
+                        "position_manager: straddle TP on %s → no_sl set on "
+                        "partner (straddle_id=%s)",
+                        pos.token_id[:18], pos.straddle_id,
+                    )
             logger.info(
                 "position_manager CLOSE [%s]: token=%s entry=%.4f mid=%.4f "
                 "shares=%.2f status=%s",
