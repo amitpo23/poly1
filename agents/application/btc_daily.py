@@ -97,6 +97,11 @@ class BtcDailyConfig:
     # Below 0.30 means the market has effectively chosen a side and
     # fading is no longer a mean-reversion bet — it's catching a falling knife.
     min_candidate_price: float = 0.30
+    # Skip-entry if the candidate token is already above this ceiling.
+    # Above 0.65 means the market has strongly priced the outcome; a mean-
+    # reversion entry would require buying an overpriced token and face
+    # slippage rejection (root cause of the 2026-05-13 stop-loss cascade).
+    max_entry_price: float = 0.65
     # Skip if longer-window trend agrees with the short move (don't fight
     # a trend day). 0.8% catches real trend days; 2.5% almost never fired.
     skip_on_strong_trend: bool = True
@@ -121,6 +126,7 @@ class BtcDailyConfig:
             cooldown_sec=_env_int("BTC_DAILY_COOLDOWN_SEC", 180),
             position_size_usdc=_env_float("BTC_DAILY_POSITION_SIZE_USDC", 3.0),
             min_candidate_price=_env_float("BTC_DAILY_MIN_CANDIDATE_PRICE", 0.30),
+            max_entry_price=_env_float("BTC_DAILY_MAX_ENTRY_PRICE", 0.65),
             skip_on_strong_trend=os.getenv(
                 "BTC_DAILY_SKIP_TREND", "true"
             ).lower() == "true",
@@ -331,9 +337,11 @@ class BtcDailyEngine:
             return None
 
         # Fix #3: skip if the candidate token has already decayed past the
-        # mean-reversion floor. If YES is at $0.05, fading a "BTC dumped"
-        # signal by buying YES is just catching a falling knife — the market
-        # has already chosen the side.
+        # mean-reversion floor, OR is already above the ceiling.
+        # Floor: YES at $0.05 → fading "BTC dumped" is catching a falling knife.
+        # Ceiling: NO at $0.73 → market has decided; we'd face slippage cap.
+        # The fetched candidate_mid also becomes the anchor price (Fix #4).
+        candidate_mid = 0.5  # default if pre-check is unavailable
         token_ids = market_doc.get("token_ids", [])
         if len(token_ids) >= 2:
             try:
@@ -353,14 +361,21 @@ class BtcDailyEngine:
                     side, candidate_mid, self.cfg.min_candidate_price,
                 )
                 return None
+            if candidate_mid > self.cfg.max_entry_price:
+                logger.info(
+                    "btc_daily: skip — candidate %s mid=%.4f > ceiling %.2f "
+                    "(token overpriced; slippage would reject)",
+                    side, candidate_mid, self.cfg.max_entry_price,
+                )
+                return None
 
         from agents.utils.objects import TradeRecommendation
-        # Anchor price: midpoint estimate; the executor will walk the live
-        # book and may pay slightly more (slippage cap is in
-        # POLYMARKET_MAX_SLIPPAGE).
-        # Use 0.5 as the anchor — daily up/down typically trades around mid.
+        # Fix #4: use the actual candidate midpoint as the anchor price.
+        # Using a hardcoded 0.5 caused all 4 live slippage rejections in
+        # 2026-05-13 — the token's ask was 0.73-0.99 while our anchor was 0.50,
+        # triggering the slippage cap on every attempt.
         recommendation = TradeRecommendation(
-            price=0.5,
+            price=candidate_mid,
             size_fraction=0.0,
             side=side,
             confidence=0.7,
