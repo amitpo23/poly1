@@ -309,3 +309,41 @@ Respond with valid JSON only:
 
 Example: {{"action": "EXIT", "reason": "Price moved against thesis and news confirms negative outcome", "confidence": 0.78}}
 """
+
+    def binary_market_direction(
+        self,
+        question: str,
+        yes_price: float,
+        no_price: float,
+        end_date: str = "",
+        news_context: str = "",
+    ) -> str:
+        """Fast direction assessment for near_resolution straddle agent.
+
+        Returns JSON: {"direction": "yes"|"no"|"uncertain",
+                       "confidence": 0.0-1.0, "reasoning": "<one sentence>"}
+        """
+        sum_prices = yes_price + no_price
+        time_section = f"\nMarket closes: {end_date}" if end_date else ""
+        news_section = f"\nRecent news:\n{news_context}" if news_context else ""
+        return f"""You are a superforecaster assessing a binary prediction market.
+
+Market question: {question}
+Current prices — YES: {yes_price:.3f}  NO: {no_price:.3f}  (sum={sum_prices:.3f}){time_section}{news_section}
+
+Task: Decide the most likely outcome.
+
+Rules:
+- Return "yes" ONLY if you are >65% confident the market resolves YES (crowd is underpricing YES).
+- Return "no" ONLY if you are >65% confident the market resolves NO (crowd is underpricing NO).
+- Return "uncertain" if the outcome is genuinely unclear — this is the HONEST answer when you
+  cannot find clear evidence the crowd is wrong.
+
+A low price-sum ({sum_prices:.3f} < 0.92) means there is mathematical edge regardless of direction —
+but you still need directional conviction to pick a side.
+
+Return ONLY valid JSON:
+{{"direction": "yes" | "no" | "uncertain", "confidence": 0.0-1.0, "reasoning": "<one sentence>"}}
+
+Example: {{"direction": "yes", "confidence": 0.72, "reasoning": "Recent Fed minutes confirm rate cut in June, market underpricing at 0.30"}}
+"""

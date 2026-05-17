@@ -80,29 +80,48 @@ def _env_int(name: str, default: int) -> int:
 
 @dataclass
 class NearResolutionConfig:
-    min_hours: float = 0.5
-    max_hours: float = 36.0
-    max_entry_price: float = 0.15
+    # Time window — wide: all active markets, not just near-expiry
+    min_hours: float = 0.0
+    max_hours: float = 720.0
+    # Single-side entry: enter only if token price is in this range
+    # (too cheap = near-resolved loser; too expensive = little upside)
+    max_entry_price: float = 0.65
+    min_entry_price: float = 0.10
+    # Straddle: enter BOTH YES and NO when market is genuinely uncertain
+    # and the price sum is low enough to guarantee mathematical edge.
+    straddle_max_sum: float = 0.92    # YES_ask + NO_ask < this to straddle
+    straddle_min_each: float = 0.30   # each leg must be ≥ this
+    direction_min_confidence: float = 0.65  # LLM confidence < this → try straddle
+    # Limit how many markets we run LLM on per cycle (API cost control)
+    max_candidates_per_cycle: int = 8
     min_liquidity: float = 3000.0
-    min_confidence: float = 0.65
     position_size_usdc: float = 2.5
     reserve_usdc: float = 15.0
     poll_sec: int = 60
-    max_open: int = 3
+    # Raised to 6: a straddle uses 2 slots, allow up to 3 simultaneous straddles
+    max_open: int = 6
     heartbeat_path: str = "/app/data/near_resolution_heartbeat"
 
     @classmethod
     def from_env(cls) -> "NearResolutionConfig":
         return cls(
-            min_hours=_env_float("NEAR_RESOLUTION_MIN_HOURS", 0.5),
-            max_hours=_env_float("NEAR_RESOLUTION_MAX_HOURS", 36.0),
-            max_entry_price=_env_float("NEAR_RESOLUTION_MAX_ENTRY_PRICE", 0.15),
+            min_hours=_env_float("NEAR_RESOLUTION_MIN_HOURS", 0.0),
+            max_hours=_env_float("NEAR_RESOLUTION_MAX_HOURS", 720.0),
+            max_entry_price=_env_float("NEAR_RESOLUTION_MAX_ENTRY_PRICE", 0.65),
+            min_entry_price=_env_float("NEAR_RESOLUTION_MIN_ENTRY_PRICE", 0.10),
+            straddle_max_sum=_env_float("NEAR_RESOLUTION_STRADDLE_MAX_SUM", 0.92),
+            straddle_min_each=_env_float("NEAR_RESOLUTION_STRADDLE_MIN_EACH", 0.30),
+            direction_min_confidence=_env_float(
+                "NEAR_RESOLUTION_DIRECTION_MIN_CONFIDENCE", 0.65
+            ),
+            max_candidates_per_cycle=_env_int(
+                "NEAR_RESOLUTION_MAX_CANDIDATES_PER_CYCLE", 8
+            ),
             min_liquidity=_env_float("NEAR_RESOLUTION_MIN_LIQUIDITY", 3000.0),
-            min_confidence=_env_float("NEAR_RESOLUTION_MIN_CONFIDENCE", 0.65),
             position_size_usdc=_env_float("NEAR_RESOLUTION_POSITION_SIZE_USDC", 2.5),
             reserve_usdc=_env_float("NEAR_RESOLUTION_RESERVE_USDC", 15.0),
             poll_sec=_env_int("NEAR_RESOLUTION_POLL_SEC", 60),
-            max_open=_env_int("NEAR_RESOLUTION_MAX_OPEN", 3),
+            max_open=_env_int("NEAR_RESOLUTION_MAX_OPEN", 6),
             heartbeat_path=os.getenv(
                 "NEAR_RESOLUTION_HEARTBEAT_PATH", "/app/data/near_resolution_heartbeat"
             ),
@@ -128,17 +147,25 @@ class NearResolutionEngine:
         self.risk_gate = risk_gate
         self.cfg = cfg
         self.execute = execute
+        # Lazy-init LLM (same pattern as position_manager)
+        self._llm = None
+        self._prompter = None
 
     # ------------------------------------------------------------------ scan
 
     def scan_candidates(self) -> list[dict]:
-        """Fetch open binary markets from Gamma and filter by time + price + liquidity."""
+        """Fetch open binary markets from Gamma and filter by time + liquidity.
+
+        Returns markets that are either:
+        - Straddle-viable: YES+NO < straddle_max_sum AND both >= straddle_min_each
+        - Single-side potential: one token is in [min_entry_price, max_entry_price]
+        """
         try:
             params = urllib.parse.urlencode({
                 "closed": "false",
                 "active": "true",
-                "order": "end_date_asc",
-                "ascending": "true",
+                "order": "volume24hr",
+                "ascending": "false",
                 "limit": 200,
             })
             url = f"{GAMMA_MARKETS_URL}?{params}"
@@ -153,7 +180,6 @@ class NearResolutionEngine:
 
         now_utc = datetime.now(timezone.utc)
         candidates = []
-        closest_hours: Optional[float] = None
         for m in markets:
             # Must be binary (exactly 2 outcomes)
             try:
@@ -169,25 +195,22 @@ class NearResolutionEngine:
             if len(outcomes) != 2 or len(tokens) != 2:
                 continue
 
-            # Must have a close time in [min_hours, max_hours]
+            # Time filter
             end_date_str = m.get("endDate") or m.get("end_date_iso") or ""
-            if not end_date_str:
-                continue
-            try:
-                # Gamma returns ISO 8601 strings; strip trailing 'Z' for fromisoformat
-                end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                if end_dt.tzinfo is None:
-                    end_dt = end_dt.replace(tzinfo=timezone.utc)
-                hours_left = (end_dt - now_utc).total_seconds() / 3600.0
-            except (ValueError, TypeError):
-                continue
-            # Track nearest future market for diagnostics
-            if hours_left > 0 and (closest_hours is None or hours_left < closest_hours):
-                closest_hours = hours_left
-            if not (self.cfg.min_hours <= hours_left <= self.cfg.max_hours):
-                continue
+            hours_left: Optional[float] = None
+            end_dt: Optional[datetime] = None
+            if end_date_str:
+                try:
+                    end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=timezone.utc)
+                    hours_left = (end_dt - now_utc).total_seconds() / 3600.0
+                    if not (self.cfg.min_hours <= hours_left <= self.cfg.max_hours):
+                        continue
+                except (ValueError, TypeError):
+                    continue
 
-            # Check pricing: YES price is outcomes[0] price
+            # Prices
             try:
                 prices = json.loads(m.get("outcomePrices", '["0.5","0.5"]'))
                 yes_price = float(prices[0])
@@ -196,19 +219,26 @@ class NearResolutionEngine:
                 yes_price = 0.5
                 no_price = 0.5
 
-            # Identify which side is cheap
-            if yes_price <= self.cfg.max_entry_price:
-                cheap_side = "yes"
-                cheap_price = yes_price
-            elif no_price <= self.cfg.max_entry_price:
-                cheap_side = "no"
-                cheap_price = no_price
-            else:
-                continue
-
-            # Liquidity filter — Gamma provides volumeClob or bestBid/bestAsk depth
+            # Liquidity filter
             liquidity = float(m.get("volumeClob") or m.get("volume24hr") or 0)
             if liquidity < self.cfg.min_liquidity:
+                continue
+
+            price_sum = yes_price + no_price
+
+            # Determine entry mode:
+            # 1. Straddle-viable: both sides in sweet spot and sum is low
+            straddle_viable = (
+                price_sum < self.cfg.straddle_max_sum
+                and yes_price >= self.cfg.straddle_min_each
+                and no_price >= self.cfg.straddle_min_each
+            )
+            # 2. Single-side: at least one token is in the tradeable range
+            yes_tradeable = self.cfg.min_entry_price <= yes_price <= self.cfg.max_entry_price
+            no_tradeable = self.cfg.min_entry_price <= no_price <= self.cfg.max_entry_price
+            single_viable = yes_tradeable or no_tradeable
+
+            if not straddle_viable and not single_viable:
                 continue
 
             candidates.append({
@@ -216,49 +246,38 @@ class NearResolutionEngine:
                 "question": m.get("question", ""),
                 "yes_price": yes_price,
                 "no_price": no_price,
-                "cheap_side": cheap_side,
-                "cheap_price": cheap_price,
+                "price_sum": price_sum,
+                "straddle_viable": straddle_viable,
+                "single_viable": single_viable,
                 "hours_left": hours_left,
                 "end_dt": end_dt,
+                "end_date_str": end_date_str,
                 "outcomes": outcomes,
                 "tokens": tokens,
                 "raw": m,
             })
 
-        if len(candidates) == 0 and closest_hours is not None:
-            logger.info(
-                "near_resolution: 0 candidates — nearest binary market closes in %.1fh "
-                "(window %.1f–%.1fh, max_entry_price=%.2f)",
-                closest_hours,
-                self.cfg.min_hours,
-                self.cfg.max_hours,
-                self.cfg.max_entry_price,
-            )
-        else:
-            logger.info("near_resolution: %d candidates after filters", len(candidates))
+        # Sort: straddle-viable first (best mathematical edge), then by liquidity
+        candidates.sort(key=lambda c: (0 if c["straddle_viable"] else 1, -float(c["raw"].get("volumeClob") or c["raw"].get("volume24hr") or 0)))
+        logger.info(
+            "near_resolution: %d candidates (straddle=%d single=%d)",
+            len(candidates),
+            sum(1 for c in candidates if c["straddle_viable"]),
+            sum(1 for c in candidates if not c["straddle_viable"] and c["single_viable"]),
+        )
         return candidates
 
-    # ---------------------------------------------------------- Tavily check
+    # ---------------------------------------------------------- LLM direction
 
-    def _tavily_confidence(self, question: str, cheap_side: str) -> float:
-        """Query Tavily for news about the market question.
-
-        Returns a confidence score 0.0–1.0 that the cheap side has real
-        probability. Heuristic: count results that do NOT strongly deny
-        the cheap outcome. Returns 0.0 on API failure (conservative).
-        """
+    def _get_news_context(self, question: str) -> str:
+        """Fetch Tavily news for the market question. Returns formatted string or ""."""
         api_key = os.getenv("TAVILY_API_KEY", "").strip()
         if not api_key:
-            logger.debug("near_resolution: TAVILY_API_KEY not set; skipping confidence")
-            return 0.0
-
-        # Build a search query that looks for evidence of the cheap side happening
-        side_label = "Yes" if cheap_side == "yes" else "No"
-        query = f"{question} {side_label} outcome"
+            return ""
         payload = json.dumps({
             "api_key": api_key,
-            "query": query,
-            "max_results": 5,
+            "query": question,
+            "max_results": 4,
             "search_depth": "basic",
             "topic": "news",
         }).encode("utf-8")
@@ -273,43 +292,79 @@ class NearResolutionEngine:
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 body = json.loads(resp.read())
+            results = body.get("results") or []
+            if not results:
+                return ""
+            lines = []
+            for r in results[:4]:
+                title = (r.get("title") or "").strip()
+                if title:
+                    lines.append(f"- {title}")
+            return "\n".join(lines)
         except Exception as exc:
-            logger.warning("near_resolution: Tavily failed: %s", exc)
-            return 0.0
+            logger.debug("near_resolution: Tavily failed: %s", exc)
+            return ""
 
-        results = body.get("results") or []
-        if not results:
-            return 0.0
+    def _init_llm(self):
+        """Lazy-init LangChain LLM (same pattern as position_manager)."""
+        if self._llm is not None:
+            return
+        try:
+            from langchain_openai import ChatOpenAI
+            from agents.application.prompts import Prompter
+            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            self._llm = ChatOpenAI(
+                model=model,
+                temperature=0,
+                model_kwargs={"response_format": {"type": "json_object"}},
+            )
+            self._prompter = Prompter()
+            logger.debug("near_resolution: LLM initialised (%s)", model)
+        except Exception as exc:
+            logger.warning("near_resolution: LLM init failed: %s", exc)
+            self._llm = None
 
-        # Heuristic: score = fraction of results that contain affirmative keywords
-        # for the cheap side, as a proxy for news supporting it.
-        affirm_keywords = {"yes", "possible", "likely", "could", "may", "chance", "will"}
-        deny_keywords = {"no", "impossible", "never", "won't", "cannot", "ruled out", "zero"}
+    def _llm_direction(
+        self, question: str, yes_price: float, no_price: float, end_date_str: str
+    ) -> dict:
+        """Ask LLM for market direction.
 
-        affirm_count = 0
-        deny_count = 0
-        for r in results:
-            text = ((r.get("title") or "") + " " + (r.get("content") or "")).lower()
-            if any(k in text for k in affirm_keywords):
-                affirm_count += 1
-            if any(k in text for k in deny_keywords):
-                deny_count += 1
+        Returns {"direction": "yes"|"no"|"uncertain", "confidence": float,
+                 "reasoning": str}.
+        Falls back to {"direction": "uncertain", "confidence": 0.5} on any error.
+        """
+        fallback = {"direction": "uncertain", "confidence": 0.5, "reasoning": "llm_unavailable"}
+        self._init_llm()
+        if self._llm is None:
+            return fallback
 
-        total = max(len(results), 1)
-        # If the cheap side is "yes": we want affirm > deny
-        # If the cheap side is "no": invert — we want deny > affirm (news denying YES)
-        if cheap_side == "yes":
-            raw_score = (affirm_count - deny_count + total) / (2 * total)
-        else:
-            raw_score = (deny_count - affirm_count + total) / (2 * total)
+        news_context = self._get_news_context(question)
 
-        score = max(0.0, min(1.0, raw_score))
-        logger.debug(
-            "near_resolution: Tavily confidence for '%s' side=%s: %.2f "
-            "(affirm=%d deny=%d results=%d)",
-            question[:60], cheap_side, score, affirm_count, deny_count, total,
-        )
-        return score
+        try:
+            prompt_text = self._prompter.binary_market_direction(
+                question=question,
+                yes_price=yes_price,
+                no_price=no_price,
+                end_date=end_date_str,
+                news_context=news_context,
+            )
+            from langchain_core.messages import HumanMessage
+            response = self._llm.invoke([HumanMessage(content=prompt_text)])
+            raw = response.content if hasattr(response, "content") else str(response)
+            data = json.loads(raw)
+            direction = str(data.get("direction", "uncertain")).lower()
+            if direction not in ("yes", "no", "uncertain"):
+                direction = "uncertain"
+            confidence = float(data.get("confidence", 0.5))
+            reasoning = str(data.get("reasoning", ""))
+            logger.info(
+                "near_resolution: LLM direction=%s conf=%.2f for '%s'",
+                direction, confidence, question[:60],
+            )
+            return {"direction": direction, "confidence": confidence, "reasoning": reasoning}
+        except Exception as exc:
+            logger.warning("near_resolution: LLM direction failed for '%s': %s", question[:60], exc)
+            return fallback
 
     # ----------------------------------------------------------- market doc
 
@@ -331,33 +386,108 @@ class NearResolutionEngine:
         }
         return {"doc": doc, "market_id": m["market_id"]}
 
+    # ----------------------------------------------------- single-leg entry
+
+    def _enter_one_leg(
+        self,
+        candidate: dict,
+        side: str,
+        price: float,
+        confidence: float,
+        extra_meta: Optional[dict] = None,
+    ) -> bool:
+        """Place a single-leg entry. Returns True on success (or shadow)."""
+        from agents.utils.objects import TradeRecommendation
+
+        market_id = candidate["market_id"]
+        tokens = candidate["tokens"]
+        token_id_for_log = tokens[0] if side == "BUY" else tokens[1]
+
+        recommendation = TradeRecommendation(
+            price=price,
+            size_fraction=0.0,
+            side=side,
+            confidence=confidence,
+            amount_usdc=self.cfg.position_size_usdc,
+        )
+        market_doc = self._make_market_doc(candidate)
+
+        # Encode straddle metadata into response_json so position_manager can see it
+        response_meta = extra_meta or {}
+
+        cycle_id = self.trade_log.new_cycle_id()
+        pending_id = self.trade_log.insert_pending(
+            cycle_id=cycle_id,
+            market_id=market_id,
+            token_id=token_id_for_log,
+            side=side,
+            price=price,
+            size_usdc=self.cfg.position_size_usdc,
+            confidence=confidence,
+        )
+
+        if not self.execute:
+            self.trade_log.mark(
+                pending_id,
+                NEAR_RESOLUTION_OPEN,
+                response={**response_meta, "shadow": True, "side": side, "confidence": confidence},
+                error=(
+                    f"SHADOW: {side} market={market_id} price={price:.3f} "
+                    f"conf={confidence:.2f} sum={candidate['price_sum']:.3f}"
+                ),
+            )
+            return True
+
+        try:
+            response = self.polymarket.execute_market_order(
+                (market_doc["doc"], 0.0), recommendation
+            )
+        except Exception as exc:
+            self.trade_log.mark(pending_id, "failed", error=f"execute_market_order: {exc}")
+            logger.warning("near_resolution entry failed %s %s: %s", side, market_id, exc)
+            return False
+
+        if not response or response.get("status") not in ("matched", "filled"):
+            self.trade_log.mark(
+                pending_id, "failed", response=response, error="entry not matched"
+            )
+            return False
+
+        self.trade_log.mark(
+            pending_id, NEAR_RESOLUTION_OPEN,
+            response={**response_meta, **(response or {})},
+        )
+        return True
+
     # ------------------------------------------------------------- main loop
 
     def maybe_enter_all(self) -> int:
-        """Scan candidates and enter qualifying trades. Returns entries made."""
+        """Scan candidates; enter single-side or straddle. Returns entries (legs) made."""
         candidates = self.scan_candidates()
         if not candidates:
             return 0
 
-        # Check max open positions limit
+        # Count open near_resolution legs
         try:
             open_rows = self.trade_log.filled_positions_with_id()
-            nr_open = sum(
-                1 for r in open_rows if r.get("status") == NEAR_RESOLUTION_OPEN
-            )
+            nr_open = sum(1 for r in open_rows if r.get("status") == NEAR_RESOLUTION_OPEN)
         except Exception:
             nr_open = 0
 
         if nr_open >= self.cfg.max_open:
             logger.info(
-                "near_resolution: already %d/%d open; skipping scan",
-                nr_open, self.cfg.max_open,
+                "near_resolution: already %d/%d open; skipping scan", nr_open, self.cfg.max_open
             )
             return 0
 
         entries_made = 0
+        evaluated = 0
+
         for candidate in candidates:
-            if nr_open + entries_made >= self.cfg.max_open:
+            slots_remaining = self.cfg.max_open - (nr_open + entries_made)
+            if slots_remaining <= 0:
+                break
+            if evaluated >= self.cfg.max_candidates_per_cycle:
                 break
 
             market_id = candidate["market_id"]
@@ -372,96 +502,71 @@ class NearResolutionEngine:
                 logger.info("near_resolution: risk gate blocked: %s", self.risk_gate.reason())
                 break
 
-            # Tavily confidence
-            confidence = self._tavily_confidence(
-                candidate["question"], candidate["cheap_side"]
-            )
-            if confidence < self.cfg.min_confidence:
-                logger.info(
-                    "near_resolution: skip %s — confidence %.2f < %.2f",
-                    market_id, confidence, self.cfg.min_confidence,
-                )
-                continue
-
-            # In our convention: BUY → YES (token_ids[0]); SELL → NO (token_ids[1])
-            # We always use yes_price as the anchor price for TradeRecommendation.
-            cheap_side = candidate["cheap_side"]
-            side = "BUY" if cheap_side == "yes" else "SELL"
+            evaluated += 1
             yes_price = candidate["yes_price"]
+            no_price = candidate["no_price"]
+            question = candidate["question"]
+            end_date_str = candidate.get("end_date_str", "")
 
-            from agents.utils.objects import TradeRecommendation
+            # ---- LLM direction analysis ----
+            llm_result = self._llm_direction(question, yes_price, no_price, end_date_str)
+            direction = llm_result["direction"]
+            confidence = llm_result["confidence"]
 
-            recommendation = TradeRecommendation(
-                price=yes_price,
-                size_fraction=0.0,
-                side=side,
-                confidence=confidence,
-                amount_usdc=self.cfg.position_size_usdc,
-            )
+            # ---- Decision: single-side or straddle ----
+            if direction in ("yes", "no") and confidence >= self.cfg.direction_min_confidence:
+                # Clear directional conviction → single-side entry
+                if direction == "yes":
+                    if not (self.cfg.min_entry_price <= yes_price <= self.cfg.max_entry_price):
+                        logger.info(
+                            "near_resolution: skip YES %s — price %.3f out of range",
+                            market_id, yes_price,
+                        )
+                        continue
+                    ok = self._enter_one_leg(candidate, "BUY", yes_price, confidence,
+                                             extra_meta={"entry_mode": "single_yes", "reasoning": llm_result.get("reasoning", "")})
+                else:
+                    if not (self.cfg.min_entry_price <= no_price <= self.cfg.max_entry_price):
+                        logger.info(
+                            "near_resolution: skip NO %s — price %.3f out of range",
+                            market_id, no_price,
+                        )
+                        continue
+                    ok = self._enter_one_leg(candidate, "SELL", yes_price, confidence,
+                                             extra_meta={"entry_mode": "single_no", "reasoning": llm_result.get("reasoning", "")})
+                if ok:
+                    entries_made += 1
+                    logger.info(
+                        "near_resolution SINGLE %s: %s price=%.3f conf=%.2f reason='%s'",
+                        direction.upper(), market_id, yes_price if direction == "yes" else no_price,
+                        confidence, llm_result.get("reasoning", "")[:60],
+                    )
 
-            market_doc = self._make_market_doc(candidate)
-            token_id_for_log = (
-                candidate["tokens"][0] if side == "BUY"
-                else candidate["tokens"][1]
-            )
+            elif candidate["straddle_viable"] and slots_remaining >= 2:
+                # Uncertain direction + math edge → STRADDLE both sides
+                import uuid as _uuid
+                straddle_id = str(_uuid.uuid4())[:8]
+                meta_yes = {"entry_mode": "straddle_yes", "straddle_id": straddle_id,
+                            "reasoning": llm_result.get("reasoning", "")}
+                meta_no = {"entry_mode": "straddle_no", "straddle_id": straddle_id,
+                           "reasoning": llm_result.get("reasoning", "")}
 
-            cycle_id = self.trade_log.new_cycle_id()
-            pending_id = self.trade_log.insert_pending(
-                cycle_id=cycle_id,
-                market_id=market_id,
-                token_id=token_id_for_log,
-                side=side,
-                price=yes_price,
-                size_usdc=self.cfg.position_size_usdc,
-                confidence=confidence,
-            )
-
-            if not self.execute:
-                self.trade_log.mark(
-                    pending_id,
-                    NEAR_RESOLUTION_OPEN,
-                    response={"shadow": True, "side": side, "confidence": confidence},
-                    error=(
-                        f"SHADOW: would enter {side} on market {market_id} "
-                        f"cheap_side={cheap_side} price={candidate['cheap_price']:.3f} "
-                        f"hours_left={candidate['hours_left']:.1f} confidence={confidence:.2f}"
-                    ),
-                )
+                ok_yes = self._enter_one_leg(candidate, "BUY", yes_price, confidence,
+                                             extra_meta=meta_yes)
+                ok_no = self._enter_one_leg(candidate, "SELL", yes_price, confidence,
+                                            extra_meta=meta_no)
+                legs = (1 if ok_yes else 0) + (1 if ok_no else 0)
+                entries_made += legs
                 logger.info(
-                    "near_resolution SHADOW: %s %s cheap=%.3f hours=%.1f conf=%.2f",
-                    side, market_id, candidate["cheap_price"],
-                    candidate["hours_left"], confidence,
+                    "near_resolution STRADDLE %s: YES=%.3f NO=%.3f sum=%.3f legs=%d id=%s",
+                    market_id, yes_price, no_price, candidate["price_sum"], legs, straddle_id,
                 )
-                entries_made += 1
-                continue
 
-            # Live path
-            try:
-                response = self.polymarket.execute_market_order(
-                    (market_doc["doc"], 0.0), recommendation
+            else:
+                logger.debug(
+                    "near_resolution: skip %s — direction=%s conf=%.2f straddle=%s slots=%d",
+                    market_id, direction, confidence, candidate["straddle_viable"], slots_remaining,
                 )
-            except Exception as exc:
-                self.trade_log.mark(
-                    pending_id, "failed",
-                    error=f"execute_market_order raised: {exc}",
-                )
-                logger.warning("near_resolution entry failed %s: %s", market_id, exc)
-                continue
-
-            if not response or response.get("status") not in ("matched", "filled"):
-                self.trade_log.mark(
-                    pending_id, "failed",
-                    response=response, error="entry not matched",
-                )
-                continue
-
-            self.trade_log.mark(pending_id, NEAR_RESOLUTION_OPEN, response=response)
-            logger.info(
-                "near_resolution ENTRY: %s %s cheap=%.3f hours=%.1f conf=%.2f",
-                side, market_id, candidate["cheap_price"],
-                candidate["hours_left"], confidence,
-            )
-            entries_made += 1
 
         return entries_made
 
