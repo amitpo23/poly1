@@ -305,7 +305,9 @@ class Trader:
             return False
 
         try:
-            best_trade = self.agent.source_best_trade(market)
+            # Enrich with recent news signals for this market
+            news_context = self._build_news_context(market_id)
+            best_trade = self.agent.source_best_trade(market, news_context=news_context)
             recommendation = self.agent.parse_trade_recommendation(best_trade)
         except Exception as e:
             if _is_ai_quota_error(e):
@@ -336,6 +338,18 @@ class Trader:
             recommendation.size_fraction,
             recommendation.confidence,
         )
+
+        # no_edge: superforecaster explicitly found no exploitable edge vs market price
+        if recommendation.confidence == 0 and recommendation.size_fraction == 0:
+            logger.info(
+                "cycle %s: market %s skipped (superforecaster: no edge vs market price)",
+                cycle_id, market_id,
+            )
+            self.trade_log.insert_terminal(
+                cycle_id, market_id, SKIPPED_GATE,
+                error="no_edge: LLM found no exploitable edge vs market price",
+            )
+            return False
 
         # If a min_confidence threshold is set, missing confidence (None) must
         # also fail the gate — otherwise a parser/LLM that omits the field
@@ -505,6 +519,24 @@ class Trader:
         self.trade_log.mark(trade_id, terminal, response=result)
         logger.info("cycle %s: market %s TRADED %s", cycle_id, market_id, result)
         return True
+
+    def _build_news_context(self, market_id: str) -> str:
+        """Return a brief news summary for this market from the news_signals table."""
+        try:
+            rows = self.trade_log.market_news_signals(market_id, hours=48, limit=5)
+            if not rows:
+                return ""
+            parts = []
+            for r in rows:
+                direction = r.get("direction", "")
+                headline = r.get("headline", "")
+                mat = r.get("materiality", "")
+                if headline:
+                    parts.append(f"[{direction.upper()}] {headline} (materiality={mat})")
+            return "; ".join(parts)
+        except Exception:
+            logger.exception("_build_news_context failed for %s (non-fatal)", market_id)
+            return ""
 
     def _conviction_blocks_entry(self, cycle_id: str, market_id: str) -> bool:
         """Return True and log if recent external_conviction signals disapprove.

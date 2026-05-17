@@ -109,38 +109,60 @@ class Prompter:
         """
         )
 
-    def superforecaster(self, question: str, description: str, outcome: str) -> str:
+    def superforecaster(
+        self,
+        question: str,
+        description: str,
+        outcome: str,
+        outcome_prices: str = "",
+        end_date: str = "",
+        news_context: str = "",
+    ) -> str:
+        market_price_section = ""
+        if outcome_prices:
+            market_price_section = f"""
+        Current market prices (what the crowd currently believes):
+        {outcome_prices}
+        Use these as your baseline — your job is to find where the crowd is WRONG.
+        Only recommend a trade if your estimated probability differs from the market
+        price by at least 8 percentage points (sufficient edge to cover fees and
+        slippage). If you agree with the market, say so explicitly.
+"""
+        time_section = (
+            f"\n        Market closes: {end_date}\n" if end_date else ""
+        )
+        news_section = (
+            f"\n        Recent relevant news:\n        {news_context}\n"
+            if news_context else ""
+        )
+
         return f"""
         You are a Superforecaster tasked with correctly predicting the likelihood of events.
         Use the following systematic process to develop an accurate prediction for the following
-        question=`{question}` and description=`{description}` combination. 
-        
+        question=`{question}` and description=`{description}` combination.
+{time_section}{news_section}{market_price_section}
         Here are the key steps to use in your analysis:
 
         1. Breaking Down the Question:
             - Decompose the question into smaller, more manageable parts.
             - Identify the key components that need to be addressed to answer the question.
-        2. Gathering Information:
-            - Seek out diverse sources of information.
-            - Look for both quantitative data and qualitative insights.
-            - Stay updated on relevant news and expert analyses.
-        3. Considere Base Rates:
+        2. Base Rates:
             - Use statistical baselines or historical averages as a starting point.
-            - Compare the current situation to similar past events to establish a benchmark probability.
-        4. Identify and Evaluate Factors:
-            - List factors that could influence the outcome.
-            - Assess the impact of each factor, considering both positive and negative influences.
-            - Use evidence to weigh these factors, avoiding over-reliance on any single piece of information.
-        5. Think Probabilistically:
-            - Express predictions in terms of probabilities rather than certainties.
-            - Assign likelihoods to different outcomes and avoid binary thinking.
-            - Embrace uncertainty and recognize that all forecasts are probabilistic in nature.
-        
+            - Compare the current situation to similar past events.
+        3. Identify Edge:
+            - Is the market over- or under-pricing this outcome?
+            - What do you know that the crowd doesn't?
+            - If you see no edge (your estimate ≈ market price), say NO_EDGE.
+        4. Think Probabilistically:
+            - Express predictions as probabilities, not certainties.
+            - Embrace uncertainty.
+
         Given these steps produce a statement on the probability of outcome=`{outcome}` occuring.
 
         Give your response in the following format:
 
-        I believe {question} has a likelihood `{float}` for outcome of `{str}`.
+        I believe {question} has a likelihood `{{float}}` for outcome of `{{str}}`.
+        If no edge: respond with NO_EDGE.
         """
 
     def one_best_trade(

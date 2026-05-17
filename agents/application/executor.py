@@ -282,18 +282,34 @@ class Executor:
         logger.debug("filter_markets prompt: %s", prompt)
         return self.chroma.markets(markets, prompt)
 
-    def source_best_trade(self, market_object) -> str:
+    def source_best_trade(self, market_object, news_context: str = "") -> str:
         market_document = market_object[0].dict()
         market = market_document["metadata"]
         outcome_prices = ast.literal_eval(market["outcome_prices"])
         outcomes = ast.literal_eval(market["outcomes"])
         question = market["question"]
         description = market_document["page_content"]
+        end_date = market.get("end", "")
 
-        prompt = self.prompter.superforecaster(question, description, outcomes)
+        # Format outcome prices as a readable mapping for the LLM
+        prices_text = ", ".join(
+            f"{o}={p}" for o, p in zip(outcomes, outcome_prices)
+        ) if outcomes and outcome_prices else str(outcome_prices)
+
+        prompt = self.prompter.superforecaster(
+            question, description, outcomes,
+            outcome_prices=prices_text,
+            end_date=end_date,
+            news_context=news_context,
+        )
         logger.debug("superforecaster prompt: %s", prompt)
         forecast = self._invoke_tracked(prompt, tag="superforecaster")
         logger.debug("superforecaster result: %s", forecast)
+
+        # If LLM found no edge, skip without calling one_best_trade
+        if "NO_EDGE" in str(forecast).upper():
+            logger.info("superforecaster: NO_EDGE for market %s — skipping", question[:60])
+            return '{"price": 0, "size_fraction": 0, "side": "BUY", "confidence": 0, "no_edge": true}'
 
         prompt = self.prompter.one_best_trade(forecast, outcomes, outcome_prices)
         logger.debug("one_best_trade prompt: %s", prompt)
