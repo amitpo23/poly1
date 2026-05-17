@@ -459,7 +459,11 @@ class WalletFollowDaemon:
         )
 
         from agents.application.risk_gate import RiskGate
-        risk_gate = RiskGate(trade_log=self.trade_log, polymarket=None)
+        risk_gate = RiskGate(
+            trade_log=self.trade_log,
+            polymarket=None,
+            wallet_follow_reserve_usdc=self.cfg.reserve_usdc,
+        )
 
         polymarket = None
         if self.execute:

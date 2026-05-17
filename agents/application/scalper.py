@@ -37,7 +37,6 @@ class ScalperConfig:
     dynamic_threshold_boost: float = 0.04
     max_sum_avg: float = 0.98
     max_buys_per_side: int = 4
-    shares_per_side: float = 5.0
     leg_usdc_cap: float = 5.0
     poll_ms: int = 250
     discover_every_sec: int = 60

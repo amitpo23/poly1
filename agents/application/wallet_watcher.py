@@ -29,7 +29,9 @@ Environment variables (all optional, see defaults below):
   WALLET_SCOUT_ENABLE          — "true" to auto-discover top traders (default false)
   WALLET_SCOUT_LIMIT           — max wallets from leaderboard (default 20)
   WALLET_SCOUT_MIN_PROFIT_USDC — min 30d profit to qualify for scout (default 200)
-  WALLET_SCOUT_MIN_TRADES      — min 30d trade count to qualify (default 15)
+  WALLET_SCOUT_MIN_TRADES      — [DEPRECATED] min 30d trade count to qualify; the
+                                  Polymarket v1 leaderboard API no longer returns
+                                  tradesCount so this threshold is never enforced.
   WALLET_WATCHER_POLL_SEC      — loop cadence in seconds (default 120)
   WALLET_WATCHER_MAX_AGE_HOURS — max trade age to generate signals (default 4)
   WALLET_WATCHER_HEARTBEAT_PATH — file path for heartbeat (default /app/data/wallet_watcher_heartbeat)
@@ -92,6 +94,8 @@ class WalletWatcherConfig:
     scout_enable: bool = False
     scout_limit: int = 20
     scout_min_profit_usdc: float = 200.0
+    # Deprecated: Polymarket v1 leaderboard API removed the tradesCount field so
+    # this filter is never enforced.  Kept for config-file compatibility only.
     scout_min_trades: int = 15
     poll_sec: int = 120
     max_age_hours: float = 4.0

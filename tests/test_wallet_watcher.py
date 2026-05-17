@@ -187,9 +187,13 @@ class TestWalletWatcherEngine(_TmpDB, unittest.TestCase):
         self.assertIn("0xnew1", self.engine._watched)
         self.assertNotIn("0xnew2", self.engine._watched)
 
-    def test_scout_min_trades_filter(self):
+    def test_scout_min_trades_not_enforced(self):
+        # The Polymarket v1 leaderboard API no longer returns tradesCount, so
+        # scout_min_trades cannot be enforced at the scouting stage.  A wallet
+        # that meets the profit threshold IS added regardless of the (now dead)
+        # scout_min_trades setting.
         leaderboard = [
-            {"proxyWallet": "0xFEW", "profit": 1000.0, "tradesCount": 3},  # trades too low
+            {"proxyWallet": "0xFEW", "profit": 1000.0},  # tradesCount absent in v1 API
         ]
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
@@ -197,10 +201,11 @@ class TestWalletWatcherEngine(_TmpDB, unittest.TestCase):
             mock_resp.__enter__ = lambda s: s
             mock_resp.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_resp
-            self.engine.cfg.scout_min_trades = 5
+            self.engine.cfg.scout_min_trades = 5  # has no effect; field is deprecated
             self.engine._scout_leaderboard()
 
-        self.assertNotIn("0xfew", self.engine._watched)
+        # Wallet meets profit threshold → added (trades filter is dead)
+        self.assertIn("0xfew", self.engine._watched)
 
     def test_old_trade_not_written(self):
         """Trades older than max_age_hours should not generate signals."""

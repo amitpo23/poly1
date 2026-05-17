@@ -106,6 +106,8 @@ class BtcDailyConfig:
     # slippage failures. Prevents tight-loop retries when the market has moved
     # far from our anchor (e.g. ask=0.77 vs recommended=0.50).
     max_slippage_skips: int = 3
+    # Capital reserve — keeps this slice of wallet off-limits to other agents
+    reserve_usdc: float = 6.0
     # Polling
     poll_sec: int = 5                            # entry-loop cadence
     # Heartbeat
@@ -129,6 +131,7 @@ class BtcDailyConfig:
             heartbeat_path=os.getenv(
                 "BTC_DAILY_HEARTBEAT_PATH", "/app/data/btc_daily_heartbeat"
             ),
+            reserve_usdc=_env_float("BTC_DAILY_RESERVE_USDC", 6.0),
         )
 
 
@@ -554,7 +557,11 @@ class BtcDailyDaemon:
         from agents.polymarket.polymarket import Polymarket
         from agents.application.risk_gate import RiskGate
         self.polymarket = Polymarket(live=self.execute)
-        self.risk_gate = RiskGate(trade_log=self.tl, polymarket=self.polymarket)
+        self.risk_gate = RiskGate(
+            trade_log=self.tl,
+            polymarket=self.polymarket,
+            btc_daily_reserve_usdc=self.cfg.reserve_usdc,
+        )
         self.engine = BtcDailyEngine(
             polymarket=self.polymarket,
             trade_log=self.tl,
