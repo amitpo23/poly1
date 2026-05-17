@@ -407,6 +407,260 @@ services:
     stop_grace_period: 30s
     profiles: ["wallet"]
 
+  external-conviction:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction
+      EXTERNAL_CONVICTION_POLL_SEC: "10800"
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_heartbeat') < 14400"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-polifly:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-polifly
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_polifly
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_polifly
+      EXTERNAL_CONVICTION_STRATEGY_NAME: polifly_event_probability_scalping
+      EXTERNAL_CONVICTION_PROVIDER: polifly_browser
+      EXTERNAL_CONVICTION_POLL_SEC: "10800"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_polifly.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_polifly_heartbeat
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_polifly_heartbeat') < 14400"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-api:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-api
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_api
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_api
+      EXTERNAL_CONVICTION_STRATEGY_NAME: public_news_event_probability_scalping
+      EXTERNAL_CONVICTION_PROVIDER: public_news
+      EXTERNAL_CONVICTION_POLL_SEC: "10800"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_api.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_api_heartbeat
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_api_heartbeat') < 14400"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-whale:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-whale
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_whale
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_whale
+      EXTERNAL_CONVICTION_STRATEGY_NAME: clob_whale_event_probability_scalping
+      EXTERNAL_CONVICTION_PROVIDER: clob_whale
+      EXTERNAL_CONVICTION_POLL_SEC: "10800"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_whale.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_whale_heartbeat
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_whale_heartbeat') < 14400"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-divergence:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-divergence
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_divergence
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_divergence
+      EXTERNAL_CONVICTION_STRATEGY_NAME: manifold_divergence_event_probability_scalping
+      EXTERNAL_CONVICTION_PROVIDER: manifold
+      EXTERNAL_CONVICTION_POLL_SEC: "10800"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_divergence.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_divergence_heartbeat
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_divergence_heartbeat') < 14400"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-debate:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-debate
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_debate
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_debate
+      EXTERNAL_CONVICTION_STRATEGY_NAME: debate_event_probability_scalping
+      EXTERNAL_CONVICTION_PROVIDER: debate
+      EXTERNAL_CONVICTION_POLL_SEC: "10800"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_debate.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_debate_heartbeat
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_debate_heartbeat') < 14400"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 384m
+    cpus: "0.50"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-aggregator:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-aggregator
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_aggregator
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_aggregator
+      EXTERNAL_CONVICTION_STRATEGY_NAME: aggregator_event_probability_scalping
+      EXTERNAL_CONVICTION_PROVIDER: aggregator
+      EXTERNAL_CONVICTION_POLL_SEC: "10800"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_aggregator.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_aggregator_heartbeat
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_aggregator_heartbeat') < 14400"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 512m
+    cpus: "0.50"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
   grafana:
     image: grafana/grafana:10.4.2
     container_name: poly1-grafana

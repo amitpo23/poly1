@@ -372,6 +372,7 @@ Important statuses:
 |---|---|
 | `TRADE_LOG_DB` | `./data/trade_log.db` |
 | `LLM_USAGE_FILE` | `./data/llm_usage.jsonl` |
+| `EXTERNAL_CONVICTION_OUTPUT_PATH` | `./data/external_convictions.jsonl` |
 | `LOG_DIR` | `./data/logs` |
 | `LOG_LEVEL` | `INFO` |
 | `HEARTBEAT_PATH` | `./data/heartbeat` |
@@ -416,6 +417,99 @@ Important statuses:
 | `NEAR_RESOLUTION_MAX_OPEN` | `3` | Max concurrent open positions. |
 | `NEAR_RESOLUTION_HEARTBEAT_PATH` | `/app/data/near_resolution_heartbeat` | Heartbeat file path. |
 | `EXECUTE_NEAR_RESOLUTION` | `false` | Set `true` to live-trade. |
+
+### External conviction agent
+
+`agents/application/external_conviction.py` is a shadow-only research loop. It
+scans active liquid Polymarket markets, asks an external analysis provider for a
+short-horizon opinion, and writes a trade plan to
+`data/external_convictions.jsonl` plus `brain_decisions`. It never places
+orders; external tools are treated as opinions, not execution authority.
+
+Provider modes:
+
+- `heuristic` (default): local conservative placeholder for dry calibration.
+- `public_news`: no-key public RSS/news search evidence for current narrative
+  attention. This is live external data, but still not an oracle.
+- `tavily`: uses `TAVILY_API_KEY` search results as external news/narrative
+  evidence.
+- `http_json`: POSTs a market snapshot to `EXTERNAL_CONVICTION_API_URL`, which
+  can wrap Kaito, Santiment, Glassnode, CryptoQuant, or a browser automation
+  analyzer.
+- `polifly_browser`: calls `POLIFLY_BROWSER_BRIDGE_URL`, a local bridge that
+  drives a logged-in Polifly Analyzer session after Pro access is active.
+- `clob_whale`: fetches 100 recent trades from `data-api.polymarket.com/trades`,
+  filters >$5K whale trades, computes buy/sell directional consensus. No key.
+- `manifold_divergence` (alias `manifold`): searches Manifold Markets for a
+  matching question, signals if probability diverges >10% from Polymarket. No key.
+- `metaculus_divergence` (alias `metaculus`): same divergence pattern using the
+  Metaculus community prediction median. No key.
+- `cross_market`: finds related Polymarket markets by keyword overlap, signals if
+  related markets have moved >15% from 0.50. Uses already-fetched Gamma data.
+- `kalshi_divergence` (alias `kalshi`): compares Polymarket price with Kalshi
+  real-money yes-ask prices. Signals on >10% divergence. No key.
+- `whale_consensus` (alias `data_api_whale`): polls top-20 leaderboard wallets
+  via `data-api.polymarket.com/positions`, consensus vote on each market. No key.
+- `bull_bear_debate` (alias `debate`): 3-call LLM debate (Bull → Bear → Judge)
+  using raw OpenAI REST API with `gpt-4o-mini`. ~$0.01/scan. Requires
+  `OPENAI_API_KEY`.
+- `nansen_smart_money` (alias `nansen`): Nansen API smart-money Polygon CTF
+  flows. Requires `NANSEN_API_KEY`; skips gracefully when missing.
+- `wallet_master`: Wallet Master API win-rate-weighted whale consensus. Requires
+  `WALLET_MASTER_API_KEY`; skips gracefully when missing.
+- `polifly_enhanced`: extends `polifly_browser` with retry and `public_news`
+  fallback if Polifly bridge is unavailable.
+- `aggregator`: runs N sub-providers configured via
+  `EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS` (comma-separated), computes weighted
+  majority verdict. Default sub-providers: `clob_whale,manifold,public_news`.
+
+| Var | Default | Notes |
+|---|---|---|
+| `EXTERNAL_CONVICTION_PROVIDER` | `heuristic` | `heuristic`, `public_news`, `tavily`, `http_json`, `polifly_browser`, `clob_whale`, `manifold`, `metaculus`, `cross_market`, `kalshi`, `whale_consensus`, `debate`, `nansen`, `wallet_master`, `polifly_enhanced`, or `aggregator`. |
+| `EXTERNAL_CONVICTION_AGENT_NAME` | `external_conviction` | Brain-decision agent identity. |
+| `EXTERNAL_CONVICTION_STRATEGY_NAME` | `event_probability_scalping` | Brain-decision strategy identity. |
+| `EXTERNAL_CONVICTION_API_URL` | empty | Optional POST endpoint for external analysis. |
+| `EXTERNAL_CONVICTION_API_KEY` | empty | Optional bearer token for `http_json`. |
+| `POLIFLY_BROWSER_BRIDGE_URL` | empty | Optional Polifly browser bridge endpoint. |
+| `POLIFLY_BROWSER_BRIDGE_API_KEY` | empty | Optional bearer token for the Polifly bridge. |
+| `EXTERNAL_CONVICTION_POLL_SEC` | `10800` | Three-hour cadence. |
+| `EXTERNAL_CONVICTION_MARKET_LIMIT` | `200` | Active markets fetched per scan. |
+| `EXTERNAL_CONVICTION_MAX_CANDIDATES` | `12` | Max shadow plans per scan. |
+| `EXTERNAL_CONVICTION_MIN_VOLUME_USDC` | `5000` | Minimum market volume proxy. |
+| `EXTERNAL_CONVICTION_MIN_LIQUIDITY_USDC` | `500` | Minimum market liquidity proxy. |
+| `EXTERNAL_CONVICTION_MIN_CONFIDENCE` | `0.58` | Minimum provider confidence for `shadow_candidate`. |
+| `EXTERNAL_CONVICTION_TAKE_PROFIT_PCT` | `0.10` | Shadow take-profit target. |
+| `EXTERNAL_CONVICTION_STOP_LOSS_PCT` | `0.07` | Shadow stop-loss target. |
+| `EXTERNAL_CONVICTION_MAX_HOLD_MINUTES` | `60` | Shadow maximum holding window. |
+| `EXTERNAL_CONVICTION_HEARTBEAT_PATH` | `/app/data/external_conviction_heartbeat` | Heartbeat file path. |
+| `EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS` | `clob_whale,manifold,public_news` | Comma-separated sub-provider list for aggregator mode. |
+| `EXTERNAL_CONVICTION_DEBATE_MODEL` | `gpt-4o-mini` | LLM model for `bull_bear_debate` provider. |
+| `NANSEN_API_KEY` | empty | Nansen smart-money API key. Paid tier 3 provider; skips when missing. |
+| `WALLET_MASTER_API_KEY` | empty | Wallet Master API key. Paid tier 3 provider; skips when missing. |
+
+Two shadow-only service variants are available under the `external_conviction`
+compose profile:
+
+- `external-conviction-polifly`: `agent=external_conviction_polifly`,
+  `provider=polifly_browser`, output
+  `data/external_convictions_polifly.jsonl`. It remains skip-only until Polifly
+  Pro is active and a browser bridge URL is configured.
+- `external-conviction-api`: `agent=external_conviction_api`,
+  `provider=public_news`, output `data/external_convictions_api.jsonl`. It uses
+  public no-key news/RSS search evidence now. It can later be switched to
+  `http_json` when `EXTERNAL_CONVICTION_API_URL` is configured.
+- `external-conviction-whale`: `agent=external_conviction_whale`,
+  `provider=clob_whale`, output `data/external_convictions_whale.jsonl`. Tracks
+  whale trades from Polymarket data API.
+- `external-conviction-divergence`: `agent=external_conviction_divergence`,
+  `provider=manifold`, output `data/external_convictions_divergence.jsonl`.
+  Cross-platform probability divergence detection.
+- `external-conviction-debate`: `agent=external_conviction_debate`,
+  `provider=debate`, output `data/external_convictions_debate.jsonl`. LLM
+  bull/bear debate; requires `OPENAI_API_KEY`. 384MB / 0.50 CPU.
+- `external-conviction-aggregator`: `agent=external_conviction_aggregator`,
+  `provider=aggregator`, output `data/external_convictions_aggregator.jsonl`.
+  Weighted consensus from multiple sub-providers. 512MB / 0.50 CPU.
 
 ## 8. LLM prompt contract
 

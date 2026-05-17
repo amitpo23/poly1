@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 
@@ -8,6 +9,16 @@ from langchain_community.vectorstores.chroma import Chroma
 
 from agents.polymarket.gamma import GammaMarketClient
 from agents.utils.objects import SimpleEvent, SimpleMarket
+
+logger = logging.getLogger(__name__)
+
+def _make_embedding_function() -> OpenAIEmbeddings:
+    """Return an OpenAIEmbeddings instance.
+
+    Raises AuthenticationError / RateLimitError on first use if the key
+    is invalid or quota is exhausted — callers handle this.
+    """
+    return OpenAIEmbeddings(model="text-embedding-3-small")
 
 
 class PolymarketRAG:
@@ -80,14 +91,30 @@ class PolymarketRAG:
             metadata_func=metadata_func,
         )
         loaded_docs = loader.load()
-        embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
-        vector_db_directory = f"{local_events_directory}/chroma"
-        local_db = Chroma.from_documents(
-            loaded_docs, embedding_function, persist_directory=vector_db_directory
-        )
-
-        # query
-        return local_db.similarity_search_with_score(query=prompt)
+        try:
+            embedding_function = _make_embedding_function()
+            vector_db_directory = f"{local_events_directory}/chroma"
+            local_db = Chroma.from_documents(
+                loaded_docs, embedding_function, persist_directory=vector_db_directory
+            )
+            return local_db.similarity_search_with_score(query=prompt)
+        except Exception as exc:
+            _is_quota = (
+                "insufficient_quota" in str(exc)
+                or "exceeded your current quota" in str(exc)
+                or "RateLimitError" in type(exc).__name__
+                or "AuthenticationError" in type(exc).__name__
+            )
+            if _is_quota:
+                _limit = 30
+                logger.warning(
+                    "OpenAI embeddings quota exhausted — bypassing RAG filter, "
+                    "returning first %d of %d events (tag=events)",
+                    _limit,
+                    len(loaded_docs),
+                )
+                return [(doc, 0.0) for doc in loaded_docs[:_limit]]
+            raise
 
     def markets(self, markets: "list[SimpleMarket]", prompt: str) -> "list[tuple]":
         # create local json file
@@ -117,11 +144,28 @@ class PolymarketRAG:
             metadata_func=metadata_func,
         )
         loaded_docs = loader.load()
-        embedding_function = OpenAIEmbeddings(model="text-embedding-3-small")
-        vector_db_directory = f"{local_events_directory}/chroma"
-        local_db = Chroma.from_documents(
-            loaded_docs, embedding_function, persist_directory=vector_db_directory
-        )
+        try:
+            embedding_function = _make_embedding_function()
+            vector_db_directory = f"{local_events_directory}/chroma"
+            local_db = Chroma.from_documents(
+                loaded_docs, embedding_function, persist_directory=vector_db_directory
+            )
+            return local_db.similarity_search_with_score(query=prompt)
+        except Exception as exc:
+            _is_quota = (
+                "insufficient_quota" in str(exc)
+                or "exceeded your current quota" in str(exc)
+                or "RateLimitError" in type(exc).__name__
+                or "AuthenticationError" in type(exc).__name__
+            )
+            if _is_quota:
+                _limit = 50
+                logger.warning(
+                    "OpenAI embeddings quota exhausted — bypassing RAG filter, "
+                    "returning first %d of %d markets (tag=markets)",
+                    _limit,
+                    len(loaded_docs),
+                )
+                return [(doc, 0.0) for doc in loaded_docs[:_limit]]
+            raise
 
-        # query
-        return local_db.similarity_search_with_score(query=prompt)

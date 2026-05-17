@@ -74,6 +74,16 @@ STRATEGIES = [
         "docker_service": "scalper",
         "profile": "scalper",
     },
+    {
+        "name": "external-conviction",
+        "description": "External conviction shadow agent — scans markets and writes trade plans",
+        "execute_env": "EXTERNAL_CONVICTION_ENABLE",
+        "module": "agents.application.external_conviction",
+        "daemon_class": "ExternalConvictionAgent",
+        "heartbeat": "data/external_conviction_heartbeat",
+        "docker_service": "external-conviction",
+        "profile": "external_conviction",
+    },
 ]
 
 ENV_FILE = Path(os.getenv("ENV_FILE", ".env"))
