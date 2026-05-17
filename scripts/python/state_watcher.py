@@ -120,19 +120,30 @@ def _gather_poly1() -> dict[str, Any]:
 
 
 def _gather_swarm() -> dict[str, Any]:
+    """Read swarm DB; return safe defaults on any SQLite error.
+
+    swarm.db can go corrupt (`database disk image is malformed`)
+    independently of poly1. Without this guard the watcher crashes
+    before _write_snapshot runs → every subsequent cron tick fails the
+    same way, silencing real alerts. Better to log + degrade.
+    """
     out: dict[str, Any] = {
         "max_fill_id": 0,
         "max_pending_id": 0,
         "submitted_open": 0,
+        "_error": None,
     }
     if not SWARM_DB.exists():
         return out
-    with sqlite3.connect(str(SWARM_DB)) as c:
-        out["max_fill_id"] = c.execute("SELECT COALESCE(MAX(id),0) FROM fills").fetchone()[0]
-        out["max_pending_id"] = c.execute("SELECT COALESCE(MAX(id),0) FROM pending_orders").fetchone()[0]
-        out["submitted_open"] = c.execute(
-            "SELECT COUNT(*) FROM pending_orders WHERE status='submitted'"
-        ).fetchone()[0]
+    try:
+        with sqlite3.connect(str(SWARM_DB)) as c:
+            out["max_fill_id"] = c.execute("SELECT COALESCE(MAX(id),0) FROM fills").fetchone()[0]
+            out["max_pending_id"] = c.execute("SELECT COALESCE(MAX(id),0) FROM pending_orders").fetchone()[0]
+            out["submitted_open"] = c.execute(
+                "SELECT COUNT(*) FROM pending_orders WHERE status='submitted'"
+            ).fetchone()[0]
+    except sqlite3.Error as exc:
+        out["_error"] = f"{type(exc).__name__}: {exc}"
     return out
 
 
@@ -225,6 +236,9 @@ def _diff(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
 
     os_ = old.get("swarm", {})
     ns = new.get("swarm", {})
+    # Surface swarm DB errors once on transition; suppress on repeated cycles.
+    if ns.get("_error") and ns.get("_error") != os_.get("_error"):
+        alerts.append(f"🚨 swarm DB read failed: {ns['_error']}")
     new_fills = ns.get("max_fill_id", 0) - os_.get("max_fill_id", 0)
     if new_fills > 0:
         alerts.append(f"⚡ swarm +{new_fills} fill(s) (max id {ns['max_fill_id']})")
