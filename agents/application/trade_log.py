@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS news_signals (
     latency_ms INTEGER,
     model TEXT,
     status TEXT NOT NULL,
-    reasoning TEXT
+    reasoning TEXT,
+    yes_price REAL DEFAULT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_news_signals_ts ON news_signals(ts);
 CREATE INDEX IF NOT EXISTS idx_news_signals_market_ts ON news_signals(market_id, ts);
@@ -237,6 +238,14 @@ class TradeLog:
         self._lock = threading.Lock()
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            # Migrations — safe to re-run (SQLite ignores duplicate ADD COLUMN).
+            for _migration in [
+                "ALTER TABLE news_signals ADD COLUMN yes_price REAL DEFAULT NULL",
+            ]:
+                try:
+                    conn.execute(_migration)
+                except Exception:
+                    pass  # column already exists
         self.recover_stranded_pendings()
 
     @contextmanager
@@ -927,13 +936,14 @@ class TradeLog:
         latency_ms: Optional[int] = None,
         model: Optional[str] = None,
         reasoning: Optional[str] = None,
+        yes_price: Optional[float] = None,
     ) -> int:
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "INSERT INTO news_signals (ts, headline, source, url, market_id, "
                 "market_question, direction, materiality, relevance_score, "
-                "latency_ms, model, status, reasoning) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "latency_ms, model, status, reasoning, yes_price) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     _now(),
                     headline,
@@ -948,6 +958,7 @@ class TradeLog:
                     model,
                     status,
                     reasoning,
+                    float(yes_price) if yes_price is not None else None,
                 ),
             )
             return cur.lastrowid

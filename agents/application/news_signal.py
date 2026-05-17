@@ -478,6 +478,7 @@ def collect_once(
                 model=result.model,
                 status=getattr(result, "status", NEWS_SIGNAL_STATUS),
                 reasoning=result.reasoning,
+                yes_price=market.yes_price,
             )
             inserted += 1
     logger.info(

@@ -20,9 +20,10 @@ Storage: standard ``trades`` table, status ``news_shock_open``.
 
 Environment variables (all optional, see defaults below):
   NEWS_SHOCK_MIN_SCORE          — min materiality score (default 0.70)
-  NEWS_SHOCK_MAX_AGE_HOURS      — max signal age in hours (default 2)
+  NEWS_SHOCK_MAX_AGE_HOURS      — max signal age in hours (default 0.5)
   NEWS_SHOCK_MIN_EV             — min expected value (default 0.04)
   NEWS_SHOCK_MAX_ENTRY_PRICE    — max entry price for the entered token (default 0.60)
+  NEWS_SHOCK_MAX_DRIFT          — max yes_price drift since signal (default 0.10)
   NEWS_SHOCK_MIN_LIQUIDITY      — min $USDC volume (default 5000)
   NEWS_SHOCK_POSITION_SIZE_USDC — size per trade (default 2.5)
   NEWS_SHOCK_RESERVE_USDC       — capital reserved for this agent (default 15)
@@ -85,9 +86,10 @@ def _env_int(name: str, default: int) -> int:
 @dataclass
 class NewsShockConfig:
     min_score: float = 0.70
-    max_age_hours: float = 2.0
+    max_age_hours: float = 0.5
     min_ev: float = 0.04
     max_entry_price: float = 0.60
+    max_drift: float = 0.10
     min_liquidity: float = 5000.0
     position_size_usdc: float = 2.5
     reserve_usdc: float = 15.0
@@ -99,9 +101,10 @@ class NewsShockConfig:
     def from_env(cls) -> "NewsShockConfig":
         return cls(
             min_score=_env_float("NEWS_SHOCK_MIN_SCORE", 0.70),
-            max_age_hours=_env_float("NEWS_SHOCK_MAX_AGE_HOURS", 2.0),
+            max_age_hours=_env_float("NEWS_SHOCK_MAX_AGE_HOURS", 0.5),
             min_ev=_env_float("NEWS_SHOCK_MIN_EV", 0.04),
             max_entry_price=_env_float("NEWS_SHOCK_MAX_ENTRY_PRICE", 0.60),
+            max_drift=_env_float("NEWS_SHOCK_MAX_DRIFT", 0.10),
             min_liquidity=_env_float("NEWS_SHOCK_MIN_LIQUIDITY", 5000.0),
             position_size_usdc=_env_float("NEWS_SHOCK_POSITION_SIZE_USDC", 2.5),
             reserve_usdc=_env_float("NEWS_SHOCK_RESERVE_USDC", 15.0),
@@ -143,7 +146,7 @@ class NewsShockEngine:
             with self.trade_log._lock, self.trade_log._connect() as conn:
                 rows = conn.execute(
                     "SELECT id, ts, market_id, market_question, direction, "
-                    "materiality, relevance_score, headline, source "
+                    "materiality, relevance_score, headline, source, yes_price "
                     "FROM news_signals "
                     "WHERE status = 'news_signal' AND materiality >= ? AND ts >= ? "
                     "AND direction IN ('bullish', 'bearish') "
@@ -288,6 +291,28 @@ class NewsShockEngine:
             except (json.JSONDecodeError, IndexError, TypeError, ValueError):
                 yes_price = 0.5
                 no_price = 0.5
+
+            # Price-drift check: if the market has already moved > max_drift in the
+            # signal direction since the signal was recorded, the news is priced in.
+            signal_yes_price = sig.get("yes_price")
+            if signal_yes_price is not None:
+                drift = yes_price - signal_yes_price
+                if direction == "bullish" and drift > self.cfg.max_drift:
+                    logger.info(
+                        "news_shock: skip %s — bullish already priced in "
+                        "(signal_price=%.3f current=%.3f drift=+%.3f)",
+                        market_id, signal_yes_price, yes_price, drift,
+                    )
+                    self._mark_signal(signal_id, "skipped")
+                    continue
+                if direction == "bearish" and drift < -self.cfg.max_drift:
+                    logger.info(
+                        "news_shock: skip %s — bearish already priced in "
+                        "(signal_price=%.3f current=%.3f drift=%.3f)",
+                        market_id, signal_yes_price, yes_price, drift,
+                    )
+                    self._mark_signal(signal_id, "skipped")
+                    continue
 
             # Liquidity filter
             liquidity = float(mkt.get("volumeClob") or mkt.get("volume24hr") or 0)

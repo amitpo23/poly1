@@ -72,8 +72,8 @@ def _fake_candidate(
 class TestNearResolutionConfig(unittest.TestCase):
     def test_defaults(self):
         cfg = NearResolutionConfig()
-        self.assertEqual(cfg.max_entry_price, 0.15)
-        self.assertEqual(cfg.min_confidence, 0.65)
+        self.assertEqual(cfg.max_entry_price, 0.65)
+        self.assertEqual(cfg.direction_min_confidence, 0.65)
         self.assertEqual(cfg.poll_sec, 60)
 
 
