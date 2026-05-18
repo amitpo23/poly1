@@ -1,9 +1,70 @@
+import functools
 import os
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+# ---------------------------------------------------------------------------
+# Stub heavy optional deps so tests run without the full Docker pip install.
+# ---------------------------------------------------------------------------
+def _ensure_stub(name):
+    if name not in sys.modules:
+        sys.modules[name] = MagicMock()
+
+for _mod in [
+    "web3", "web3.constants", "web3.middleware",
+    "httpx",
+    "py_clob_client_v2", "py_clob_client_v2.client", "py_clob_client_v2.clob_types",
+    "py_clob_client_v2.constants", "py_clob_client_v2.exceptions",
+    "py_clob_client_v2.order_builder", "py_clob_client_v2.order_builder.constants",
+    "py_order_utils", "py_order_utils.builders", "py_order_utils.model",
+    "py_order_utils.signer",
+    "tenacity",
+    "langchain_core", "langchain_core.messages", "langchain_core.documents",
+    "langchain_openai",
+    "langchain_community", "langchain_community.document_loaders",
+    "langchain_community.vectorstores", "langchain_community.vectorstores.chroma",
+    "chromadb",
+]:
+    _ensure_stub(_mod)
+
+# tenacity.retry must be an identity decorator factory so that methods decorated
+# with @retry(...) still call through to the real function.
+def _identity_retry(*args, **kwargs):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*a, **kw):
+            return func(*a, **kw)
+        return wrapper
+    return decorator
+
+sys.modules["tenacity"].retry = _identity_retry
+
+# langchain_core.documents.Document needs a real .dict() method.
+class _FakeDocument:
+    def __init__(self, page_content="", metadata=None, **kwargs):
+        self.page_content = page_content
+        self.metadata = metadata or {}
+    def dict(self):
+        return {"page_content": self.page_content, "metadata": self.metadata}
+
+sys.modules["langchain_core.documents"].Document = _FakeDocument
+
+# py_clob_client_v2.clob_types.MarketOrderArgsV2 is imported as MarketOrderArgs in
+# polymarket.py. execute_market_order builds an instance and passes it as a positional
+# arg to create_and_post_market_order — tests inspect .price, .amount, .token_id.
+class _FakeMarketOrderArgsV2:
+    def __init__(self, token_id=None, amount=None, price=None, side=None, **kwargs):
+        self.token_id = token_id
+        self.amount = amount
+        self.price = price
+        self.side = side
+
+sys.modules["py_clob_client_v2.clob_types"].MarketOrderArgsV2 = _FakeMarketOrderArgsV2
+# ---------------------------------------------------------------------------
 
 from agents.application.risk_gate import RiskGate
 from agents.application.trade_log import (
@@ -681,7 +742,9 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
                 patch("agents.application.trade.Gamma"):
             pm = PMock.return_value
             pm.get_all_tradeable_events.return_value = []
-            pm.get_usdc_balance.return_value = 50.0
+            # Use a large balance so size_fraction * available_for_trader() exceeds
+            # MIN_EXITABLE_ENTRY_USDC (default $3) regardless of reserve env vars.
+            pm.get_usdc_balance.return_value = 1000.0
 
             agent = AgentMock.return_value
             agent.filter_events_with_rag.return_value = []
@@ -754,7 +817,9 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
             gate = MagicMock()
             gate.ok.return_value = False
             gate.reason.return_value = "paper test block"
-            gate.available_for_trader.return_value = 20.0
+            # Large enough so size_fraction * available ($0.05 * 200 = $10) exceeds
+            # MIN_EXITABLE_ENTRY_USDC (default $3) — the exitable-size gate must pass.
+            gate.available_for_trader.return_value = 200.0
 
             trader = Trader(
                 dry_run=True,

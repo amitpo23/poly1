@@ -1,7 +1,13 @@
 import os
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+
+# Stub optional heavy deps so tests run without the full pip install.
+for _mod in ("langchain_openai", "langchain_core", "langchain_core.messages"):
+    if _mod not in sys.modules:
+        sys.modules[_mod] = MagicMock()
 
 from agents.application.news_signal import (
     CLASSIFIER_FAILED_STATUS,
@@ -186,8 +192,10 @@ class TestNewsSignalClassifier(unittest.TestCase):
         market.question = "Will Bitcoin hit 100k?"
         market.yes_price = 0.5
 
-        first = classifier.classify(NewsItem("Bitcoin rallies"), market)
-        second = classifier.classify(NewsItem("Bitcoin rallies again"), market)
+        # Use headlines with no keyword overlap with the market question so
+        # heuristic fallback returns materiality=0 → CLASSIFIER_FAILED_STATUS.
+        first = classifier.classify(NewsItem("Rihanna announces world tour"), market)
+        second = classifier.classify(NewsItem("Taylor Swift new album drops"), market)
 
         self.assertEqual(first.status, CLASSIFIER_FAILED_STATUS)
         self.assertEqual(first.direction, "neutral")

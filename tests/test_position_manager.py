@@ -64,6 +64,10 @@ class _TmpDB:
     def _polymarket(self, midpoints):
         pm = MagicMock()
         client = MagicMock()
+        # _on_chain_shares() calls get_balance_allowance(). Raise so it falls
+        # back to journal-based share count (returns None) in all test contexts,
+        # including discover mode where py_clob_client_v2 is stubbed.
+        client.get_balance_allowance.side_effect = RuntimeError("no SDK in test env")
         def get_mid(token_id):
             if token_id in midpoints:
                 return {"mid": midpoints[token_id]}
