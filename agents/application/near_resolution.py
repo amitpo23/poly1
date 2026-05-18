@@ -270,6 +270,30 @@ class NearResolutionEngine:
         )
         return candidates
 
+    # ------------------------------------------------- scanner signal boost
+
+    def _scanner_market_ids(self, max_age_hours: float = 1.0) -> set:
+        """Return market IDs flagged by market_scanner in the last max_age_hours.
+
+        The market_scanner writes news_signals with status='scanner_near_resolution'
+        when it detects a near-resolution opportunity.  We use these to re-order
+        scan_candidates() so scanner-flagged markets are evaluated first.
+        """
+        try:
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+            ).isoformat()
+            with self.trade_log._lock, self.trade_log._connect() as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT market_id FROM news_signals "
+                    "WHERE status = 'scanner_near_resolution' AND ts >= ?",
+                    (cutoff,),
+                ).fetchall()
+            return {r["market_id"] for r in rows}
+        except Exception as exc:
+            logger.debug("near_resolution: scanner_market_ids failed: %s", exc)
+            return set()
+
     # ---------------------------------------------------------- LLM direction
 
     def _get_news_context(self, question: str) -> str:
@@ -479,6 +503,22 @@ class NearResolutionEngine:
         candidates = self.scan_candidates()
         if not candidates:
             return 0
+
+        # Boost markets the scanner pre-approved to front of the queue.
+        scanner_ids = self._scanner_market_ids()
+        if scanner_ids:
+            logger.info(
+                "near_resolution: scanner boost — %d flagged market(s): %s",
+                len(scanner_ids),
+                list(scanner_ids)[:5],
+            )
+            candidates.sort(
+                key=lambda c: (
+                    0 if c["market_id"] in scanner_ids else 1,
+                    0 if c["straddle_viable"] else 1,
+                    -float(c["raw"].get("volumeClob") or c["raw"].get("volume24hr") or 0),
+                )
+            )
 
         # Count open near_resolution legs
         try:

@@ -492,11 +492,13 @@ class MarketScanner:
             )
 
         # Route 3: news_shock — write news_signal when Tavily found material news.
+        # Map scanner direction ('yes'/'no') to news_shock vocabulary ('bullish'/'bearish').
         if tavily_confidence_val >= self.cfg.news_shock_materiality and tavily_direction:
+            direction_for_ns = "bullish" if tavily_direction == "yes" else "bearish"
             self.trade_log.insert_news_signal(
                 headline=f"[scanner/tavily] {question[:100]}",
                 market_id=market_id,
-                direction=tavily_direction,
+                direction=direction_for_ns,
                 materiality=round(tavily_confidence_val, 3),
                 relevance_score=round(opportunity_score, 3),
                 status="scanner_news_shock",

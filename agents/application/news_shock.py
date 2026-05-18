@@ -149,7 +149,8 @@ class NewsShockEngine:
                     "SELECT id, ts, market_id, market_question, direction, "
                     "materiality, relevance_score, headline, source, yes_price "
                     "FROM news_signals "
-                    "WHERE status = 'news_signal' AND materiality >= ? AND ts >= ? "
+                    "WHERE status IN ('news_signal', 'scanner_news_shock') "
+                    "AND materiality >= ? AND ts >= ? "
                     "AND direction IN ('bullish', 'bearish') "
                     "ORDER BY materiality DESC",
                     (self.cfg.min_score, cutoff_str),
