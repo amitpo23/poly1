@@ -187,7 +187,7 @@ class Trader:
         for m in ranked_all:
             if len(ranked) >= self.top_n:
                 break
-            mid = m.get("market_id") or m.get("id", "")
+            mid = self._market_id(m)
             if self.trade_log.has_filled_position_for_market(mid):
                 continue
             ranked.append(m)
