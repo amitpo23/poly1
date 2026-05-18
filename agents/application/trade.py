@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from agents.application.executor import Executor as Agent
+from agents.application.market_brain import MarketBrain
 from agents.application.risk_gate import RiskGate
 from agents.application.tavily import tavily_headlines
 from agents.application.trade_log import (
@@ -73,6 +74,7 @@ class Trader:
         self.risk_gate = risk_gate or RiskGate(
             trade_log=self.trade_log, polymarket=self.polymarket
         )
+        self.brain = MarketBrain()
         self.shadow_ignore_risk_gate = (
             os.getenv("SHADOW_IGNORE_RISK_GATE", "false").lower() == "true"
         )
@@ -343,12 +345,17 @@ class Trader:
         if self._conviction_blocks_entry(cycle_id, market_id):
             return False
 
+        # Pre-LLM brain gate: score market quality before spending LLM tokens.
+        # Extracts spread_pct + hours_to_close from metadata; builds Tavily
+        # context once here so the LLM and brain share the same news text.
+        market_question = str(
+            market[0].dict().get("metadata", {}).get("question", "")
+        )
+        news_context = self._build_news_context(market_id, question=market_question)
+        if not self._brain_entry_gate(cycle_id, market_id, market, news_context):
+            return False
+
         try:
-            # Enrich with recent news signals + Tavily fallback for this market
-            market_question = str(
-                market[0].dict().get("metadata", {}).get("question", "")
-            )
-            news_context = self._build_news_context(market_id, question=market_question)
             best_trade = self.agent.source_best_trade(market, news_context=news_context)
             recommendation = self.agent.parse_trade_recommendation(best_trade)
         except Exception as e:
@@ -625,6 +632,68 @@ class Trader:
             )
             return True
         return False
+
+    def _brain_entry_gate(
+        self,
+        cycle_id: str,
+        market_id: str,
+        market,
+        news_context: str,
+    ) -> bool:
+        """Return False (and log) if MarketBrain rejects this entry.
+
+        Extracts spread_pct and hours_to_close from market metadata, then
+        delegates to brain.evaluate_general_entry(). Fails open on any
+        extraction error so a missing field never silently blocks a trade.
+        """
+        try:
+            metadata = market[0].dict().get("metadata", {})
+            question = str(metadata.get("question", ""))
+
+            # spread_pct: stored in metadata as a fraction (0–1) by Gamma.
+            try:
+                spread_pct = float(metadata["spread"]) if metadata.get("spread") else None
+            except (TypeError, ValueError):
+                spread_pct = None
+
+            # hours_to_close: derived from end / end_date timestamp.
+            hours_to_close = None
+            end_raw = metadata.get("end") or metadata.get("end_date") or ""
+            if end_raw:
+                try:
+                    from datetime import datetime, timezone
+                    end_dt = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=timezone.utc)
+                    hours_to_close = max(0.0, (end_dt - datetime.now(timezone.utc)).total_seconds() / 3600.0)
+                except Exception:
+                    pass
+
+            decision = self.brain.evaluate_general_entry(
+                question=question,
+                spread_pct=spread_pct,
+                hours_to_close=hours_to_close,
+                external_context=news_context,
+            )
+            if not decision.approved:
+                logger.info(
+                    "cycle %s: market %s skipped (brain gate: %s score=%.3f)",
+                    cycle_id, market_id, decision.reason, decision.score,
+                )
+                self.trade_log.insert_terminal(
+                    cycle_id, market_id, SKIPPED_GATE,
+                    error=f"brain_gate:{decision.reason} score={decision.score:.3f}",
+                )
+                return False
+            logger.debug(
+                "cycle %s: market %s brain gate approved reason=%s score=%.3f",
+                cycle_id, market_id, decision.reason, decision.score,
+            )
+            return True
+        except Exception:
+            # Fail open — never block a trade due to a brain extraction error.
+            logger.exception("brain_entry_gate failed for %s (fail-open)", market_id)
+            return True
 
     def maintain_positions(self):
         """Inline position-management call. Delegates to PositionManager.

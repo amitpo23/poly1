@@ -282,6 +282,7 @@ class Prompter:
         hold_hours: float,
         news_context: str = "",
         conviction_context: str = "",
+        tavily_context: str = "",
     ) -> str:
         pnl_pct = (current_price - entry_price) / max(entry_price, 1e-9) * 100
         direction = "UP" if current_price > entry_price else "DOWN"
@@ -294,7 +295,8 @@ Entry price: {entry_price:.4f}
 Current price: {current_price:.4f}
 Price movement: {direction} {abs(pnl_pct):.1f}% from entry
 Time held: {hold_hours:.1f} hours
-{f"Recent news: {news_context}" if news_context else "Recent news: none available"}
+{f"Recent news (DB): {news_context}" if news_context else "Recent news: none available"}
+{f"Live external news (Tavily): {tavily_context}" if tavily_context else ""}
 {f"External signals: {conviction_context}" if conviction_context else "External signals: none available"}
 
 Assess whether this position should be held or exited NOW.

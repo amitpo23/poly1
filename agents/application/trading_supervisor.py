@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from agents.application.trade_log import TradeLog
+from agents.application.tavily import tavily_headlines
 
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,7 @@ class TradingSupervisor:
         self._check_open_positions(now, open_positions, issues)
         self._check_close_failure_storm(issues)
         self._check_settlement_reconciliation(issues)
+        self._check_news_alerts(open_positions, issues)
 
         critical_issues = [i for i in issues if i.get("severity") == "critical"]
         halted = False
@@ -327,6 +329,74 @@ class TradingSupervisor:
                 (str(token_id), opened.isoformat()),
             ).fetchone()
             return dict(row) if row else None
+
+    def _check_news_alerts(
+        self,
+        open_positions: list[dict],
+        issues: list[dict],
+    ) -> None:
+        """Scan Tavily for breaking news that contradicts open positions.
+
+        This is a WARNING-only check — it never trips HALT. Its purpose is
+        to surface adverse news in the supervisor state file and logs so the
+        operator (and position_manager LLM) can act on it quickly.
+
+        Runs silently (no issue added) if TAVILY_API_KEY is not set.
+        """
+        if not open_positions:
+            return
+        api_key = os.getenv("TAVILY_API_KEY", "").strip()
+        if not api_key:
+            return  # No key — skip quietly.
+        for pos in open_positions:
+            market_id = str(pos.get("market_id") or "")
+            if not market_id:
+                continue
+            # Resolve market question: try news_signals, then wallet_signals.
+            question = None
+            try:
+                with self.trade_log._lock, self.trade_log._connect() as conn:
+                    row = conn.execute(
+                        "SELECT market_question FROM news_signals "
+                        "WHERE market_id = ? AND market_question IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1",
+                        (market_id,),
+                    ).fetchone()
+                    if row and row[0]:
+                        question = str(row[0])
+                    else:
+                        row = conn.execute(
+                            "SELECT market_question FROM wallet_signals "
+                            "WHERE market_id = ? AND market_question IS NOT NULL "
+                            "ORDER BY id DESC LIMIT 1",
+                            (market_id,),
+                        ).fetchone()
+                        if row and row[0]:
+                            question = str(row[0])
+            except Exception:
+                continue
+            if not question:
+                continue
+            try:
+                ctx = tavily_headlines(question, max_results=2)
+                if not ctx:
+                    continue
+                logger.info(
+                    "trading_supervisor: news_alert market=%s news=%s",
+                    market_id, ctx[:200],
+                )
+                issues.append({
+                    "severity": "warning",
+                    "code": "position_news_alert",
+                    "market_id": market_id,
+                    "question_preview": question[:80],
+                    "news_preview": ctx[:200],
+                })
+            except Exception:
+                logger.debug(
+                    "trading_supervisor: Tavily lookup failed for %s (non-fatal)",
+                    market_id,
+                )
 
     def _trip_halt(self, critical_issues: list[dict]) -> bool:
         halt_path = Path(self.cfg.kill_switch_file)

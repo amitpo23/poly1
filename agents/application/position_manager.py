@@ -36,6 +36,7 @@ from typing import Optional
 
 from agents.application.exit_executor import ExitExecutor
 from agents.application.market_brain import BrainConfig, ExitPosition, MarketBrain
+from agents.application.tavily import tavily_headlines
 from agents.application.trade_log import TradeLog, RESOLVED_LOSS
 
 
@@ -454,6 +455,17 @@ class PositionManager:
             except Exception:
                 pass
 
+            # Live Tavily context — fresher than DB news_signals (which may
+            # be hours old). Enriches the LLM exit decision with current news.
+            tavily_ctx = ""
+            if question and question != pos.market_id:
+                tavily_ctx = tavily_headlines(question, max_results=3)
+                if tavily_ctx:
+                    logger.info(
+                        "llm_exit_check: Tavily for %s: %s",
+                        pos.token_id[:18], tavily_ctx[:150],
+                    )
+
             prompt = self._get_prompter().should_exit_position(
                 question=question,
                 side=pos.side,
@@ -462,6 +474,7 @@ class PositionManager:
                 hold_hours=hold_hours,
                 news_context=news_context,
                 conviction_context=conviction_context,
+                tavily_context=tavily_ctx,
             )
 
             llm = self._get_llm()

@@ -62,6 +62,11 @@ class BrainConfig:
     smart_exit_peak_drawdown_hold_pct: float = 0.006
     smart_exit_min_seconds_to_expiry: int = 75
     crypto_signal_min_samples: int = 2
+    # General binary market entry gates (sports, elections, any non-crypto).
+    general_max_spread_pct: float = 0.15
+    general_min_hours_to_close: float = 0.5
+    general_max_hours_to_close: float = 168.0
+    general_min_score: float = 0.30
 
     @classmethod
     def from_env(cls) -> "BrainConfig":
@@ -101,6 +106,14 @@ class BrainConfig:
                 "MARKET_BRAIN_SMART_EXIT_MIN_SECONDS_TO_EXPIRY", 75
             ),
             crypto_signal_min_samples=_env_int("MARKET_BRAIN_CRYPTO_MIN_SAMPLES", 2),
+            general_max_spread_pct=_env_float("MARKET_BRAIN_GENERAL_MAX_SPREAD_PCT", 0.15),
+            general_min_hours_to_close=_env_float(
+                "MARKET_BRAIN_GENERAL_MIN_HOURS_TO_CLOSE", 0.5
+            ),
+            general_max_hours_to_close=_env_float(
+                "MARKET_BRAIN_GENERAL_MAX_HOURS_TO_CLOSE", 168.0
+            ),
+            general_min_score=_env_float("MARKET_BRAIN_GENERAL_MIN_SCORE", 0.30),
         )
 
 
@@ -463,3 +476,74 @@ class MarketBrain:
         features["smart_exit_momentum"] = momentum
         features["smart_exit_supports_side"] = supports_side
         return supports_side
+
+    def evaluate_general_entry(
+        self,
+        *,
+        question: str,
+        spread_pct: Optional[float] = None,
+        hours_to_close: Optional[float] = None,
+        external_context: str = "",
+    ) -> BrainDecision:
+        """Pre-LLM gate for general binary markets (sports, elections, events).
+
+        Quickly rejects markets with bad quality characteristics before spending
+        LLM tokens. Returns BrainDecision; if approved=False, caller should skip.
+
+        The score is informational — callers log it but don't use it for sizing.
+        Entry is either allowed (score >= general_min_score) or blocked.
+        """
+        profile = MarketProfile(market_type="general_binary")
+        features: dict = {
+            "question_preview": (question or "")[:80],
+            "spread_pct": spread_pct,
+            "hours_to_close": hours_to_close,
+            "has_external_context": bool(external_context),
+        }
+
+        if not self.cfg.enabled:
+            return BrainDecision(True, "brain_disabled", 1.0, profile, features)
+
+        # Hard reject: spread too wide (expensive to enter AND exit).
+        if spread_pct is not None and spread_pct > self.cfg.general_max_spread_pct:
+            return BrainDecision(False, "spread_too_wide", 0.0, profile, features)
+
+        # Hard reject: resolution timing outside our operational window.
+        if hours_to_close is not None:
+            if hours_to_close < self.cfg.general_min_hours_to_close:
+                return BrainDecision(False, "too_close_to_expiry", 0.0, profile, features)
+            if hours_to_close > self.cfg.general_max_hours_to_close:
+                return BrainDecision(False, "horizon_too_long", 0.0, profile, features)
+
+        # Scoring: base 0.5, then additive adjustments.
+        score = 0.5
+
+        # Time horizon bonus: psychological-bias peak is 1h–48h before resolution.
+        if hours_to_close is not None:
+            if 1.0 <= hours_to_close <= 48.0:
+                score += 0.15   # sweet spot for fast turnaround
+            elif hours_to_close <= 1.0:
+                score -= 0.10   # very close — rush entry less reliable
+            elif hours_to_close > 72.0:
+                score -= 0.10   # long horizon — bias reversion is slower
+
+        # Spread quality bonus: tighter spread → cheaper round-trip.
+        if spread_pct is not None:
+            if spread_pct < 0.05:
+                score += 0.10
+            elif spread_pct > 0.10:
+                score -= 0.10
+
+        # External context bonus: Tavily found relevant discussion — this
+        # market is actively being priced by humans, better signal quality.
+        if external_context:
+            score += 0.10
+            features["external_context_preview"] = external_context[:100]
+
+        score = max(0.0, min(1.0, score))
+        features["score"] = round(score, 4)
+
+        if score < self.cfg.general_min_score:
+            return BrainDecision(False, "general_score_too_low", score, profile, features)
+
+        return BrainDecision(True, "approved_general_entry", score, profile, features)
