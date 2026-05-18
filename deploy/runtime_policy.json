@@ -25,6 +25,10 @@
     "wallet_follow": {
       "execute_flag": "EXECUTE_WALLET_FOLLOW",
       "reserve_flag": "WALLET_FOLLOW_RESERVE_USDC"
+    },
+    "external_conviction_api": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC"
     }
   },
   "freeze": {

@@ -36,8 +36,8 @@ import threading
 import time
 import urllib.request
 import urllib.parse
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from agents.application.trade_log import NEAR_RESOLUTION_OPEN, TradeLog
@@ -92,6 +92,8 @@ class NearResolutionConfig:
     straddle_max_sum: float = 0.88    # YES_ask + NO_ask < this to straddle
     straddle_min_each: float = 0.30   # each leg must be ≥ this
     direction_min_confidence: float = 0.65  # LLM confidence < this → try straddle
+    # Backward-compatible alias for older callers/tests and env naming.
+    min_confidence: Optional[float] = field(default=None, repr=False)
     # Limit how many markets we run LLM on per cycle (API cost control)
     max_candidates_per_cycle: int = 8
     min_liquidity: float = 3000.0
@@ -102,8 +104,16 @@ class NearResolutionConfig:
     max_open: int = 6
     heartbeat_path: str = "/app/data/near_resolution_heartbeat"
 
+    def __post_init__(self) -> None:
+        if self.min_confidence is not None:
+            self.direction_min_confidence = float(self.min_confidence)
+
     @classmethod
     def from_env(cls) -> "NearResolutionConfig":
+        direction_min_confidence = _env_float(
+            "NEAR_RESOLUTION_DIRECTION_MIN_CONFIDENCE",
+            _env_float("NEAR_RESOLUTION_MIN_CONFIDENCE", 0.65),
+        )
         return cls(
             min_hours=_env_float("NEAR_RESOLUTION_MIN_HOURS", 0.0),
             max_hours=_env_float("NEAR_RESOLUTION_MAX_HOURS", 720.0),
@@ -111,9 +121,7 @@ class NearResolutionConfig:
             min_entry_price=_env_float("NEAR_RESOLUTION_MIN_ENTRY_PRICE", 0.10),
             straddle_max_sum=_env_float("NEAR_RESOLUTION_STRADDLE_MAX_SUM", 0.88),
             straddle_min_each=_env_float("NEAR_RESOLUTION_STRADDLE_MIN_EACH", 0.30),
-            direction_min_confidence=_env_float(
-                "NEAR_RESOLUTION_DIRECTION_MIN_CONFIDENCE", 0.65
-            ),
+            direction_min_confidence=direction_min_confidence,
             max_candidates_per_cycle=_env_int(
                 "NEAR_RESOLUTION_MAX_CANDIDATES_PER_CYCLE", 8
             ),

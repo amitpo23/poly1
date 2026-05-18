@@ -54,6 +54,7 @@ class RiskGate:
         near_resolution_reserve_usdc: Optional[float] = None,
         news_shock_reserve_usdc: Optional[float] = None,
         wallet_follow_reserve_usdc: Optional[float] = None,
+        external_conviction_reserve_usdc: Optional[float] = None,
         runtime_control_file: Optional[str] = None,
     ):
         self.trade_log = trade_log
@@ -123,6 +124,11 @@ class RiskGate:
             "wallet_follow": (
                 wallet_follow_reserve_usdc if wallet_follow_reserve_usdc is not None
                 else _env_float("WALLET_FOLLOW_RESERVE_USDC", 0.0)
+            ),
+            "external_conviction": (
+                external_conviction_reserve_usdc
+                if external_conviction_reserve_usdc is not None
+                else _env_float("EXTERNAL_CONVICTION_RESERVE_USDC", 0.0)
             ),
         }
         self._mtm_cache_value: Optional[float] = None
