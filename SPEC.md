@@ -57,6 +57,8 @@ Active operating goal:
 
 ## 3. Modules
 
+### Core infrastructure
+
 | Module | Responsibility |
 |---|---|
 | `agents/application/cron.py` `TraderDaemon` | Long-running loop, SIGTERM-aware, heartbeat + Healthchecks ping |
@@ -66,13 +68,41 @@ Active operating goal:
 | `agents/application/executor.py` `Executor` | LLM pipeline (filter → forecast → trade rec), token-cost tracking |
 | `agents/application/prompts.py` `Prompter` | Versioned prompts; defines BUY/SELL semantics |
 | `agents/application/trade_recommendation.py` | Parses LLM JSON/legacy output → `TradeRecommendation` |
+| `agents/application/execution_safety.py` | Exitable-size gate; shared by all live entry agents |
+| `agents/application/market_brain.py` `MarketBrain` | Pre-LLM veto/scoring layer; spread, horizon, Tavily context gates |
 | `agents/polymarket/polymarket.py` `Polymarket` | CLOB client wrapper, side→token mapping, balance reads |
 | `agents/polymarket/gamma.py` `GammaMarketClient` | Gamma REST reads (events, markets) |
 | `agents/connectors/chroma.py` `PolymarketRAG` | Local Chroma vector store for RAG filtering |
+| `agents/application/tavily.py` | Shared stdlib-only Tavily search helper (`tavily_headlines`, `tavily_confidence`) |
 | `agents/utils/objects.py` | Pydantic data classes (`TradeRecommendation`, `SimpleMarket`, …) |
 | `agents/utils/logging_setup.py` | JSON formatter, RotatingFileHandler |
 | `agents/utils/notify.py` | Telegram (non-blocking) + Healthchecks ping |
 | `deploy/run.py` | Container entrypoint, env validation, daemon start |
+
+### Trading agents (entry)
+
+| Module | Strategy | Profile |
+|---|---|---|
+| `agents/application/trade.py` `Trader` | LLM psychological-bias exploitation on general binary markets | (default) |
+| `agents/application/btc_daily.py` `BtcDailyAgent` | Mean-revert BTC 24h markets after >3% crowd overreaction | `btc_daily` |
+| `agents/application/near_resolution.py` `NearResolutionEngine` | Resolution-bias exploitation in markets closing in 0.5h–24h | `near_resolution` |
+| `agents/application/news_shock.py` `NewsShockEngine` | News-driven entry before crowd re-prices on material news | `news_shock` |
+| `agents/application/wallet_follow.py` `WalletFollowEngine` | Copy-trading — mirror proven whale wallets | `wallet` |
+| `agents/application/scalper.py` `ScalperEngine` | Math-spread arb on crypto 15-min UP/DOWN pairs | `scalper` |
+| `agents/application/external_conviction.py` `ExternalConvictionAgent` | Multi-source conviction aggregator (11+ providers) | `external_conviction` |
+
+### Control & support agents (no entry)
+
+| Module | Responsibility | Profile |
+|---|---|---|
+| `agents/application/market_scanner.py` `MarketScanner` | Proactive 5-min opportunity finder; routes to entry agents via DB | `scanner` |
+| `agents/application/position_manager.py` `PositionManager` | Exit logic for all open positions (TP/SL/timeout) | `positions` |
+| `agents/application/trading_supervisor.py` `TradingSupervisor` | Safety control-plane; enforces HALT on exit-path failures | `supervisor` |
+| `agents/application/settlement_reconciler.py` | On-chain reconciliation; resolves P&L and detects stuck positions | `settlement` |
+| `agents/application/news_signal.py` | Dry-run news classification (LLM → news_signals DB rows) | `news_shock` |
+| `agents/application/wallet_watcher.py` | Polls whale wallets; writes wallet_signals DB rows | `wallet` |
+| `agents/application/capital_allocator.py` | Read-only allocation scoring across agents | `allocator` |
+| `agents/application/scalper_pairs.py` `ScalperPairsDAO` | `scalper_pairs` table CRUD for scalper | `scalper` |
 
 ## 4. Data flow per cycle
 
@@ -482,6 +512,11 @@ Provider modes:
 | `EXTERNAL_CONVICTION_STOP_LOSS_PCT` | `0.07` | Shadow stop-loss target. |
 | `EXTERNAL_CONVICTION_MAX_HOLD_MINUTES` | `60` | Shadow maximum holding window. |
 | `EXTERNAL_CONVICTION_HEARTBEAT_PATH` | `/app/data/external_conviction_heartbeat` | Heartbeat file path. |
+| `EXTERNAL_CONVICTION_POSITION_SIZE_USDC` | `3.0` | Per-trade size for live execution. |
+| `EXTERNAL_CONVICTION_MAX_LIVE_TRADES_PER_CYCLE` | `1` | Max live entries per scan cycle. |
+| `EXTERNAL_CONVICTION_MAX_OPEN_POSITIONS` | `1` | Max concurrent open positions. |
+| `EXTERNAL_CONVICTION_RESERVE_USDC` | `0` | Capital ring-fenced for this agent's live trades. |
+| `EXECUTE_EXTERNAL_CONVICTION` | `false` | Set `true` to enable live order execution. |
 | `EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS` | `clob_whale,manifold,public_news` | Comma-separated sub-provider list for aggregator mode. |
 | `EXTERNAL_CONVICTION_DEBATE_MODEL` | `gpt-4o-mini` | LLM model for `bull_bear_debate` provider. |
 | `NANSEN_API_KEY` | empty | Nansen smart-money API key. Paid tier 3 provider; skips when missing. |
@@ -684,3 +719,199 @@ Env vars:
 | `MIN_EXITABLE_SAFETY_BUFFER` | `1.25` | Buffer above exchange/strategy minimum. |
 | `MAINTAIN_MAX_CLOSE_FAILURES` | `3` | Close failures before terminal escalation. |
 | `OPPORTUNITY_ROUTER_ENFORCE_LIVE` | `true` | Require fresh `live_probe` route for live `Trader` entries. |
+
+## 17. Agent Registry — goals, data sources & error handling
+
+Canonical goal definition for every active agent. The authoritative Python
+registry is `AGENT_GOALS` in `agents/application/market_scanner.py`; this
+table is the human-readable mirror.
+
+| Agent | Goal | Win-rate target | Entry criterion | Key data sources | Error handling |
+|---|---|---|---|---|---|
+| **trader** | Exploit psychological crowd mispricing via LLM | >55%, hold <6h | Brain ≥0.30 + conviction gate + LLM conf ≥0.60 | Gamma, Chroma, Tavily, brain_decisions | LLM fail → `skipped_gate`; quota → 1h cooldown |
+| **btc_daily** | Fade BTC 24h overreactions (mean reversion) | >55%, EOD | BTC drift >3%, price ≤0.65, no Tavily macro news | CoinGecko BTC price, Gamma, Tavily | Slippage counter; N=3 → skip cycle |
+| **near_resolution** | Exploit last-mile anchoring bias in markets closing 0.5h–24h | >60%, hold <2h | hours_left ∈ [0.5, 24], conf ≥0.65, liq ≥$500 | Gamma, Tavily, scanner_near_resolution signals | Gamma fail → []; Tavily fails open |
+| **news_shock** | Enter before crowd re-prices after material news (≤30 min window) | >50%, fast | signal age <30 min, materiality ≥0.5, drift <10% | DB news_signals + scanner_news_shock, Tavily, Gamma | Drift/liq fail → mark `skipped`; LLM quota → `classifier_failed` + 1h cooldown |
+| **wallet_follow** | Mirror proven whale wallets | track whales >60% 30d | signal age <1h, drift <10%, liq ≥$3k, conf ≥0.50 | wallet_signals DB, Gamma, Tavily | Old signal → skip; high drift → skip |
+| **scalper** | Math-spread arb on crypto 15-min UP/DOWN pairs | >55%, hold <10 min | pair_sum <1.04, entry ≤0.55, >90s to expiry | Gamma 15m markets, CLOB orderbook | FAK miss → re-queue; `RECONCILE_NEEDED` on ambiguous fill |
+| **external_conviction** | 11-source cross-platform consensus aggregation | conf ≥0.58 + diverg >5% | confidence ≥0.58, volume ≥$5k, price ∈ [0.12, 0.88] | Manifold, Metaculus, Kalshi, CLOB whale, Tavily, LLM debate | Provider fail → skip verdict; daemon continues |
+| **market_scanner** | 5-min proactive scan; route signals to entry agents via DB | N/A (discovery only) | Brain gate + Tavily ≥0.40 or Manifold div ≥0.07 | Gamma, Tavily, Manifold REST | Gamma fail → empty cycle; per-market fail → log + skip |
+| **position_manager** | Exit all open positions (TP/SL/timeout) | N/A (exit only) | Open fills; exit on TP/SL/timeout | trade_log, Gamma live price, Tavily (LLM exit) | close_failed row; N=3 in 15 min → supervisor HALT |
+| **trading_supervisor** | Detect exit-path failures; enforce HALT pre-entry | N/A (safety only) | Stale/missing position_manager evidence | trade_log, position_marks, settlement_reconciliation, heartbeat files | Critical → write HALT; warning → status JSON |
+| **settlement_reconciler** | On-chain P&L truth; flag redeemable/stuck | N/A (reconcile) | Open fills + on-chain CTF | trade_log, Gamma resolution, CTF balance | `reconcile_error` → critical halt |
+
+## 18. BTC Daily agent
+
+**Goal:** Fade BTC 24h crowd overreaction. When BTC moves >3% intraday,
+crowd herding over-extends the daily UP/DOWN binary price. The bot bets on
+mean reversion.
+
+### Data flow
+
+```
+BtcDailyDaemon → BtcDailyAgent.run_once()
+  1. fetch_btc_price()     → CoinGecko /simple/price
+  2. fetch_daily_market()  → Gamma ?q=bitcoin-up-or-down-on-{date}
+  3. compute_drift()       → skip if |drift| < BTC_DAILY_THRESHOLD_PCT
+  4. tavily_headlines()    → skip on fundamental macro news
+  5. brain gate + RiskGate.ok() + dedupe
+  6. execute or skipped_dry_run
+```
+
+### Entry / exit
+
+- **Entry:** |drift| > threshold, entry price ≤ 0.65, no Tavily macro news, brain pass.
+- **Exit:** `position_manager` (TP=15%, SL=5%, timeout=EOD).
+- **Slippage guard:** `BTC_DAILY_MAX_SLIPPAGE_SKIPS` consecutive fails → skip rest of cycle.
+
+### Error handling
+
+| Error | Response |
+|---|---|
+| CoinGecko unavailable | `fetch_btc_price()` returns None; cycle skipped |
+| Gamma market not found | `fetch_daily_market()` returns None; cycle skipped |
+| Slippage skip | Counter incremented; abort after N skips |
+| Tavily network error | Fails open; Tavily filter skipped |
+
+Tests: `tests/test_trader.py` `TestBtcDaily*`. Env vars: `BTC_DAILY_*`.
+
+## 19. News Shock agent
+
+**Goal:** Enter Polymarket markets within the 30-minute window after a
+material news headline, before the crowd fully re-prices.
+
+### Data flow
+
+```
+NewsShockDaemon → NewsShockEngine.run_once()
+  1. _read_fresh_signals()  → news_signals WHERE status IN
+                               ('news_signal','scanner_news_shock')
+                               AND materiality >= min AND age < max_age_hours
+                               AND direction IN ('bullish','bearish')
+  2. for each signal:
+     a. Gamma live price + liquidity check
+     b. drift check      → skip if priced in
+     c. EV gate          → ev = materiality × (1 - entry_price)
+     d. Tavily context   → logged, fails open
+     e. RiskGate + dedupe → execute or skipped_dry_run
+     f. _mark_signal()   → 'consumed' / 'skipped' / 'entry_failed'
+```
+
+### Signal sources
+
+| Source | Written by | DB status |
+|---|---|---|
+| LLM classifier | `news_signal.py` | `news_signal` |
+| Scanner Tavily | `market_scanner.py` | `scanner_news_shock` |
+
+### Error handling
+
+| Error | Response |
+|---|---|
+| DB read failure | Returns []; daemon sleeps |
+| Gamma not found | Signal marked `skipped` |
+| Drift too high | Signal marked `skipped` |
+| LLM quota | `classifier_failed` status + 1h cooldown |
+
+Env vars: `NEWS_SHOCK_*`, `EXECUTE_NEWS_SHOCK`.
+
+## 20. Wallet Follow agent
+
+**Goal:** Mirror proven whale wallets within 1 hour of their entry.
+
+### Data flow
+
+```
+WalletFollowDaemon → WalletFollowEngine.run_once()
+  1. _read_fresh_signals()  → wallet_signals WHERE status='new' AND age < max_age_hours
+  2. for each signal:
+     a. Gamma live price + liquidity + drift check
+     b. EV gate + RiskGate + dedupe
+     c. execute or skipped_dry_run
+     d. _mark_signal()
+```
+
+### Entry / exit
+
+- **Min confidence:** ≥ `WALLET_FOLLOW_MIN_CONFIDENCE` (default 0.50).
+- **Signal age cap:** ≤ `WALLET_FOLLOW_MAX_AGE_HOURS` (default 1.0h).
+- **Drift cap:** ≤ `WALLET_FOLLOW_MAX_DRIFT` (default 10%).
+- **Exit:** `position_manager` (TP=10%, SL=7%).
+
+### Error handling
+
+| Error | Response |
+|---|---|
+| Watcher API down | No signals written; follow agent idles |
+| Signal too old | Marked `skipped` |
+| High drift | Marked `skipped` |
+
+Env vars: `WALLET_FOLLOW_*`, `WALLET_WATCHER_*`, `EXECUTE_WALLET_FOLLOW`.
+
+## 21. Position Manager
+
+**Goal:** Exit every open position at the correct time (TP/SL/timeout).
+
+### Data flow
+
+```
+PositionManagerDaemon → PositionManager.run_once()
+  1. filled_positions_with_id()  → all open fills, all entry agents
+  2. for each position:
+     a. Gamma current price
+     b. TP check  → close if gain ≥ MAINTAIN_TAKE_PROFIT_PCT
+     c. SL check  → close if loss ≥ MAINTAIN_STOP_LOSS_PCT
+     d. timeout   → close if age  ≥ MAINTAIN_MAX_HOLD_HOURS
+     e. LLM exit check (optional) + Tavily context
+     f. write position_mark + brain_decision
+  3. heartbeat
+```
+
+### Error handling
+
+| Error | Response |
+|---|---|
+| Gamma price unavailable | Skip position this cycle |
+| CLOB sell fails | Write `close_failed`; supervisor counts; N=3 in 15 min → HALT |
+| LLM exit fails | Fails open; hold decision unchanged |
+
+Env vars: `MAINTAIN_*`.
+
+## 22. Market Scanner
+
+**Goal:** Proactive 5-minute opportunity discovery.  Routes approved signals
+to entry agents via existing DB tables.  Never places orders.
+
+### Signal routing
+
+| Target | Rule | DB written |
+|---|---|---|
+| `trade` | brain score ≥ SCANNER_MIN_TRADE_SCORE | `brain_decisions` (approved=True) |
+| `news_shock` | Tavily confidence ≥ SCANNER_NEWS_SHOCK_MATERIALITY | `news_signals` (scanner_news_shock) |
+| `near_resolution` | hours ∈ [0.5, 24] AND conf ≥ threshold | `news_signals` (scanner_near_resolution) |
+
+### AGENT_GOALS registry
+
+```python
+from agents.application.market_scanner import AGENT_GOALS
+# or: python -m agents.application.market_scanner --goals
+```
+
+### Error handling
+
+| Error | Response |
+|---|---|
+| Gamma fetch fails | Empty cycle; heartbeat still written |
+| Single market error | Log + skip; scan continues |
+| Tavily unavailable | No boost, no news_signal written |
+| Manifold unavailable | No divergence boost |
+
+### Smoke test
+
+```bash
+python -m agents.application.market_scanner --once --json
+docker compose --profile scanner run --rm market_scanner \
+  python -m agents.application.market_scanner --once --json
+```
+
+Env vars: `SCANNER_*`.
