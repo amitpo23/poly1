@@ -28,7 +28,7 @@ archive.zip
 .DS_Store
 local_db*
 .claude/
-data/.state_watcher_snapshot.json
+data/
 
 # Screenshots (browser automation artifacts)
 *.png
