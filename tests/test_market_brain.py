@@ -175,6 +175,77 @@ class TestMarketBrain(unittest.TestCase):
         self.assertEqual(decision.reason, "take_profit")
 
 
+class TestTimeoutGrace(unittest.TestCase):
+    """Fix 4: flat positions get a grace period before timeout sell."""
+
+    def _brain(self, grace_pct=0.01, grace_sec=3600, max_hold=1800):
+        return MarketBrain(BrainConfig(
+            enabled=True,
+            exit_take_profit_pct=0.05,
+            exit_trailing_stop_pct=0.02,
+            exit_stop_loss_pct=0.07,
+            exit_max_hold_seconds=max_hold,
+            exit_timeout_flat_grace_pct=grace_pct,
+            exit_timeout_grace_seconds=grace_sec,
+        ))
+
+    def test_flat_at_timeout_gets_grace(self):
+        brain = self._brain()
+        # Position is 1801s old (past 1800s max_hold), pnl ~0% → grace
+        decision = brain.evaluate_exit(ExitPosition(
+            market_id="test-mkt",
+            token_id="tok",
+            side="up",
+            entry_price=0.50,
+            current_price=0.503,  # +0.6% < 1% grace threshold
+            opened_ts_ms=0,
+        ), now_ms=1801_000)
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "timeout_grace_flat")
+
+    def test_grace_expired_forces_timeout(self):
+        brain = self._brain()
+        # Position is 5401s old (past max_hold + grace_seconds) → timeout
+        decision = brain.evaluate_exit(ExitPosition(
+            market_id="test-mkt",
+            token_id="tok",
+            side="up",
+            entry_price=0.50,
+            current_price=0.503,
+            opened_ts_ms=0,
+        ), now_ms=5401_000)
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "timeout")
+
+    def test_losing_at_timeout_no_grace(self):
+        brain = self._brain()
+        # Position is past timeout with pnl = -4% (beyond grace_pct) → timeout
+        decision = brain.evaluate_exit(ExitPosition(
+            market_id="test-mkt",
+            token_id="tok",
+            side="up",
+            entry_price=0.50,
+            current_price=0.48,  # -4% > 1% grace threshold
+            opened_ts_ms=0,
+        ), now_ms=1801_000)
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "timeout")
+
+    def test_stop_loss_fires_before_grace(self):
+        brain = self._brain()
+        # Position is past timeout but also past stop_loss (-8%) → stop_loss
+        decision = brain.evaluate_exit(ExitPosition(
+            market_id="test-mkt",
+            token_id="tok",
+            side="up",
+            entry_price=0.50,
+            current_price=0.46,  # -8% → stop_loss fires first
+            opened_ts_ms=0,
+        ), now_ms=1801_000)
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "stop_loss")
+
+
 class TestCryptoSignalFeed(unittest.TestCase):
     def test_percent_change_from_samples(self):
         feed = CryptoSignalFeed()

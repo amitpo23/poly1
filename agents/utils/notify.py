@@ -49,6 +49,66 @@ def notify_telegram(
     return True
 
 
+def notify_trade(
+    *,
+    event: str,
+    agent: str = "poly1",
+    market_id: str = "",
+    side: str = "",
+    price: Optional[float] = None,
+    size_usdc: Optional[float] = None,
+    pnl_usdc: Optional[float] = None,
+    reason: str = "",
+    balance_usdc: Optional[float] = None,
+) -> bool:
+    """Send a structured trade notification to Telegram.
+
+    Callers provide whatever fields they have; missing fields are omitted.
+    Balance is shown when provided — callers with access to polymarket or
+    risk_gate should read and pass it.
+    """
+    icon = {
+        "fill": "\U0001f7e2",       # green circle
+        "close_tp": "\U0001f4b0",   # money bag
+        "close_sl": "\U0001f534",   # red circle
+        "close_timeout": "\u23f0",  # alarm clock
+        "close_dust": "\U0001fab6", # feather (dust)
+        "error": "\u26a0\ufe0f",    # warning
+        "cycle": "\U0001f504",      # arrows cycle
+    }.get(event, "\u2139\ufe0f")    # info
+
+    lines = [f"{icon} {agent}: {event}"]
+    if market_id:
+        label = market_id[:20] if len(market_id) > 20 else market_id
+        lines.append(f"  Market: {label}")
+    if side:
+        lines.append(f"  Side: {side}")
+    if price is not None:
+        lines.append(f"  Price: ${price:.4f}")
+    if size_usdc is not None:
+        lines.append(f"  Size: ${size_usdc:.2f}")
+    if pnl_usdc is not None:
+        pnl_icon = "\u2705" if pnl_usdc >= 0 else "\u274c"
+        lines.append(f"  PnL: {pnl_icon} ${pnl_usdc:+.4f}")
+    if reason:
+        lines.append(f"  Reason: {reason}")
+    if balance_usdc is not None:
+        lines.append(f"  \U0001f4b5 Balance: ${balance_usdc:.2f}")
+
+    return notify_telegram("\n".join(lines))
+
+
+def _safe_balance(polymarket) -> Optional[float]:
+    """Try to read USDC balance; return None on any failure."""
+    if polymarket is None:
+        return None
+    try:
+        return polymarket.get_usdc_balance()
+    except Exception:
+        logger.debug("_safe_balance failed (non-fatal)")
+        return None
+
+
 def ping_healthcheck(url: Optional[str] = None, timeout: float = 5.0) -> bool:
     target = url or os.getenv("HEALTHCHECK_URL")
     if not target:

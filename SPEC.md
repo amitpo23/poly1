@@ -90,6 +90,7 @@ Active operating goal:
 | `agents/application/wallet_follow.py` `WalletFollowEngine` | Copy-trading — mirror proven whale wallets | `wallet` |
 | `agents/application/scalper.py` `ScalperEngine` | Math-spread arb on crypto 15-min UP/DOWN pairs | `scalper` |
 | `agents/application/external_conviction.py` `ExternalConvictionAgent` | Multi-source conviction aggregator (11+ providers) | `external_conviction` |
+| `agents/application/btc_5min.py` `Btc5MinEngine` | Multi-signal consensus on BTC 5-min up/down markets | `btc_5min` |
 
 ### Control & support agents (no entry)
 
@@ -176,6 +177,7 @@ CREATE INDEX idx_status_ts ON trades(status, ts);
 | `skipped_dedupe` | Same market is currently blocked by an active row (see below). |
 | `skipped_gate` | Confidence or other guard failed. |
 | `skipped_dry_run` | `EXECUTE=false`; the row records what would have been sent. |
+| `btc_5min_open` | BTC 5-min agent entry fill; auto-resolves after 5 min. |
 
 **Dedupe rules (`has_active_trade_for_market`):**
 - `TIME_BOUNDED_ACTIVE_STATUSES = (pending, submitted, filled)` — block
@@ -333,11 +335,19 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | `KILL_SWITCH_FILE` | `./data/HALT` | Operator override |
 | `POLYMARKET_MAX_SLIPPAGE` | `0.03` | FOK market-buy slippage tolerance. Rejects if live ask exceeds model price by more than this fraction. |
 | `POLYMARKET_MIN_ORDER_USDC` | `1.0` | Skip orders smaller than this USDC amount. |
+| `MIN_ENTRY_PRICE` | `0.10` | Skip penny tokens with best ask below this price. Prevents high round-trip spread losses. |
+| `MIN_BID_DEPTH_USDC` | `20.0` | Require at least this much bid-side USDC depth before entering. Ensures exit liquidity exists. |
+| `MAX_ENTRY_SPREAD_PCT` | `0.05` | Reject market entry when bid-ask spread exceeds this fraction (5%). |
 | `POLYGON_RPC` | `https://polygon.drpc.org` | Polygon RPC endpoint. Override with paid Alchemy/Infura key for production. |
 | `MAINTAIN_TAKE_PROFIT_PCT` | `0.05` | Position manager: exit when position gains this fraction above entry price. |
 | `MAINTAIN_STOP_LOSS_PCT` | `0.03` | Position manager: exit when position drops this fraction below entry price. Tightened 2026-05-12 from 0.07 to reduce per-trade loss. |
 | `MAINTAIN_MAX_HOLD_HOURS` | `24` | Position manager: force-close after this many hours regardless of P&L. |
 | `BTC_DAILY_MAX_SLIPPAGE_SKIPS` | `3` | btc_daily: give up on a market after N consecutive slippage failures in one daemon run. Reset on successful entry. Prevents the 58-attempt tight-loop seen on market 2214715 (2026-05-11). |
+| `MIN_ENTRY_PRICE` | `0.10` | Skip penny tokens with best ask below this price. Prevents high round-trip spread losses. |
+| `MIN_BID_DEPTH_USDC` | `20.0` | Require at least this much bid-side USDC depth before entering. Ensures exit liquidity exists. |
+| `MAX_ENTRY_SPREAD_PCT` | `0.05` | Reject market entry when bid-ask spread exceeds this fraction (5%). |
+| `MARKET_BRAIN_TIMEOUT_FLAT_GRACE_PCT` | `0.01` | If position P&L is within ±1% at timeout, grant grace period instead of force-selling at spread cost. |
+| `MARKET_BRAIN_TIMEOUT_GRACE_SECONDS` | `3600` | Extra hold time (seconds) granted to flat positions at timeout. |
 
 ### Trading supervisor
 
@@ -935,3 +945,65 @@ docker compose --profile scanner run --rm market_scanner \
 ```
 
 Env vars: `SCANNER_*`.
+
+## 23. BTC 5-min agent
+
+**Goal:** Multi-signal consensus trading on Polymarket's 5-minute BTC
+up/down markets (`btc-updown-5m-{unix_ts}`). Every 5 minutes a new
+market opens and auto-resolves via Chainlink. Price is always ~0.50/0.50.
+
+### Data flow
+
+```
+Btc5MinDaemon → Btc5MinEngine.maybe_enter()
+  1. CoinbasePriceFeed.update()  → spot price ring buffer
+  2. _momentum_signal()          → pct_change over 2 min, threshold 0.15%
+  3. _funding_signal()           → OKX BTC perpetual funding rate (public)
+  4. _rsi_signal()               → RSI(14) on 1-min resampled price feed
+  5. composite_signal()          → weighted majority vote (momentum w=2.0)
+  6. _news_veto()                → Tavily headline keyword filter
+  7. RiskGate.ok() + dedupe + exitable_size_check
+  8. execute or shadow
+```
+
+### Entry / exit
+
+- **Entry:** ≥2/3 signals agree, confidence > 0.55, within entry window
+  (60–180s into the 5-min period), no news veto, hourly cap ≤ 6.
+- **Exit:** None — 5-min markets auto-resolve by Chainlink.
+- **Side:** bullish → BUY → token_ids[0] (Up); bearish → SELL → token_ids[1] (Down).
+
+### Signals
+
+| Signal | Source | Weight | Bullish | Bearish |
+|---|---|---|---|---|
+| Momentum | CoinbasePriceFeed 2-min %Δ | 2.0 | move > +0.15% | move < −0.15% |
+| Funding | OKX perpetual 8h rate | 1.0 | rate < −0.0005 | rate > +0.0005 |
+| RSI | RSI(14) on 1-min candles | 1.0 | RSI < 25 | RSI > 75 |
+
+### Error handling
+
+| Error | Response |
+|---|---|
+| Coinbase feed unavailable | `update()` returns None; cycle skipped |
+| OKX funding timeout | Funding signal returns skip; other signals can still form consensus |
+| Gamma market not found | `_resolve_current_5min_market()` returns None; cycle skipped |
+| Tavily network error | Fails open; news veto skipped |
+
+### Env vars
+
+| Var | Default | Notes |
+|---|---|---|
+| `EXECUTE_BTC_5MIN` | `false` | Live trading flag |
+| `BTC_5MIN_RESERVE_USDC` | `3.0` | Capital reserved in RiskGate |
+| `BTC_5MIN_POSITION_SIZE_USDC` | `1.5` | Per-trade size |
+| `BTC_5MIN_ENTRY_WINDOW_START` | `60` | Seconds after period open |
+| `BTC_5MIN_ENTRY_WINDOW_END` | `180` | Latest entry point |
+| `BTC_5MIN_MOMENTUM_PCT` | `0.0015` | 0.15% min BTC move |
+| `BTC_5MIN_MIN_CONSENSUS` | `2` | Min agreeing signals |
+| `BTC_5MIN_NEWS_VETO` | `true` | News veto enabled |
+| `BTC_5MIN_POLL_SEC` | `3` | Loop cadence |
+| `BTC_5MIN_COOLDOWN_SEC` | `300` | = one 5-min window |
+| `BTC_5MIN_MAX_PER_HOUR` | `6` | Hard trade cap |
+
+Tests: `tests/test_btc_5min.py`. Env vars: `BTC_5MIN_*`.

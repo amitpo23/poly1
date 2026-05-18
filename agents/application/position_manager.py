@@ -38,6 +38,7 @@ from agents.application.exit_executor import ExitExecutor
 from agents.application.market_brain import BrainConfig, ExitPosition, MarketBrain
 from agents.application.tavily import tavily_headlines
 from agents.application.trade_log import TradeLog, RESOLVED_LOSS
+from agents.utils.notify import notify_trade, _safe_balance
 
 
 logger = logging.getLogger(__name__)
@@ -783,6 +784,22 @@ class PositionManager:
                 "shares=%.2f status=%s",
                 reason, pos.token_id[:18], pos.avg_entry_price, mid,
                 shares_to_sell, exit_result.status,
+            )
+            event_key = {
+                "take_profit": "close_tp",
+                "stop_loss": "close_sl",
+                "timeout": "close_timeout",
+            }.get(reason, "close_timeout")
+            notify_trade(
+                event=event_key,
+                agent="position_mgr",
+                market_id=pos.market_id,
+                side="SELL",
+                price=sell_price,
+                size_usdc=shares_to_sell * sell_price,
+                pnl_usdc=pnl_usdc_real,
+                reason=reason,
+                balance_usdc=_safe_balance(self.polymarket),
             )
             return True
 

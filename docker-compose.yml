@@ -86,6 +86,37 @@ services:
     stop_grace_period: 30s
     profiles: ["btc_daily"]
 
+  btc_5min:
+    build: .
+    image: poly1:local
+    container_name: poly1-btc-5min
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: btc_5min
+    command: ["python", "-m", "agents.application.btc_5min"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/btc_5min_heartbeat') < 30"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["btc_5min"]
+
   position_manager:
     build: .
     image: poly1:local

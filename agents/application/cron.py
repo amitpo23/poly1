@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from agents.application.trade import Trader
-from agents.utils.notify import notify_telegram, ping_healthcheck
+from agents.utils.notify import notify_telegram, notify_trade, _safe_balance, ping_healthcheck
 
 
 logger = logging.getLogger(__name__)
@@ -45,8 +45,10 @@ class TraderDaemon:
         )
         self._heartbeat()
         try:
+            bal = _safe_balance(self.trader.polymarket)
+            bal_str = f" | balance=${bal:.2f}" if bal is not None else ""
             notify_telegram(
-                f"poly1: daemon started (dry_run={self.trader.dry_run})"
+                f"poly1: daemon started (dry_run={self.trader.dry_run}){bal_str}"
             )
         except Exception:
             logger.exception("startup telegram notify failed")

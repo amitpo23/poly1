@@ -36,6 +36,7 @@ from typing import Optional
 from agents.application.trade_log import TradeLog
 from agents.application.execution_safety import exitable_size_check
 from agents.application.tavily import tavily_headlines
+from agents.utils.notify import notify_trade, _safe_balance
 
 
 logger = logging.getLogger(__name__)
@@ -498,6 +499,16 @@ class BtcDailyEngine:
         logger.info(
             "btc_daily ENTRY: %s on %s @ %.3f shares=%.2f (btc_move=%+.4f)",
             side, market_id, entry_price, shares, btc_move,
+        )
+        notify_trade(
+            event="fill",
+            agent="btc_daily",
+            market_id=market_id,
+            side=side,
+            price=entry_price,
+            size_usdc=entry_size_usdc,
+            reason=f"btc_move={btc_move:+.4f}",
+            balance_usdc=_safe_balance(self.polymarket),
         )
         return pos
 

@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 MAX_MARKET_ORDER_SLIPPAGE = float(os.getenv("POLYMARKET_MAX_SLIPPAGE", "0.03"))
 MIN_MARKET_ORDER_USDC = float(os.getenv("POLYMARKET_MIN_ORDER_USDC", "1.0"))
+MIN_ENTRY_PRICE = float(os.getenv("MIN_ENTRY_PRICE", "0.10"))
+MIN_BID_DEPTH_USDC = float(os.getenv("MIN_BID_DEPTH_USDC", "20.0"))
+MAX_ENTRY_SPREAD_PCT = float(os.getenv("MAX_ENTRY_SPREAD_PCT", "0.05"))
 
 from web3 import Web3
 from web3.constants import MAX_INT
@@ -572,6 +575,34 @@ class Polymarket:
         )
         if not asks:
             raise ValueError(f"no asks available for token_id={token_id}")
+
+        best_ask = asks[0][0]
+        if best_ask < MIN_ENTRY_PRICE:
+            raise ValueError(
+                f"below MIN_ENTRY_PRICE: best_ask={best_ask:.4f} < {MIN_ENTRY_PRICE}"
+            )
+
+        # Fix 2 — bid-side depth check: ensure there is exit liquidity.
+        bids = sorted(
+            (self._entry_price_size(b) for b in self._book_entries(book, "bids")),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        total_bid_usdc = sum(p * s for p, s in bids)
+        if not bids or total_bid_usdc < MIN_BID_DEPTH_USDC:
+            raise ValueError(
+                f"insufficient bid depth: total_bid_usdc={total_bid_usdc:.2f}"
+                f" < {MIN_BID_DEPTH_USDC}"
+            )
+
+        # Fix 3 — spread check: best_ask vs best_bid.
+        best_bid = bids[0][0]
+        if best_ask > 0:
+            spread_pct = (best_ask - best_bid) / best_ask
+            if spread_pct > MAX_ENTRY_SPREAD_PCT:
+                raise ValueError(
+                    f"spread too wide: {spread_pct:.4f} > {MAX_ENTRY_SPREAD_PCT}"
+                )
 
         remaining = amount_usdc
         spend = 0.0

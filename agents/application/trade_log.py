@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS idx_market_status_ts ON trades(market_id, status, ts);
 CREATE INDEX IF NOT EXISTS idx_status_ts ON trades(status, ts);
+CREATE INDEX IF NOT EXISTS idx_token_id_status ON trades(token_id, status, ts);
 
 CREATE TABLE IF NOT EXISTS scalper_pairs (
     slug TEXT PRIMARY KEY,
@@ -210,6 +211,7 @@ BTC_DAILY_OPEN = "btc_daily_open"
 NEAR_RESOLUTION_OPEN = "near_resolution_open"
 NEWS_SHOCK_OPEN = "news_shock_open"
 WALLET_FOLLOW_OPEN = "wallet_follow_open"
+BTC_5MIN_OPEN = "btc_5min_open"
 # Resolution-sync statuses (added 2026-05-08): written when a Polymarket
 # market resolves and on-chain CTF balance hits dust on a token we held.
 # Realized P&L is recorded in `size_usdc` as the payout (shares × $1 if won,
@@ -263,42 +265,65 @@ class TradeLog:
     def new_cycle_id(self) -> str:
         return str(uuid.uuid4())
 
-    def has_filled_position_for_market(self, market_id: str) -> bool:
+    def has_filled_position_for_market(
+        self, market_id: str, token_id: Optional[str] = None,
+    ) -> bool:
         """Return True if there is a FILLED row with no subsequent terminal
         close row. A terminal row (closed_*, resolved_*) written after the
         last FILLED row means the position has been exited, so re-entry is
         allowed. This prevents the old 'block forever on any historical fill'
         behaviour that left stale filled rows blocking markets indefinitely
         after position_manager had already closed them.
+
+        When *token_id* is provided the match is broadened: a row matches if
+        market_id matches OR (token_id matches and is not NULL). This closes
+        the cross-agent dedupe gap where the Trader stores a numeric market ID
+        while external_conviction stores a hex token ID.
         """
         _TERMINAL = (
             "closed_take_profit", "closed_stop_loss", "closed_timeout",
             "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
         )
         terminal_ph = ",".join("?" * len(_TERMINAL))
+        if token_id:
+            id_clause = "(market_id = ? OR (token_id = ? AND token_id IS NOT NULL))"
+            id_params_fill = (str(market_id), str(token_id))
+            id_params_term = (str(market_id), str(token_id))
+        else:
+            id_clause = "market_id = ?"
+            id_params_fill = (str(market_id),)
+            id_params_term = (str(market_id),)
         sql = f"""
             SELECT 1 FROM trades
-            WHERE market_id = ? AND status = 'filled'
+            WHERE {id_clause} AND status = 'filled'
               AND id > COALESCE(
                 (SELECT MAX(id) FROM trades
-                 WHERE market_id = ? AND status IN ({terminal_ph})), 0
+                 WHERE {id_clause} AND status IN ({terminal_ph})), 0
               )
             LIMIT 1
         """
         with self._lock, self._connect() as conn:
             row = conn.execute(
-                sql, (str(market_id), str(market_id), *_TERMINAL)
+                sql, (*id_params_fill, *id_params_term, *_TERMINAL)
             ).fetchone()
             return row is not None
 
-    def has_active_trade_for_market(self, market_id: str, hours: int = 6) -> bool:
+    def has_active_trade_for_market(
+        self, market_id: str, hours: int = 6, token_id: Optional[str] = None,
+    ) -> bool:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         time_bounded_placeholders = ",".join("?" for _ in TIME_BOUNDED_ACTIVE_STATUSES)
         unbounded_placeholders = ",".join("?" for _ in UNBOUNDED_BLOCKING_STATUSES)
+        if token_id:
+            id_clause = "(market_id = ? OR (token_id = ? AND token_id IS NOT NULL))"
+            id_params = (str(market_id), str(token_id))
+        else:
+            id_clause = "market_id = ?"
+            id_params = (str(market_id),)
         # MAY_HAVE_FIRED rows block forever (operator must clear manually);
         # other active statuses block only within the dedupe window.
         sql = (
-            f"SELECT 1 FROM trades WHERE market_id = ? AND ("
+            f"SELECT 1 FROM trades WHERE {id_clause} AND ("
             f"  (status IN ({time_bounded_placeholders}) AND ts >= ?)"
             f"  OR status IN ({unbounded_placeholders})"
             f") LIMIT 1"
@@ -307,7 +332,7 @@ class TradeLog:
             row = conn.execute(
                 sql,
                 (
-                    str(market_id),
+                    *id_params,
                     *TIME_BOUNDED_ACTIVE_STATUSES,
                     cutoff,
                     *UNBOUNDED_BLOCKING_STATUSES,
@@ -470,7 +495,7 @@ class TradeLog:
         """Like filled_positions() but includes id, ts, and response_json.
         Used by position_manager to aggregate fills + read per-position
         overrides (e.g. tp_pct_override on manual entries)."""
-        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN)
+        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN, BTC_5MIN_OPEN)
         terminal_statuses = (
             "closed_take_profit", "closed_stop_loss", "closed_timeout",
             "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",

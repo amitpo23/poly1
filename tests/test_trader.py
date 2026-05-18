@@ -306,6 +306,134 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
         self.assertFalse(log.has_close_attempt_for_token("TOK", after_id=new_id))
 
 
+class TestEntryGuards(unittest.TestCase):
+    """Fixes 1-3: _fillable_market_buy rejects penny tokens, thin bids, wide spreads."""
+
+    def setUp(self):
+        # Import Polymarket with stubs already in place from module top.
+        from agents.polymarket.polymarket import Polymarket
+        self.pm = Polymarket(live=False)
+
+    def _make_book(self, asks, bids):
+        """Return a dict matching what get_order_book returns."""
+        return {
+            "asks": [{"price": p, "size": s} for p, s in asks],
+            "bids": [{"price": p, "size": s} for p, s in bids],
+            "tick_size": "0.01",
+        }
+
+    @patch("agents.polymarket.polymarket.MIN_ENTRY_PRICE", 0.10)
+    def test_rejects_penny_token(self):
+        book = self._make_book(
+            asks=[(0.05, 1000)],
+            bids=[(0.04, 1000)],
+        )
+        self.pm.client = MagicMock()
+        self.pm.client.get_order_book.return_value = book
+        with self.assertRaises(ValueError) as ctx:
+            self.pm._fillable_market_buy("tok1", 5.0)
+        self.assertIn("below MIN_ENTRY_PRICE", str(ctx.exception))
+
+    @patch("agents.polymarket.polymarket.MIN_ENTRY_PRICE", 0.01)
+    @patch("agents.polymarket.polymarket.MIN_BID_DEPTH_USDC", 20.0)
+    def test_rejects_thin_bid_depth(self):
+        book = self._make_book(
+            asks=[(0.50, 100)],
+            bids=[(0.48, 5)],  # 5 * 0.48 = $2.40 < $20
+        )
+        self.pm.client = MagicMock()
+        self.pm.client.get_order_book.return_value = book
+        with self.assertRaises(ValueError) as ctx:
+            self.pm._fillable_market_buy("tok2", 5.0)
+        self.assertIn("insufficient bid depth", str(ctx.exception))
+
+    @patch("agents.polymarket.polymarket.MIN_ENTRY_PRICE", 0.01)
+    @patch("agents.polymarket.polymarket.MIN_BID_DEPTH_USDC", 0.0)
+    @patch("agents.polymarket.polymarket.MAX_ENTRY_SPREAD_PCT", 0.05)
+    def test_rejects_wide_spread(self):
+        # Spread = (0.60 - 0.40) / 0.60 = 33% > 5%
+        book = self._make_book(
+            asks=[(0.60, 100)],
+            bids=[(0.40, 500)],
+        )
+        self.pm.client = MagicMock()
+        self.pm.client.get_order_book.return_value = book
+        with self.assertRaises(ValueError) as ctx:
+            self.pm._fillable_market_buy("tok3", 5.0)
+        self.assertIn("spread too wide", str(ctx.exception))
+
+    @patch("agents.polymarket.polymarket.MIN_ENTRY_PRICE", 0.01)
+    @patch("agents.polymarket.polymarket.MIN_BID_DEPTH_USDC", 0.0)
+    @patch("agents.polymarket.polymarket.MAX_ENTRY_SPREAD_PCT", 1.0)
+    def test_passes_good_book(self):
+        book = self._make_book(
+            asks=[(0.50, 100)],
+            bids=[(0.49, 500)],
+        )
+        self.pm.client = MagicMock()
+        self.pm.client.get_order_book.return_value = book
+        limit_price, fillable, avg = self.pm._fillable_market_buy("tok4", 5.0)
+        self.assertGreater(fillable, 0)
+        self.assertGreater(limit_price, 0)
+
+
+class TestTokenIdDedupe(TempDataMixin, unittest.TestCase):
+    """Fix 5: cross-agent dedupe matches on token_id."""
+
+    def test_filled_position_found_by_token_id(self):
+        log = TradeLog(self.db_path)
+        # External conviction writes a fill with hex market_id but correct token_id
+        log.insert_terminal(
+            cycle_id="c1",
+            market_id="0x7976abcdef",
+            token_id="SHARED_TOKEN",
+            side="BUY",
+            price=0.50,
+            size_usdc=3.0,
+            status=FILLED,
+        )
+        # Trader queries with numeric market_id but same token_id → should find it
+        self.assertTrue(
+            log.has_filled_position_for_market("566187", token_id="SHARED_TOKEN")
+        )
+        # Without token_id, numeric market_id alone should NOT find the hex row
+        self.assertFalse(
+            log.has_filled_position_for_market("566187")
+        )
+
+    def test_active_trade_found_by_token_id(self):
+        log = TradeLog(self.db_path)
+        log.insert_pending(
+            cycle_id="c2",
+            market_id="0xabc123",
+            token_id="SHARED_TOKEN_2",
+            side="BUY",
+            price=0.40,
+            size_usdc=2.0,
+            confidence=0.8,
+        )
+        self.assertTrue(
+            log.has_active_trade_for_market("999999", hours=6, token_id="SHARED_TOKEN_2")
+        )
+        self.assertFalse(
+            log.has_active_trade_for_market("999999", hours=6)
+        )
+
+    def test_backward_compatible_without_token_id(self):
+        log = TradeLog(self.db_path)
+        log.insert_pending(
+            cycle_id="c3",
+            market_id="42",
+            token_id="tok",
+            side="BUY",
+            price=0.50,
+            size_usdc=2.0,
+            confidence=0.7,
+        )
+        # Old-style call without token_id still works
+        self.assertTrue(log.has_active_trade_for_market("42", hours=6))
+
+
 class TestRiskGate(TempDataMixin, unittest.TestCase):
     def _gate(self, **kwargs):
         tl = TradeLog(self.db_path)
@@ -583,9 +711,14 @@ class TestExecuteMarketOrderSideMapping(unittest.TestCase):
         }
         return [doc]
 
-    def _book(self, asks):
+    def _book(self, asks, bids=None):
+        if bids is None:
+            # Default: healthy bid book that passes entry guards.
+            best_ask = asks[0][0] if asks else 0.50
+            bids = [(best_ask - 0.01, 500)]
         return {
             "asks": [{"price": str(price), "size": str(size)} for price, size in asks],
+            "bids": [{"price": str(price), "size": str(size)} for price, size in bids],
             "tick_size": "0.01",
         }
 

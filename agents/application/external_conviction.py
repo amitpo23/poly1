@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from agents.application.trade_log import TradeLog
+from agents.utils.notify import notify_trade, _safe_balance
 
 
 logger = logging.getLogger(__name__)
@@ -1727,6 +1728,7 @@ class ExternalConvictionAgent:
         self.risk_gate = risk_gate
         self.output_path = Path(self.cfg.output_path)
         self.heartbeat_path = Path(self.cfg.heartbeat_path)
+        self._live_entries_this_cycle: set = set()
 
         if self.cfg.execute:
             if self.polymarket is None:
@@ -1769,6 +1771,7 @@ class ExternalConvictionAgent:
         )
         written = 0
         live_trades = 0
+        self._live_entries_this_cycle = set()
         for market in candidates:
             try:
                 verdict = self.provider.analyze(market)
@@ -1856,6 +1859,12 @@ class ExternalConvictionAgent:
                 self.risk_gate.reason(),
             )
             return False
+        if market.market_id in self._live_entries_this_cycle:
+            logger.info(
+                "external_conviction live skip %s: already entered this cycle",
+                market.market_id,
+            )
+            return False
         open_count = len(self.trade_log.filled_positions())
         if open_count >= self.cfg.max_open_positions:
             logger.info(
@@ -1864,13 +1873,17 @@ class ExternalConvictionAgent:
                 self.cfg.max_open_positions,
             )
             return False
-        if self.trade_log.has_filled_position_for_market(market.market_id):
+        if self.trade_log.has_filled_position_for_market(
+            market.market_id, token_id=plan.token_id,
+        ):
             logger.info(
                 "external_conviction live skip %s: already holds filled position",
                 market.market_id,
             )
             return False
-        if self.trade_log.has_active_trade_for_market(market.market_id, hours=6):
+        if self.trade_log.has_active_trade_for_market(
+            market.market_id, hours=6, token_id=plan.token_id,
+        ):
             logger.info(
                 "external_conviction live skip %s: recent active trade",
                 market.market_id,
@@ -1963,12 +1976,23 @@ class ExternalConvictionAgent:
             price=fill_price,
             size_usdc=fill_size,
         )
+        self._live_entries_this_cycle.add(market.market_id)
         logger.info(
             "external_conviction LIVE ENTRY: %s %s @ %.4f size=%.2f",
             recommendation.side,
             market.market_id,
             fill_price,
             fill_size,
+        )
+        notify_trade(
+            event="fill",
+            agent="ext_conviction",
+            market_id=market.market_id,
+            side=recommendation.side,
+            price=fill_price,
+            size_usdc=fill_size,
+            reason=plan.reason[:60] if plan.reason else "",
+            balance_usdc=_safe_balance(self.polymarket),
         )
         return True
 

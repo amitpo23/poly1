@@ -1007,5 +1007,44 @@ class TestCrossMarketInjection(unittest.TestCase):
         self.assertTrue(len(cross.all_markets) > 0)
 
 
+class TestInMemoryDuplicateGuard(unittest.TestCase):
+    """Fix 6: same market_id should only get one live entry per cycle."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_duplicate_market_blocked_in_same_cycle(self):
+        cfg = ExternalConvictionConfig(
+            min_volume_usdc=1000.0,
+            min_liquidity_usdc=100.0,
+            max_candidates=5,
+            max_live_trades_per_cycle=5,
+            max_open_positions=5,
+            output_path=str(self.root / "ec_dup.jsonl"),
+            heartbeat_path=str(self.root / "hb_dup"),
+            position_size_usdc=3.0,
+            execute=True,
+        )
+        log = TradeLog(str(self.root / "trade_log.db"))
+        polymarket = FakePolymarket()
+        # Two identical markets in the candidate list
+        markets = [_raw_market(), _raw_market()]
+        agent = ExternalConvictionAgent(
+            cfg=cfg,
+            gamma=FakeGamma(markets),
+            provider=FixedProvider(direction="yes", confidence=0.74),
+            trade_log=log,
+            polymarket=polymarket,
+            risk_gate=FakeRiskGate(),
+        )
+        agent.collect_once()
+        # Only one order should have been placed despite two candidates
+        self.assertEqual(len(polymarket.orders), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

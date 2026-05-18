@@ -10,6 +10,7 @@ from agents.application.executor import Executor as Agent
 from agents.application.market_brain import MarketBrain
 from agents.application.risk_gate import RiskGate
 from agents.application.tavily import tavily_headlines
+from agents.utils.notify import notify_trade, _safe_balance
 from agents.application.trade_log import (
     FAILED,
     FILLED,
@@ -323,13 +324,26 @@ class Trader:
             )
             return False
 
+        # Extract primary token_id early so dedupe can cross-match agents
+        # that use different market identifiers (numeric vs hex).
+        _dedupe_token_id = None
+        try:
+            _meta = market[0].dict().get("metadata", {})
+            _tids = ast.literal_eval(_meta["clob_token_ids"])
+            if _tids:
+                _dedupe_token_id = _tids[0]
+        except Exception:
+            pass
+
         # First gate: do we already hold a filled position on this market?
         # Without exit logic (`maintain_positions` is a stub), reopening is
         # "averaging down" — observed 2026-05-06 when the LLM doubled
         # exposure on 566187/566188 from 0.38 → 0.205. Block regardless
         # of dedupe age until exit logic exists to close positions
         # before reopening.
-        if self.trade_log.has_filled_position_for_market(market_id):
+        if self.trade_log.has_filled_position_for_market(
+            market_id, token_id=_dedupe_token_id,
+        ):
             logger.info(
                 "cycle %s: market %s skipped (already holds filled position)",
                 cycle_id, market_id,
@@ -340,7 +354,9 @@ class Trader:
             )
             return False
 
-        if self.trade_log.has_active_trade_for_market(market_id, hours=6):
+        if self.trade_log.has_active_trade_for_market(
+            market_id, hours=6, token_id=_dedupe_token_id,
+        ):
             logger.info(
                 "cycle %s: market %s skipped (recent active trade)", cycle_id, market_id
             )
@@ -539,7 +555,13 @@ class Trader:
             result = self.polymarket.execute_market_order(market, recommendation)
         except ValueError as e:
             msg = str(e)
-            if "no asks available" in msg or "live ask price" in msg:
+            if any(s in msg for s in (
+                "no asks available",
+                "live ask price",
+                "below MIN_ENTRY_PRICE",
+                "insufficient bid depth",
+                "spread too wide",
+            )):
                 # Thin orderbook — not a code error, just a market condition.
                 # Write SKIPPED_GATE (veto) so the allocator doesn't penalise
                 # the trader as if it crashed. The market can be retried next
@@ -577,6 +599,16 @@ class Trader:
         terminal = FILLED if result.get("status") in ("filled", "matched") else SUBMITTED
         self.trade_log.mark(trade_id, terminal, response=result)
         logger.info("cycle %s: market %s TRADED %s", cycle_id, market_id, result)
+        if terminal == FILLED:
+            notify_trade(
+                event="fill",
+                agent="trader",
+                market_id=market_id,
+                side=recommendation.side,
+                price=recommendation.price,
+                size_usdc=recommendation.amount_usdc,
+                balance_usdc=_safe_balance(self.polymarket),
+            )
         return True
 
     def _build_news_context(self, market_id: str, question: str = "") -> str:

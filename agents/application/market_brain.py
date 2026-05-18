@@ -63,6 +63,8 @@ class BrainConfig:
     smart_exit_min_seconds_to_expiry: int = 75
     crypto_signal_min_samples: int = 2
     # General binary market entry gates (sports, elections, any non-crypto).
+    exit_timeout_flat_grace_pct: float = 0.01
+    exit_timeout_grace_seconds: int = 3600
     general_max_spread_pct: float = 0.15
     general_min_hours_to_close: float = 0.5
     general_max_hours_to_close: float = 168.0
@@ -89,6 +91,12 @@ class BrainConfig:
             exit_trailing_stop_pct=_env_float("MARKET_BRAIN_EXIT_TRAILING_STOP_PCT", 0.02),
             exit_stop_loss_pct=_env_float("MARKET_BRAIN_EXIT_STOP_LOSS_PCT", 0.07),
             exit_max_hold_seconds=_env_int("MARKET_BRAIN_EXIT_MAX_HOLD_SECONDS", 1800),
+            exit_timeout_flat_grace_pct=_env_float(
+                "MARKET_BRAIN_TIMEOUT_FLAT_GRACE_PCT", 0.01
+            ),
+            exit_timeout_grace_seconds=_env_int(
+                "MARKET_BRAIN_TIMEOUT_GRACE_SECONDS", 3600
+            ),
             smart_exit_enabled=_env_bool("MARKET_BRAIN_SMART_EXIT_ENABLED", True),
             smart_exit_min_profit_pct=_env_float(
                 "MARKET_BRAIN_SMART_EXIT_MIN_PROFIT_PCT", 0.05
@@ -422,6 +430,13 @@ class MarketBrain:
             return BrainDecision(True, "take_profit", pnl_pct, profile, features)
 
         if age_seconds >= self.cfg.exit_max_hold_seconds:
+            # Grace period: if position is nearly flat, give it extra time
+            # before forcing a timeout sell at spread cost.
+            if (
+                abs(pnl_pct) < self.cfg.exit_timeout_flat_grace_pct
+                and age_seconds < self.cfg.exit_max_hold_seconds + self.cfg.exit_timeout_grace_seconds
+            ):
+                return BrainDecision(False, "timeout_grace_flat", pnl_pct, profile, features)
             return BrainDecision(True, "timeout", pnl_pct, profile, features)
 
         return BrainDecision(False, "hold", pnl_pct, profile, features)
