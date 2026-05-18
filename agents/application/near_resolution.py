@@ -423,7 +423,17 @@ class NearResolutionEngine:
                         return fallback
                 else:
                     raise llm_exc
-            data = json.loads(raw)
+            import re as _re
+            # Try direct JSON parse first; fall back to extracting JSON object
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                _m = _re.search(r"\{[^{}]*\}", raw or "", _re.DOTALL)
+                if _m:
+                    data = json.loads(_m.group())
+                else:
+                    logger.warning("near_resolution: no JSON in LLM response for '%s'", question[:60])
+                    return fallback
             direction = str(data.get("direction", "uncertain")).lower()
             if direction not in ("yes", "no", "uncertain"):
                 direction = "uncertain"
