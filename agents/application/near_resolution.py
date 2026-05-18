@@ -392,8 +392,37 @@ class NearResolutionEngine:
                 news_context=news_context,
             )
             from langchain_core.messages import HumanMessage
-            response = self._llm.invoke([HumanMessage(content=prompt_text)])
-            raw = response.content if hasattr(response, "content") else str(response)
+            raw = None
+            try:
+                response = self._llm.invoke([HumanMessage(content=prompt_text)])
+                raw = response.content if hasattr(response, "content") else str(response)
+            except Exception as llm_exc:
+                _is_quota = (
+                    "insufficient_quota" in str(llm_exc)
+                    or "exceeded your current quota" in str(llm_exc)
+                    or "RateLimitError" in type(llm_exc).__name__
+                )
+                anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+                if _is_quota and anthropic_key:
+                    try:
+                        import anthropic as _anthropic_sdk
+                        _model = "claude-haiku-4-5-20251001"
+                        logger.warning(
+                            "near_resolution: OpenAI quota exhausted — falling back to %s",
+                            _model,
+                        )
+                        _client = _anthropic_sdk.Anthropic(api_key=anthropic_key)
+                        _resp = _client.messages.create(
+                            model=_model,
+                            max_tokens=1024,
+                            messages=[{"role": "user", "content": prompt_text}],
+                        )
+                        raw = _resp.content[0].text
+                    except Exception as anth_exc:
+                        logger.warning("near_resolution: Anthropic fallback failed: %s", anth_exc)
+                        return fallback
+                else:
+                    raise llm_exc
             data = json.loads(raw)
             direction = str(data.get("direction", "uncertain")).lower()
             if direction not in ("yes", "no", "uncertain"):

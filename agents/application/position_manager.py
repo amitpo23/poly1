@@ -478,8 +478,31 @@ class PositionManager:
             )
 
             llm = self._get_llm()
-            response = llm.invoke(prompt)
-            raw = response.content if hasattr(response, "content") else str(response)
+            raw = None
+            try:
+                response = llm.invoke(prompt)
+                raw = response.content if hasattr(response, "content") else str(response)
+            except Exception as _llm_exc:
+                _is_quota = (
+                    "insufficient_quota" in str(_llm_exc)
+                    or "exceeded your current quota" in str(_llm_exc)
+                    or "RateLimitError" in type(_llm_exc).__name__
+                )
+                _anth_key = os.getenv("ANTHROPIC_API_KEY")
+                if _is_quota and _anth_key:
+                    try:
+                        import anthropic as _anth
+                        _model = "claude-haiku-4-5-20251001"
+                        logger.warning("position_manager: OpenAI quota exhausted — fallback to %s", _model)
+                        _c = _anth.Anthropic(api_key=_anth_key)
+                        _content = prompt if isinstance(prompt, str) else prompt[0].content if hasattr(prompt[0], "content") else str(prompt[0])
+                        _r = _c.messages.create(model=_model, max_tokens=1024, messages=[{"role": "user", "content": _content}])
+                        raw = _r.content[0].text
+                    except Exception as _anth_exc:
+                        logger.warning("position_manager: Anthropic fallback failed: %s", _anth_exc)
+                        return None
+                else:
+                    raise _llm_exc
 
             import json as _json
             import re as _re

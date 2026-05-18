@@ -188,8 +188,30 @@ class NewsSignalClassifier:
             headline=item.headline,
         )
         try:
-            response = self.llm.invoke([HumanMessage(content=prompt)])
-            payload = _coerce_json(response.content)
+            raw_text = None
+            try:
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+                raw_text = response.content
+            except Exception as _llm_exc:
+                _is_quota = (
+                    "insufficient_quota" in str(_llm_exc)
+                    or "exceeded your current quota" in str(_llm_exc)
+                    or "RateLimitError" in type(_llm_exc).__name__
+                )
+                _anth_key = os.getenv("ANTHROPIC_API_KEY")
+                if _is_quota and _anth_key:
+                    try:
+                        import anthropic as _anth
+                        _model = "claude-haiku-4-5-20251001"
+                        logger.warning("news_signal: OpenAI quota exhausted — fallback to %s", _model)
+                        _c = _anth.Anthropic(api_key=_anth_key)
+                        _r = _c.messages.create(model=_model, max_tokens=1024, messages=[{"role": "user", "content": prompt}])
+                        raw_text = _r.content[0].text
+                    except Exception as _anth_exc:
+                        raise _llm_exc from _anth_exc
+                else:
+                    raise _llm_exc
+            payload = _coerce_json(raw_text)
             direction = payload.get("direction", "neutral")
             if direction not in ("bullish", "bearish", "neutral"):
                 direction = "neutral"
