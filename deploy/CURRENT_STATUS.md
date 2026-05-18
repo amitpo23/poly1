@@ -1,6 +1,72 @@
 # Current Status
 
-Date: 2026-05-12
+Date: 2026-05-18 (updated) · Previous: 2026-05-12
+
+## Status as of 2026-05-18 — v0.6.0-scanner
+
+### Version
+Current tag: `v0.6.0-scanner` (HEAD `db8448d`)
+
+### Runtime mode
+- `data/HALT` **present** — all entry agents paused
+- `runtime_control.json` → `mode=freeze`
+- Shadow/dry-run only. No live orders.
+
+### What shipped since 2026-05-12
+
+| Feature | Commit | Impact |
+|---|---|---|
+| BTC Daily forensic audit | `2a73578` | -24% drawdown, 8 live trades; root causes documented |
+| external_conviction (16 providers) | `08eb0af` | Shadow multi-source conviction loop |
+| LLM-based exit evaluation | `0fd58d8` | position_manager uses Tavily+LLM before close |
+| near_resolution straddle | `170e8e0` | LLM direction + straddle mode |
+| news_shock drift gate | `c5a41e3` | 30-min age cap + yes_price anchor |
+| wallet_follow hardening | `1fe0786` | Drift gate, 1h cap, min-trades filter |
+| btc_daily anchor fix | `0348d54` | Actual mid as anchor, max_entry_price=0.65 |
+| tavily.py shared helper | `85df15f` | Used across 5 agents |
+| market_brain entry gate | `ed3d9c9` | Pre-LLM scoring, spread+horizon+Tavily |
+| market_scanner daemon | `1d6a7e3` | 5-min proactive scan, routes via DB |
+| Scanner → news_shock wiring | `d10ad88` | direction fix + status filter fix |
+| SPEC.md §§17-22 | `84b4f87` | All agents documented |
+| Vibe-Trading provider | `35edd25` | TA signal in external_conviction |
+| risk_gate/near_res sync | `db8448d` | Runtime control hardening |
+
+### Agent status (shadow mode)
+
+| Agent | Docker profile | Live? | Notes |
+|---|---|---|---|
+| trader (main) | default | ❌ EXECUTE=false | Chroma quota issue; shadow only |
+| btc_daily | btc_daily | ❌ freeze | 8 live probes completed; -24% WR; paused for review |
+| near_resolution | near_resolution | ❌ freeze | Straddle mode built; Tavily conf<0.65 filtering |
+| news_shock | news_shock | ❌ freeze | scanner_news_shock signal source ready |
+| wallet_follow | wallet | ❌ freeze | Fresh signals from wallet_watcher |
+| scalper | scalper | ❌ freeze | Math arb; shadow only |
+| external_conviction | external_conviction | ❌ shadow | 16 providers; never executes live |
+| market_scanner | scanner | ❌ freeze | 5-min scan daemon; routes via DB |
+| position_manager | positions | ✅ always on | Exits all open positions |
+| trading_supervisor | supervisor | ✅ always on | Writes HALT on failures |
+| settlement_reconciler | settlement | ✅ always on | On-chain reconciliation |
+
+### Open issues
+1. **btc_daily paused** — -24% drawdown on 8 live trades (2026-05-17 postmortem).
+   Root causes: thin liquidity markets, no momentum filter, wide spread.
+   Next: add pre-entry momentum confirmation before re-enabling.
+2. **OpenAI quota** — main trader `insufficient_quota` errors block Chroma RAG.
+   Near-resolution and news_shock rely on Tavily-only path as fallback.
+3. **near_resolution Tavily heuristic** — confidence scores ~0.50 on most
+   candidates (common words). Consider improving keyword scoring if idle >1 week.
+4. **wallet_watcher** — tracking 20 wallets but producing sparse fresh signals.
+   Consider expanding wallet list or lowering min_trades threshold.
+
+### Next recommended action
+Per `docs/GOAL_PROFITABLE_AGENT_LOOP.md`:
+- Review btc_daily postmortem before any re-probe
+- Run `python scripts/python/goal_status.py --hours 24` to assess agent status
+- Run `python scripts/trading_stability_preflight.py --mode freeze` before any mode change
+
+---
+
+## Previous entry (2026-05-12)
 
 ## Active /goal
 
