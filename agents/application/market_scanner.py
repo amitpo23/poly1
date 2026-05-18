@@ -387,18 +387,27 @@ class MarketScanner:
             mkt.get("liquidityClob") or mkt.get("liquidity") or mkt.get("liquidityNum")
         )
 
-        # a. Brain gate — reject obviously bad markets before Tavily/Manifold.
+        # a. Vibe analysis — optional technical indicators for crypto markets.
+        vibe_signals = None
+        if _is_crypto_slug(question):
+            try:
+                vibe_signals = _compute_vibe_for_scanner(market_id, question)
+            except Exception:
+                logger.debug("scanner: vibe failed for %s", market_id[:20])
+
+        # b. Brain gate — reject obviously bad markets before Tavily/Manifold.
         brain_decision = self.brain.evaluate_general_entry(
             question=question,
             spread_pct=spread_pct,
             hours_to_close=hours_to_close,
             external_context="",  # no external context yet at this stage
+            vibe_signals=vibe_signals,
         )
         if not brain_decision.approved:
             return
         result["brain_approved"] += 1
 
-        # b. Tavily news search — cheap, no LLM.
+        # c. Tavily news search — cheap, no LLM.
         tavily_ctx = ""
         tavily_direction, tavily_confidence_val = "", 0.0
         if question:
@@ -410,7 +419,7 @@ class MarketScanner:
                     direction_keywords_no=["loses", "fails", "rejected", "falls", "no"],
                 )
 
-        # c. Manifold divergence check.
+        # d. Manifold divergence check.
         manifold_divergence = 0.0
         manifold_source = ""
         if self.cfg.manifold_enabled:
@@ -418,7 +427,7 @@ class MarketScanner:
                 question, yes_price, market_id
             )
 
-        # d. Compute overall opportunity score.
+        # e. Compute overall opportunity score.
         base_score = brain_decision.score  # 0.0–1.0 from brain
         tavily_boost = 0.10 if tavily_ctx else 0.0
         manifold_boost = min(0.15, abs(manifold_divergence) * 2.0)
@@ -437,7 +446,7 @@ class MarketScanner:
             "opportunity_score": round(opportunity_score, 4),
         }
 
-        # e. Route to agents.
+        # f. Route to agents.
 
         # Route 1: trade — write brain_decision so conviction gate sees it.
         if opportunity_score >= self.cfg.min_trade_score:
@@ -550,6 +559,63 @@ class MarketScanner:
             p.touch()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Vibe analysis (optional technical indicators on probability series)
+# ---------------------------------------------------------------------------
+
+_CRYPTO_KEYWORDS = frozenset({
+    "bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto",
+    "xrp", "dogecoin", "doge",
+})
+
+
+def _is_crypto_slug(question: str) -> bool:
+    """Return True if the market question mentions crypto assets."""
+    q = (question or "").lower()
+    return any(kw in q for kw in _CRYPTO_KEYWORDS)
+
+
+def _compute_vibe_for_scanner(
+    condition_id: str, question: str
+) -> Optional[dict]:
+    """Fetch CLOB probability history, run composite signal, return dict
+    with {direction, confidence} or None on failure."""
+    from agents.application.external_conviction import MarketSnapshot, _fetch_probability_history
+    from agents.application.vibe_analysis import probability_technical_composite
+
+    # Build a minimal MarketSnapshot for _fetch_probability_history
+    # We need a token_id; for scanner markets we use condition_id as token proxy
+    # (the CLOB endpoint accepts condition_id in some contexts).
+    # In practice, the scanner doesn't have clobTokenIds easily,
+    # so we try condition_id directly.
+    dummy = MarketSnapshot(
+        market_id=condition_id,
+        question=question,
+        slug="",
+        yes_price=0.5,
+        no_price=0.5,
+        volume_usdc=0,
+        liquidity_usdc=0,
+        end_date="",
+        outcomes=["Yes", "No"],
+        tokens=[condition_id],  # use condition_id as token placeholder
+        category="crypto",
+        raw={},
+    )
+    prices = _fetch_probability_history(dummy)
+    if not prices or len(prices) < 30:
+        return None
+    composite = probability_technical_composite(prices, min_bars=30)
+    if composite is None:
+        return None
+    return {
+        "direction": composite.get("direction", "skip"),
+        "confidence": composite.get("confidence", 0.0),
+        "agreement": composite.get("agreement", 0.0),
+        "contributing_count": composite.get("contributing_count", 0),
+    }
 
 
 # ---------------------------------------------------------------------------

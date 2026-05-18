@@ -495,7 +495,7 @@ Provider modes:
 
 | Var | Default | Notes |
 |---|---|---|
-| `EXTERNAL_CONVICTION_PROVIDER` | `heuristic` | `heuristic`, `public_news`, `tavily`, `http_json`, `polifly_browser`, `clob_whale`, `manifold`, `metaculus`, `cross_market`, `kalshi`, `whale_consensus`, `debate`, `nansen`, `wallet_master`, `polifly_enhanced`, or `aggregator`. |
+| `EXTERNAL_CONVICTION_PROVIDER` | `heuristic` | `heuristic`, `public_news`, `tavily`, `http_json`, `polifly_browser`, `clob_whale`, `manifold`, `metaculus`, `cross_market`, `kalshi`, `whale_consensus`, `debate`, `nansen`, `wallet_master`, `polifly_enhanced`, `technical_signal`, `volatility_regime`, `crypto_derivatives`, `multi_factor_rank`, or `aggregator`. |
 | `EXTERNAL_CONVICTION_AGENT_NAME` | `external_conviction` | Brain-decision agent identity. |
 | `EXTERNAL_CONVICTION_STRATEGY_NAME` | `event_probability_scalping` | Brain-decision strategy identity. |
 | `EXTERNAL_CONVICTION_API_URL` | empty | Optional POST endpoint for external analysis. |
@@ -521,6 +521,17 @@ Provider modes:
 | `EXTERNAL_CONVICTION_DEBATE_MODEL` | `gpt-4o-mini` | LLM model for `bull_bear_debate` provider. |
 | `NANSEN_API_KEY` | empty | Nansen smart-money API key. Paid tier 3 provider; skips when missing. |
 | `WALLET_MASTER_API_KEY` | empty | Wallet Master API key. Paid tier 3 provider; skips when missing. |
+| `EXTERNAL_CONVICTION_VIBE_EMA_SHORT` | `12` | Short EMA period for technical_signal provider. |
+| `EXTERNAL_CONVICTION_VIBE_EMA_LONG` | `26` | Long EMA period for technical_signal provider. |
+| `EXTERNAL_CONVICTION_VIBE_RSI_PERIOD` | `14` | RSI period for technical_signal provider. |
+| `EXTERNAL_CONVICTION_VIBE_RSI_OVERSOLD` | `30` | RSI oversold threshold. |
+| `EXTERNAL_CONVICTION_VIBE_RSI_OVERBOUGHT` | `70` | RSI overbought threshold. |
+| `EXTERNAL_CONVICTION_VIBE_BB_PERIOD` | `20` | Bollinger Band period. |
+| `EXTERNAL_CONVICTION_VIBE_BB_STD` | `2.0` | Bollinger Band standard deviations. |
+| `EXTERNAL_CONVICTION_VIBE_MIN_BARS` | `30` | Minimum price bars required for analysis. |
+| `EXTERNAL_CONVICTION_VIBE_HV_WINDOW` | `20` | Rolling HV calculation window. |
+| `EXTERNAL_CONVICTION_VIBE_HV_LOOKBACK` | `120` | HV percentile lookback bars. |
+| `EXTERNAL_CONVICTION_VIBE_SPREAD_PROXY` | `0.02` | Synthetic H/L spread for ADX on probability series. |
 
 Two shadow-only service variants are available under the `external_conviction`
 compose profile:
@@ -545,6 +556,15 @@ compose profile:
 - `external-conviction-aggregator`: `agent=external_conviction_aggregator`,
   `provider=aggregator`, output `data/external_convictions_aggregator.jsonl`.
   Weighted consensus from multiple sub-providers. 512MB / 0.50 CPU.
+- `external-conviction-technical`: `agent=external_conviction_technical`,
+  `provider=technical_signal`, output `data/external_convictions_technical.jsonl`.
+  EMA crossover + RSI + Bollinger Bands on CLOB probability history.
+  Polls every 2h. Skips markets near resolution (<24h) or extreme prices.
+  Available under both `external_conviction` and `vibe` compose profiles.
+- `external-conviction-crypto-deriv`: `agent=external_conviction_crypto_deriv`,
+  `provider=crypto_derivatives`, output `data/external_convictions_crypto_deriv.jsonl`.
+  OKX/Binance funding rate regime classification. Crypto markets only.
+  Available under both `external_conviction` and `vibe` compose profiles.
 
 ## 8. LLM prompt contract
 

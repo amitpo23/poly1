@@ -484,6 +484,7 @@ class MarketBrain:
         spread_pct: Optional[float] = None,
         hours_to_close: Optional[float] = None,
         external_context: str = "",
+        vibe_signals: Optional[dict] = None,
     ) -> BrainDecision:
         """Pre-LLM gate for general binary markets (sports, elections, events).
 
@@ -539,6 +540,14 @@ class MarketBrain:
         if external_context:
             score += 0.10
             features["external_context_preview"] = external_context[:100]
+
+        # Vibe analysis bonus: technical indicators on probability series.
+        if vibe_signals:
+            composite_conf = float(vibe_signals.get("confidence", 0))
+            if composite_conf > 0:
+                score += min(0.15, composite_conf * 0.20)
+                features["vibe_confidence"] = round(composite_conf, 4)
+                features["vibe_direction"] = vibe_signals.get("direction", "")
 
         score = max(0.0, min(1.0, score))
         features["score"] = round(score, 4)
