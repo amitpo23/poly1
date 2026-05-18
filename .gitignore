@@ -29,3 +29,19 @@ archive.zip
 local_db*
 .claude/
 data/.state_watcher_snapshot.json
+
+# Screenshots (browser automation artifacts)
+*.png
+
+# Env backup
+.env.save
+.env.bak
+
+# Third-party tool dirs
+.openclaw/
+.playwright-mcp/
+.superpowers/
+
+# Local memory (per-session, not project docs)
+memory/
+skills/
