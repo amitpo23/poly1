@@ -53,6 +53,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from agents.application.trade_log import WALLET_FOLLOW_OPEN, TradeLog
+from agents.application.tavily import tavily_headlines
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +394,18 @@ class WalletFollowEngine:
                 )
                 self._mark_signal(signal_id, "skipped")
                 continue
+
+            # Tavily external context — log fresh headlines before following
+            # the whale so the reasoning is auditable in logs.
+            # Fails open: missing key or network error → no skip.
+            market_question = str(mkt.get("question", "")) if mkt else ""
+            if market_question:
+                tavily_ctx = tavily_headlines(market_question, max_results=3)
+                if tavily_ctx:
+                    logger.info(
+                        "wallet_follow: Tavily context for %s: %s",
+                        market_id, tavily_ctx[:200],
+                    )
 
             from agents.utils.objects import TradeRecommendation
 

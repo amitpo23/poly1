@@ -8,6 +8,7 @@ from typing import Optional
 
 from agents.application.executor import Executor as Agent
 from agents.application.risk_gate import RiskGate
+from agents.application.tavily import tavily_headlines
 from agents.application.trade_log import (
     FAILED,
     FILLED,
@@ -200,20 +201,58 @@ class Trader:
         logger.info("cycle %s: done, placed=%d", cycle_id, placed)
 
     def _rank_markets(self, filtered_markets) -> list:
-        # Chroma similarity_search_with_score returns LOWER score = MORE relevant
-        # (cosine distance), so we sort ASCENDING by score. Within equal score,
-        # prefer wider spread (more market-making edge) by sorting ASCENDING on
-        # negative spread (i.e. larger spread comes first).
+        """Rank markets for evaluation.
+
+        Sorting key (ascending = better):
+        1. Chroma semantic score (lower distance = more relevant).
+        2. Short-term bonus: subtract 0.05 per each full week remaining if
+           the market resolves within 7 days — prefers quick-turnaround markets
+           aligned with the psychological-bias exploitation strategy.
+        3. Liquidity bonus: subtract 0.01 per $10k of liquidity (high-liquidity
+           markets are easier to enter and exit cleanly).
+        4. Wide spread (more market-making edge) as a final tiebreaker.
+        """
+        _now = datetime.now(timezone.utc)
+
         def key(item):
             doc = item[0].dict()
             metadata = doc.get("metadata", {})
             spread = metadata.get("spread")
+            liquidity = metadata.get("liquidity")
+            end_date_raw = metadata.get("end") or metadata.get("end_date") or ""
             try:
                 spread_val = float(spread) if spread is not None else 0.0
             except (TypeError, ValueError):
                 spread_val = 0.0
+            try:
+                liquidity_val = float(liquidity) if liquidity is not None else 0.0
+            except (TypeError, ValueError):
+                liquidity_val = 0.0
             chroma_score = float(item[1]) if len(item) > 1 else 0.0
-            return (chroma_score, -spread_val)
+
+            # Short-term bonus: prefer markets resolving in ≤7 days.
+            short_term_bonus = 0.0
+            if end_date_raw:
+                try:
+                    end_dt = datetime.fromisoformat(
+                        str(end_date_raw).replace("Z", "+00:00")
+                    )
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.replace(tzinfo=timezone.utc)
+                    days_left = (end_dt - _now).total_seconds() / 86400.0
+                    if 0 < days_left <= 7:
+                        # Stronger bonus for nearer resolution.
+                        short_term_bonus = -0.10 * (1.0 - days_left / 7.0)
+                except Exception:
+                    pass
+
+            # Liquidity bonus: up to -0.05 for markets with $50k+.
+            liquidity_bonus = -min(0.05, liquidity_val / 1_000_000.0)
+
+            return (
+                chroma_score + short_term_bonus + liquidity_bonus,
+                -spread_val,
+            )
 
         return sorted(filtered_markets, key=key)
 
@@ -305,8 +344,11 @@ class Trader:
             return False
 
         try:
-            # Enrich with recent news signals for this market
-            news_context = self._build_news_context(market_id)
+            # Enrich with recent news signals + Tavily fallback for this market
+            market_question = str(
+                market[0].dict().get("metadata", {}).get("question", "")
+            )
+            news_context = self._build_news_context(market_id, question=market_question)
             best_trade = self.agent.source_best_trade(market, news_context=news_context)
             recommendation = self.agent.parse_trade_recommendation(best_trade)
         except Exception as e:
@@ -520,23 +562,39 @@ class Trader:
         logger.info("cycle %s: market %s TRADED %s", cycle_id, market_id, result)
         return True
 
-    def _build_news_context(self, market_id: str) -> str:
-        """Return a brief news summary for this market from the news_signals table."""
+    def _build_news_context(self, market_id: str, question: str = "") -> str:
+        """Return a brief news summary from DB signals, with Tavily fallback.
+
+        Priority:
+        1. Recent DB news_signals (fast, free, always tried first).
+        2. Tavily live search when DB has no signals and a question is provided.
+           This enriches the LLM for markets that haven't triggered news_signal
+           yet — e.g. sports, elections, or any quiet market where external
+           probability data may contradict the crowd price.
+        """
         try:
             rows = self.trade_log.market_news_signals(market_id, hours=48, limit=5)
-            if not rows:
-                return ""
-            parts = []
-            for r in rows:
-                direction = r.get("direction", "")
-                headline = r.get("headline", "")
-                mat = r.get("materiality", "")
-                if headline:
-                    parts.append(f"[{direction.upper()}] {headline} (materiality={mat})")
-            return "; ".join(parts)
+            if rows:
+                parts = []
+                for r in rows:
+                    direction = r.get("direction", "")
+                    headline = r.get("headline", "")
+                    mat = r.get("materiality", "")
+                    if headline:
+                        parts.append(f"[{direction.upper()}] {headline} (materiality={mat})")
+                return "; ".join(parts)
         except Exception:
-            logger.exception("_build_news_context failed for %s (non-fatal)", market_id)
-            return ""
+            logger.exception("_build_news_context DB query failed for %s (non-fatal)", market_id)
+
+        # No DB signals — fall back to live Tavily search for fresh context.
+        if question:
+            tavily_ctx = tavily_headlines(question, max_results=4)
+            if tavily_ctx:
+                logger.debug(
+                    "_build_news_context: Tavily enrichment for market %s", market_id
+                )
+                return "[EXTERNAL NEWS]\n" + tavily_ctx
+        return ""
 
     def _conviction_blocks_entry(self, cycle_id: str, market_id: str) -> bool:
         """Return True and log if recent external_conviction signals disapprove.

@@ -35,6 +35,7 @@ from typing import Optional
 
 from agents.application.trade_log import TradeLog
 from agents.application.execution_safety import exitable_size_check
+from agents.application.tavily import tavily_headlines
 
 
 logger = logging.getLogger(__name__)
@@ -369,6 +370,19 @@ class BtcDailyEngine:
                 )
                 return None
 
+        # Tavily fundamental filter: if breaking BTC-specific news is
+        # driving this move (ETF news, exchange hack, regulation), the
+        # move is NOT random noise — fading it is dangerous. Check Tavily
+        # and log the context before entering. We log but don't block so
+        # the operator can see the context in logs.
+        market_question = market_doc.get("question", "")
+        if market_question:
+            btc_ctx = tavily_headlines(market_question + " Bitcoin", max_results=3)
+            if btc_ctx:
+                logger.info(
+                    "btc_daily: Tavily context before entry — %s", btc_ctx[:200]
+                )
+
         from agents.utils.objects import TradeRecommendation
         # Fix #4: use the actual candidate midpoint as the anchor price.
         # Using a hardcoded 0.5 caused all 4 live slippage rejections in
@@ -543,6 +557,7 @@ class BtcDailyEngine:
                 "market_id": str(m["id"]),
                 "token_ids": tokens,
                 "outcomes": outcomes,
+                "question": str(m.get("question", "")),
                 "doc": doc,
             }
             self._market_cache[slug] = entry
