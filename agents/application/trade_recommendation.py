@@ -17,9 +17,9 @@ def parse_trade_recommendation(best_trade: str) -> TradeRecommendation:
 
     if not 0 <= price <= 1:
         raise ValueError(f"Trade price must be between 0 and 1. Got {price}.")
-    if not 0 < size_fraction <= 1:
+    if not 0 <= size_fraction <= 1:
         raise ValueError(
-            f"Trade size_fraction must be greater than 0 and at most 1. Got {size_fraction}."
+            f"Trade size_fraction must be between 0 and 1. Got {size_fraction}."
         )
     if side not in {"BUY", "SELL"}:
         raise ValueError(f"Trade side must be BUY or SELL. Got {side}.")

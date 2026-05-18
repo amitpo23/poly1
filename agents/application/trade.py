@@ -180,7 +180,17 @@ class Trader:
             "cycle %s: %d markets after filter", cycle_id, len(filtered_markets)
         )
 
-        ranked = self._rank_markets(filtered_markets)[: self.top_n]
+        ranked_all = self._rank_markets(filtered_markets)
+        # Filter out markets we already hold BEFORE applying TOP_N cutoff,
+        # so held positions don't consume evaluation slots.
+        ranked = []
+        for m in ranked_all:
+            if len(ranked) >= self.top_n:
+                break
+            mid = m.get("market_id") or m.get("id", "")
+            if self.trade_log.has_filled_position_for_market(mid):
+                continue
+            ranked.append(m)
         logger.info("cycle %s: evaluating top %d ranked", cycle_id, len(ranked))
 
         placed = 0
