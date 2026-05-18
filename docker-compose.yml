@@ -97,6 +97,8 @@ services:
       - deploy/.env.runtime
     environment:
       TZ: UTC
+      RESOLUTION_SYNC_ENABLED: "false"
+      MAINTAIN_LLM_EXIT_INTERVAL_SEC: "86400"
       RUNTIME_AGENT: position_manager
     command: ["python", "-m", "agents.application.position_manager"]
     volumes:
@@ -492,6 +494,10 @@ services:
       EXTERNAL_CONVICTION_STRATEGY_NAME: public_news_event_probability_scalping
       EXTERNAL_CONVICTION_PROVIDER: public_news
       EXTERNAL_CONVICTION_POLL_SEC: "10800"
+      EXTERNAL_CONVICTION_MIN_CONFIDENCE: "0.72"
+      EXTERNAL_CONVICTION_POSITION_SIZE_USDC: "3.00"
+      EXTERNAL_CONVICTION_MAX_LIVE_TRADES_PER_CYCLE: "1"
+      EXTERNAL_CONVICTION_MAX_OPEN_POSITIONS: "1"
       EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_api.jsonl
       EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_api_heartbeat
     command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
@@ -660,6 +666,35 @@ services:
     cpus: "0.50"
     stop_grace_period: 30s
     profiles: ["external_conviction"]
+
+  market_scanner:
+    build: .
+    container_name: poly1-market-scanner
+    depends_on:
+      - trader
+    env_file: .env
+    environment:
+      RUNTIME_AGENT: market_scanner
+    command: ["python", "-m", "agents.application.market_scanner"]
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/scanner_heartbeat') < 600\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.30"
+    stop_grace_period: 30s
+    profiles: ["scanner"]
 
   grafana:
     image: grafana/grafana:10.4.2
