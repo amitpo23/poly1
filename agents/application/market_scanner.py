@@ -324,7 +324,8 @@ class MarketScanner:
                 "ascending": "false",
             })
             url = f"{GAMMA_MARKETS_URL}?{params}"
-            with urllib.request.urlopen(url, timeout=12) as resp:
+            req = urllib.request.Request(url, headers={"User-Agent": "poly1-scanner/1.0"})
+            with urllib.request.urlopen(req, timeout=12) as resp:
                 return json.loads(resp.read())
         except Exception as exc:
             logger.warning("scanner: Gamma fetch failed: %s", exc)
