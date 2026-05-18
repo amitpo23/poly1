@@ -44,6 +44,7 @@ class RiskGate:
         starting_balance_usdc: Optional[float] = None,
         max_daily_loss_pct: Optional[float] = None,
         max_trades_per_hour: Optional[int] = None,
+        max_open_positions: Optional[int] = None,
         min_usdc_floor: Optional[float] = None,
         max_daily_token_usd: Optional[float] = None,
         kill_switch_file: Optional[str] = None,
@@ -73,6 +74,11 @@ class RiskGate:
             max_trades_per_hour
             if max_trades_per_hour is not None
             else _env_int("MAX_TRADES_PER_HOUR", 4)
+        )
+        self.max_open_positions = (
+            max_open_positions
+            if max_open_positions is not None
+            else _env_int("MAX_OPEN_POSITIONS", 10)
         )
         self.min_usdc_floor = (
             min_usdc_floor
@@ -281,6 +287,13 @@ class RiskGate:
             return (
                 f"submitted trades in last hour {recent} >= "
                 f"max_trades_per_hour {self.max_trades_per_hour}"
+            )
+
+        open_positions = len(self.trade_log.filled_positions())
+        if open_positions >= self.max_open_positions:
+            return (
+                f"open positions {open_positions} >= "
+                f"max_open_positions {self.max_open_positions}"
             )
 
         if self.daily_token_usd() >= self.max_daily_token_usd:
