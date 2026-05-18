@@ -52,6 +52,8 @@ def _fake_candidate(
     cheap_side="yes",
     cheap_price=0.10,
     hours_left=5.0,
+    straddle_viable=False,
+    single_viable=True,
 ):
     from datetime import datetime, timezone, timedelta
     return {
@@ -61,6 +63,9 @@ def _fake_candidate(
         "no_price": no_price,
         "cheap_side": cheap_side,
         "cheap_price": cheap_price,
+        "price_sum": yes_price + no_price,
+        "straddle_viable": straddle_viable,
+        "single_viable": single_viable,
         "hours_left": hours_left,
         "end_dt": datetime.now(timezone.utc) + timedelta(hours=hours_left),
         "outcomes": ["Yes", "No"],
@@ -161,7 +166,7 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
     def test_shadow_writes_nr_open(self):
         engine, log = self._engine()
         engine.scan_candidates = lambda: [_fake_candidate()]
-        engine._tavily_confidence = lambda q, s: 0.80
+        engine._llm_direction = lambda q, yp, np, ed: {"direction": "yes", "confidence": 0.80, "reasoning": "test"}
         n = engine.maybe_enter_all()
         self.assertEqual(n, 1)
         rows = log.recent(limit=5)
@@ -170,7 +175,7 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
     def test_low_confidence_skipped(self):
         engine, log = self._engine()
         engine.scan_candidates = lambda: [_fake_candidate()]
-        engine._tavily_confidence = lambda q, s: 0.30  # below 0.60 threshold
+        engine._llm_direction = lambda q, yp, np, ed: {"direction": "yes", "confidence": 0.30, "reasoning": "test"}  # below threshold
         n = engine.maybe_enter_all()
         self.assertEqual(n, 0)
 
@@ -178,7 +183,7 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
         engine, log = self._engine()
         engine.risk_gate.ok.return_value = False
         engine.scan_candidates = lambda: [_fake_candidate()]
-        engine._tavily_confidence = lambda q, s: 0.90
+        engine._llm_direction = lambda q, yp, np, ed: {"direction": "yes", "confidence": 0.90, "reasoning": "test"}
         n = engine.maybe_enter_all()
         self.assertEqual(n, 0)
 
@@ -190,7 +195,7 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
             side="BUY", price=0.10, size_usdc=2.5, confidence=0.8,
         )
         engine.scan_candidates = lambda: [_fake_candidate(market_id="MKT1")]
-        engine._tavily_confidence = lambda q, s: 0.90
+        engine._llm_direction = lambda q, yp, np, ed: {"direction": "yes", "confidence": 0.90, "reasoning": "test"}
         n = engine.maybe_enter_all()
         self.assertEqual(n, 0)
 
@@ -206,14 +211,14 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
             _fake_candidate(market_id="MKT1"),
             _fake_candidate(market_id="MKT2"),
         ]
-        engine._tavily_confidence = lambda q, s: 0.90
+        engine._llm_direction = lambda q, yp, np, ed: {"direction": "yes", "confidence": 0.90, "reasoning": "test"}
         n = engine.maybe_enter_all()
         self.assertEqual(n, 0)
 
     def test_buy_side_for_cheap_yes(self):
         engine, log = self._engine()
         engine.scan_candidates = lambda: [_fake_candidate(cheap_side="yes")]
-        engine._tavily_confidence = lambda q, s: 0.80
+        engine._llm_direction = lambda q, yp, np, ed: {"direction": "yes", "confidence": 0.80, "reasoning": "test"}
         engine.maybe_enter_all()
         rows = log.recent(limit=5)
         self.assertEqual(rows[0]["side"], "BUY")
@@ -223,7 +228,7 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
         engine.scan_candidates = lambda: [
             _fake_candidate(cheap_side="no", yes_price=0.88, no_price=0.12)
         ]
-        engine._tavily_confidence = lambda q, s: 0.80
+        engine._llm_direction = lambda q, yp, np, ed: {"direction": "no", "confidence": 0.80, "reasoning": "test"}
         engine.maybe_enter_all()
         rows = log.recent(limit=5)
         self.assertEqual(rows[0]["side"], "SELL")
@@ -231,7 +236,7 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
     def test_live_execute_calls_polymarket(self):
         engine, log = self._engine(execute=True)
         engine.scan_candidates = lambda: [_fake_candidate()]
-        engine._tavily_confidence = lambda q, s: 0.80
+        engine._llm_direction = lambda q, yp, np, ed: {"direction": "yes", "confidence": 0.80, "reasoning": "test"}
         engine.maybe_enter_all()
         engine.polymarket.execute_market_order.assert_called_once()
         rows = log.recent(limit=5)

@@ -252,11 +252,16 @@ class NearResolutionEngine:
             if not straddle_viable and not single_viable:
                 continue
 
+            cheap_side = "yes" if yes_price <= no_price else "no"
+            cheap_price = yes_price if cheap_side == "yes" else no_price
+
             candidates.append({
                 "market_id": str(m.get("id", "")),
                 "question": m.get("question", ""),
                 "yes_price": yes_price,
                 "no_price": no_price,
+                "cheap_side": cheap_side,
+                "cheap_price": cheap_price,
                 "price_sum": price_sum,
                 "straddle_viable": straddle_viable,
                 "single_viable": single_viable,

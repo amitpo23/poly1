@@ -88,6 +88,8 @@ class TestEntryTrigger(_TmpDB, unittest.TestCase):
             cfg=cfg,
             execute=execute,
         )
+        # Stub get_midpoint so the candidate-price pre-check doesn't block.
+        polymarket.client.get_midpoint.return_value = {"mid": "0.50"}
         # Stub _resolve_today_market to avoid a network call.
         engine._resolve_today_market = lambda: {
             "market_id": "M1",
