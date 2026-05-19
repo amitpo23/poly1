@@ -127,6 +127,9 @@ class TestWalletWatcherEngine(_TmpDB, unittest.TestCase):
             yes_price=0.28,
             wallet_entry_price=0.25,
             wallet_size_usdc=10.0,
+            wallet_winrate_external=0.72,
+            wallet_total_trades_external=120,
+            wallet_rank=7,
         )
         self.assertTrue(result)
         self.assertEqual(self._count_signals(), 1)
@@ -134,6 +137,9 @@ class TestWalletWatcherEngine(_TmpDB, unittest.TestCase):
         self.assertEqual(sigs[0]["direction"], "bullish")
         self.assertEqual(sigs[0]["wallet_address"], "0xABCD")
         self.assertEqual(sigs[0]["status"], "fresh")
+        self.assertAlmostEqual(sigs[0]["wallet_winrate_external"], 0.72)
+        self.assertEqual(sigs[0]["wallet_total_trades_external"], 120)
+        self.assertEqual(sigs[0]["wallet_rank"], 7)
 
     def test_duplicate_signal_suppressed(self):
         ts = datetime.now(timezone.utc).isoformat()
@@ -186,6 +192,31 @@ class TestWalletWatcherEngine(_TmpDB, unittest.TestCase):
         # 0xNEW1 should be added (profit >= 200), 0xNEW2 should not
         self.assertIn("0xnew1", self.engine._watched)
         self.assertNotIn("0xnew2", self.engine._watched)
+        self.assertIsNone(self.engine._wallet_stats["0xnew1"]["winrate_external"])
+
+    def test_scout_caches_external_wallet_winrate_when_available(self):
+        leaderboard = [
+            {
+                "proxyWallet": "0xWR",
+                "profit": 500.0,
+                "tradesCount": 120,
+                "winRate": 72.0,
+                "rank": "3",
+                "vol": 10000.0,
+            },
+        ]
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(leaderboard).encode()
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            mock_urlopen.return_value = mock_resp
+            self.engine._scout_leaderboard()
+
+        stats = self.engine._wallet_stats["0xwr"]
+        self.assertAlmostEqual(stats["winrate_external"], 0.72)
+        self.assertEqual(stats["total_trades_external"], 120)
+        self.assertEqual(stats["rank"], 3)
 
     def test_scout_min_trades_not_enforced(self):
         # The Polymarket v1 leaderboard API no longer returns tradesCount, so

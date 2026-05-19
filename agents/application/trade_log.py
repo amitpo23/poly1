@@ -129,6 +129,9 @@ CREATE TABLE IF NOT EXISTS wallet_signals (
     yes_price REAL,
     wallet_entry_price REAL,
     wallet_size_usdc REAL,
+    wallet_winrate_external REAL,
+    wallet_total_trades_external INTEGER,
+    wallet_rank INTEGER,
     status TEXT NOT NULL DEFAULT 'fresh'
 );
 CREATE INDEX IF NOT EXISTS idx_wallet_signals_ts ON wallet_signals(ts);
@@ -335,6 +338,9 @@ class TradeLog:
                 "ALTER TABLE market_universe ADD COLUMN eligible INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE market_universe ADD COLUMN top_rank INTEGER DEFAULT NULL",
                 "ALTER TABLE brain_decisions ADD COLUMN signal_source TEXT",
+                "ALTER TABLE wallet_signals ADD COLUMN wallet_winrate_external REAL",
+                "ALTER TABLE wallet_signals ADD COLUMN wallet_total_trades_external INTEGER",
+                "ALTER TABLE wallet_signals ADD COLUMN wallet_rank INTEGER",
             ]:
                 try:
                     conn.execute(_migration)

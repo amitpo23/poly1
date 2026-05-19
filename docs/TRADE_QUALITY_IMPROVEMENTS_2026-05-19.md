@@ -43,6 +43,25 @@ This means a high unproven score is not an anchor.  A wallet/provider can lead
 alone only after its own `signal_source` has enough resolved outcomes in
 `brain_decisions`.
 
+There is one explicit exception: externally verified wallet performance.  If a
+wallet signal carries an external win-rate, trade count, and profit from a
+trusted Polymarket/on-chain analytics source, it can qualify as a solo expert
+before poly1 has local history for that exact wallet.
+
+Default external-wallet proof:
+
+```text
+EXPERT_WALLET_EXTERNAL_MIN_WINRATE="0.70"
+EXPERT_WALLET_EXTERNAL_MIN_TRADES="50"
+EXPERT_WALLET_EXTERNAL_MIN_PROFIT_USDC="100"
+```
+
+Important operational nuance: the public Polymarket leaderboard currently
+provides PnL/volume/rank but may not provide win-rate. PnL alone is stored for
+auditing, but it is not enough for solo authority.  A real solo wallet trigger
+requires win-rate + sample size, either from our own `brain_decisions` history
+or from an external verified wallet analytics source.
+
 `wallet_follow` now tags decisions as:
 
 ```text

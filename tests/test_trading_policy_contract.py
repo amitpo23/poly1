@@ -102,6 +102,8 @@ class TestTradingPolicyContract(unittest.TestCase):
         self.assertIn('EXPERT_SOLO_MIN_WINRATE="0.65"', env_text)
         self.assertIn('EXPERT_SOLO_MIN_WILSON="0.58"', env_text)
         self.assertIn('EXPERT_SOLO_MIN_SAMPLES="30"', env_text)
+        self.assertIn('EXPERT_WALLET_EXTERNAL_MIN_WINRATE="0.70"', env_text)
+        self.assertIn('EXPERT_WALLET_EXTERNAL_MIN_TRADES="50"', env_text)
         self.assertIn('MAINTAIN_PARTIAL_TAKE_PROFIT_ENABLED="true"', env_text)
         self.assertIn('MAINTAIN_PARTIAL_TAKE_PROFIT_PCT="0.10"', env_text)
         self.assertIn('MAINTAIN_PARTIAL_TAKE_PROFIT_FRACTION="0.50"', env_text)

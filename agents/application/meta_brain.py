@@ -502,6 +502,8 @@ class EvidenceRouter:
 
     def _is_solo_eligible(self, claim: EvidenceClaim) -> bool:
         min_prob = _env_float("EXPERT_SOLO_MIN_PROB", 0.65)
+        if claim.source_type == "wallet" and self._has_external_wallet_proof(claim):
+            return claim.probability >= min_prob
         min_wr = _env_float("EXPERT_SOLO_MIN_WINRATE", 0.65)
         min_wilson = _env_float("EXPERT_SOLO_MIN_WILSON", 0.58)
         min_samples = _env_int("EXPERT_SOLO_MIN_SAMPLES", 30)
@@ -518,6 +520,31 @@ class EvidenceRouter:
         if rel.wilson_lower is None or rel.wilson_lower < min_wilson:
             return False
         return True
+
+    def _has_external_wallet_proof(self, claim: EvidenceClaim) -> bool:
+        raw = claim.raw or {}
+        wr = raw.get("wallet_winrate_external")
+        trades = raw.get("wallet_total_trades_external")
+        profit = raw.get("wallet_profit_usdc")
+        try:
+            wr = float(wr)
+            if wr > 1.0:
+                wr = wr / 100.0
+        except (TypeError, ValueError):
+            return False
+        try:
+            trades = int(trades or 0)
+        except (TypeError, ValueError):
+            trades = 0
+        try:
+            profit = float(profit or 0.0)
+        except (TypeError, ValueError):
+            profit = 0.0
+        return (
+            wr >= _env_float("EXPERT_WALLET_EXTERNAL_MIN_WINRATE", 0.70)
+            and trades >= _env_int("EXPERT_WALLET_EXTERNAL_MIN_TRADES", 50)
+            and profit >= _env_float("EXPERT_WALLET_EXTERNAL_MIN_PROFIT_USDC", 0.0)
+        )
 
     def _is_conflict(self, claim: EvidenceClaim) -> bool:
         return (
@@ -862,6 +889,9 @@ class WhaleSentimentSignal:
     total_size_usdc: float     # total USDC size of their recorded positions
     avg_profit_usdc: float     # average historical profit per contributing wallet
     wallets: list = field(default_factory=list)  # contributing wallet addresses
+    best_wallet_winrate_external: Optional[float] = None
+    best_wallet_trades_external: int = 0
+    best_wallet_rank: Optional[int] = None
 
 
 class WhaleSentimentReader:
@@ -917,7 +947,8 @@ class WhaleSentimentReader:
                 rows = conn.execute(
                     """
                     SELECT direction, wallet_profit_usdc, wallet_size_usdc,
-                           wallet_address
+                           wallet_address, wallet_winrate_external,
+                           wallet_total_trades_external, wallet_rank
                     FROM wallet_signals
                     WHERE market_id = ?
                       AND ts >= ?
@@ -941,6 +972,9 @@ class WhaleSentimentReader:
         total_size = 0.0
         profits: list = []
         wallets: list = []
+        best_external_winrate = None
+        best_external_trades = 0
+        best_rank = None
         for row in rows:
             wallet = row["wallet_address"]
             if wallet in seen:
@@ -956,6 +990,24 @@ class WhaleSentimentReader:
                 bear_weight += weight
             total_size += size
             profits.append(profit)
+            try:
+                ext_wr = row["wallet_winrate_external"]
+            except (KeyError, IndexError):
+                ext_wr = None
+            if ext_wr not in (None, ""):
+                try:
+                    ext_wr = float(ext_wr)
+                    if ext_wr > 1.0:
+                        ext_wr = ext_wr / 100.0
+                    trades = int(row["wallet_total_trades_external"] or 0)
+                    if best_external_winrate is None or (
+                        ext_wr, trades
+                    ) > (best_external_winrate, best_external_trades):
+                        best_external_winrate = ext_wr
+                        best_external_trades = trades
+                        best_rank = row["wallet_rank"]
+                except (TypeError, ValueError):
+                    pass
 
         total_weight = bull_weight + bear_weight
         if total_weight == 0:
@@ -978,6 +1030,9 @@ class WhaleSentimentReader:
             total_size_usdc=round(total_size, 2),
             avg_profit_usdc=round(avg_profit, 2),
             wallets=wallets,
+            best_wallet_winrate_external=best_external_winrate,
+            best_wallet_trades_external=best_external_trades,
+            best_wallet_rank=best_rank,
         )
 
 
@@ -1829,6 +1884,10 @@ class MetaBrain:
                     reliability=whale_reliability if whale_reliability.sample_size else None,
                     raw={
                         "wallets": getattr(whale, "wallets", []),
+                        "wallet_winrate_external": whale.best_wallet_winrate_external,
+                        "wallet_total_trades_external": whale.best_wallet_trades_external,
+                        "wallet_rank": whale.best_wallet_rank,
+                        "wallet_profit_usdc": whale.avg_profit_usdc,
                         "avg_profit_usdc": whale.avg_profit_usdc,
                         "n_whales": whale.n_whales,
                     },

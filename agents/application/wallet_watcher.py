@@ -200,10 +200,25 @@ class WalletWatcherEngine:
             addr = str(entry.get("proxyWallet") or entry.get("address") or "").lower()
             if not addr or not addr.startswith("0x"):
                 continue
-            # v1 API uses 'pnl' (profit & loss); trade count no longer available.
+            # v1 API uses 'pnl' (profit & loss).  Some providers expose win-rate
+            # and trade count too; store them if present so MetaBrain can treat
+            # the wallet as externally proven.
             profit = float(entry.get("pnl") or entry.get("profit") or entry.get("profitLoss") or 0.0)
             if profit < self.cfg.scout_min_profit_usdc:
                 continue
+            winrate = self._float_any(
+                entry,
+                "winRate", "winrate", "win_rate", "wr", "predictionRate",
+            )
+            if winrate is not None and winrate > 1.0:
+                winrate = winrate / 100.0
+            total_trades = self._int_any(
+                entry,
+                "tradesCount", "tradeCount", "totalTrades", "transactions",
+                "marketsTraded",
+            )
+            rank = self._int_any(entry, "rank")
+            volume = self._float_any(entry, "vol", "volume", "totalVolume")
             # scout_min_trades threshold is not enforced (field removed from v1 API).
             if addr not in self._watched:
                 self._watched.add(addr)
@@ -211,7 +226,11 @@ class WalletWatcherEngine:
             # Cache stats for later signal enrichment
             self._wallet_stats[addr] = {
                 "profit_usdc": profit,
-                "trades_30d": 0,  # not provided by v1 API
+                "trades_30d": total_trades or 0,
+                "winrate_external": winrate,
+                "total_trades_external": total_trades,
+                "rank": rank,
+                "volume_usdc": volume,
             }
 
         logger.info(
@@ -278,6 +297,9 @@ class WalletWatcherEngine:
             stats = self._wallet_stats.get(address.lower(), {})
             wallet_profit = float(stats.get("profit_usdc") or 0.0)
             wallet_trades = int(stats.get("trades_30d") or 0)
+            wallet_winrate_external = stats.get("winrate_external")
+            wallet_total_trades_external = stats.get("total_trades_external")
+            wallet_rank = stats.get("rank")
 
             # Fetch current yes_price from Gamma for signal enrichment.
             yes_price = self._fetch_yes_price(market_id)
@@ -294,6 +316,9 @@ class WalletWatcherEngine:
                 yes_price=yes_price,
                 wallet_entry_price=wallet_entry_price,
                 wallet_size_usdc=wallet_size_usdc,
+                wallet_winrate_external=wallet_winrate_external,
+                wallet_total_trades_external=wallet_total_trades_external,
+                wallet_rank=wallet_rank,
             ):
                 written += 1
 
@@ -334,6 +359,9 @@ class WalletWatcherEngine:
         yes_price: Optional[float],
         wallet_entry_price: float,
         wallet_size_usdc: float,
+        wallet_winrate_external: Optional[float] = None,
+        wallet_total_trades_external: Optional[int] = None,
+        wallet_rank: Optional[int] = None,
     ) -> bool:
         """Insert a wallet_signals row if no fresh duplicate exists.
         Returns True if a new row was written."""
@@ -354,8 +382,10 @@ class WalletWatcherEngine:
                 INSERT INTO wallet_signals
                   (ts, wallet_address, wallet_profit_usdc, wallet_trades_30d,
                    market_id, market_question, direction, token_id,
-                   yes_price, wallet_entry_price, wallet_size_usdc, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,'fresh')
+                   yes_price, wallet_entry_price, wallet_size_usdc,
+                   wallet_winrate_external, wallet_total_trades_external,
+                   wallet_rank, status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'fresh')
                 """,
                 (
                     ts,
@@ -369,6 +399,9 @@ class WalletWatcherEngine:
                     yes_price,
                     wallet_entry_price,
                     wallet_size_usdc,
+                    wallet_winrate_external,
+                    wallet_total_trades_external,
+                    wallet_rank,
                 ),
             )
         logger.info(
@@ -379,6 +412,30 @@ class WalletWatcherEngine:
             wallet_entry_price,
         )
         return True
+
+    @staticmethod
+    def _float_any(row: dict, *names: str) -> Optional[float]:
+        for name in names:
+            raw = row.get(name)
+            if raw in (None, ""):
+                continue
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _int_any(row: dict, *names: str) -> Optional[int]:
+        for name in names:
+            raw = row.get(name)
+            if raw in (None, ""):
+                continue
+            try:
+                return int(float(raw))
+            except (TypeError, ValueError):
+                continue
+        return None
 
 
 # ---------------------------------------------------------------------------

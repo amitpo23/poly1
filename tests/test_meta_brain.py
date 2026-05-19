@@ -684,6 +684,37 @@ class TestMetaBrain(unittest.TestCase):
         finally:
             os.unlink(db_path)
 
+    @patch.dict(os.environ, {
+        "EXPERT_SOLO_MIN_PROB": "0.65",
+        "EXPERT_WALLET_EXTERNAL_MIN_WINRATE": "0.70",
+        "EXPERT_WALLET_EXTERNAL_MIN_TRADES": "50",
+        "EXPERT_WALLET_EXTERNAL_MIN_PROFIT_USDC": "100",
+        "META_BRAIN_MIN_EDGE_PCT": "0.0",
+        "META_BRAIN_MIN_RAW_EV": "0.0",
+    })
+    def test_external_verified_wallet_can_lead_without_local_history(self):
+        mb = self._make_meta_brain(approved=True, score=0.55)
+        mb.whale_reader.query = lambda market_id, db: WhaleSentimentSignal(
+            direction="bullish",
+            confidence=1.0,
+            n_whales=1,
+            total_size_usdc=1000.0,
+            avg_profit_usdc=500.0,
+            wallets=["external"],
+            best_wallet_winrate_external=0.72,
+            best_wallet_trades_external=120,
+            best_wallet_rank=3,
+        )
+        decision = mb.synthesize(
+            market_id="m1",
+            question="External wallet lead?",
+            poly_prob=0.50,
+        )
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.features["evidence_route"]["mode"], "solo")
+        self.assertEqual(decision.features["evidence_route"]["leader"], "wallet:external")
+        self.assertEqual(decision.features["internal_prob_source"], "expert_solo:wallet:external")
+
     def test_summary_is_nonempty(self):
         mb = self._make_meta_brain(approved=True, score=0.65)
         decision = mb.synthesize(
