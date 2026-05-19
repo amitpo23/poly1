@@ -90,12 +90,14 @@ CREATE TABLE IF NOT EXISTS brain_decisions (
     features_json TEXT,
     action TEXT,
     outcome_status TEXT,
-    outcome_json TEXT
+    outcome_json TEXT,
+    signal_source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_ts ON brain_decisions(ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_agent_ts ON brain_decisions(agent, ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_market_ts ON brain_decisions(market_id, ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_reason_ts ON brain_decisions(reason, ts);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_signal_source_ts ON brain_decisions(signal_source, ts);
 
 CREATE TABLE IF NOT EXISTS decision_reflections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,6 +334,7 @@ class TradeLog:
                 "ALTER TABLE market_universe ADD COLUMN winrate_estimate REAL DEFAULT NULL",
                 "ALTER TABLE market_universe ADD COLUMN eligible INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE market_universe ADD COLUMN top_rank INTEGER DEFAULT NULL",
+                "ALTER TABLE brain_decisions ADD COLUMN signal_source TEXT",
             ]:
                 try:
                     conn.execute(_migration)
@@ -998,6 +1001,22 @@ class TradeLog:
             row = conn.execute(sql, params).fetchone()
             return row is not None and row[0] == "closed_dust"
 
+    def has_partial_take_profit_for_token(
+        self, token_id: str, after_id: Optional[int] = None
+    ) -> bool:
+        sql = (
+            "SELECT 1 FROM trades WHERE token_id = ? "
+            "AND status = 'closed_partial_take_profit' "
+        )
+        params: list = [str(token_id)]
+        if after_id is not None:
+            sql += "AND id > ? "
+            params.append(int(after_id))
+        sql += "LIMIT 1"
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+            return row is not None
+
     def count_close_failed_for_token(self, token_id: str) -> int:
         """Count close_failed rows for this token.
 
@@ -1406,13 +1425,14 @@ class TradeLog:
         asset: Optional[str] = None,
         features: Optional[dict] = None,
         action: Optional[str] = None,
+        signal_source: Optional[str] = None,
     ) -> int:
         features_json = json.dumps(features, default=str) if features is not None else None
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "INSERT INTO brain_decisions (ts, agent, strategy, decision_type, "
                 "market_id, token_id, approved, reason, score, market_type, asset, "
-                "features_json, action) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "features_json, action, signal_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     _now(),
                     agent,
@@ -1427,6 +1447,7 @@ class TradeLog:
                     asset,
                     features_json,
                     action,
+                    signal_source,
                 ),
             )
             return cur.lastrowid

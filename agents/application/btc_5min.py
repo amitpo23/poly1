@@ -38,6 +38,7 @@ from agents.application.btc_daily import CoinbasePriceFeed
 from agents.application.vibe_analysis import rsi, composite_signal, funding_rate_regime
 from agents.application.tavily import tavily_headlines
 from agents.application.execution_safety import exitable_size_check
+from agents.application.sizing import binary_raw_ev, kelly_size_usdc
 from agents.application.trading_policy import MAX_TRADES_PER_HOUR
 from agents.utils.notify import notify_trade, _safe_balance
 
@@ -527,6 +528,7 @@ class Btc5MinEngine:
             return False
         brain_probability = float(confidence)
         edge = brain_probability - entry_token_price
+        raw_ev = binary_raw_ev(brain_probability, entry_token_price)
         if edge < self.cfg.min_edge_pct:
             self.trade_log.insert_brain_decision(
                 agent="btc_5min",
@@ -547,6 +549,7 @@ class Btc5MinEngine:
                     "brain_probability": round(brain_probability, 4),
                     "market_entry_price": round(entry_token_price, 4),
                     "edge": round(edge, 4),
+                    "raw_ev": round(raw_ev, 4),
                     "min_edge_pct": self.cfg.min_edge_pct,
                     "consensus": consensus,
                 },
@@ -604,6 +607,7 @@ class Btc5MinEngine:
                         "brain_probability": round(brain_probability, 4),
                         "market_entry_price": round(entry_token_price, 4),
                         "edge": round(edge, 4),
+                        "raw_ev": round(raw_ev, 4),
                         "min_edge_pct": self.cfg.min_edge_pct,
                     },
                     action=side,
@@ -617,6 +621,19 @@ class Btc5MinEngine:
             except Exception:
                 logger.exception("btc_5min brain gate failed; blocking entry")
                 return False
+
+        balance_usdc = None
+        try:
+            balance_usdc = self.polymarket.get_usdc_balance()
+        except Exception:
+            pass
+        sizing = kelly_size_usdc(
+            balance_usdc=balance_usdc,
+            win_probability=brain_probability,
+            entry_price=entry_token_price,
+            fallback_amount_usdc=order_amount_usdc,
+        )
+        order_amount_usdc = min(fillable_usdc, sizing.amount_usdc or order_amount_usdc)
 
         # Dedupe: check if we already have a position on this market
         if self.trade_log.has_filled_position_for_market(market_id):

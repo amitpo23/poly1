@@ -9,7 +9,8 @@ from unittest.mock import MagicMock
 
 from agents.application.position_manager import (
     PositionManager, PositionManagerConfig, AggregatedPosition,
-    CLOSED_TP, CLOSED_SL, CLOSED_TIMEOUT, CLOSED_DUST, CLOSE_FAILED,
+    CLOSED_TP, CLOSED_PARTIAL_TP, CLOSED_SL, CLOSED_TIMEOUT, CLOSED_DUST,
+    CLOSE_FAILED,
 )
 from agents.application.trade_log import TradeLog, BTC_DAILY_OPEN, FILLED
 
@@ -57,6 +58,7 @@ class _TmpDB:
             poll_seconds=15,
             sell_slippage=0.02,
             execute=False,
+            partial_take_profit_enabled=False,
         )
         defaults.update(overrides)
         return PositionManagerConfig(**defaults)
@@ -281,6 +283,29 @@ class TestClosing(_TmpDB, unittest.TestCase):
         call = pm.sell_shares.call_args
         self.assertAlmostEqual(call.kwargs["limit_price"], 0.55 * 0.98, places=4)
         self.assertIn("order_type", call.kwargs)
+
+    def test_partial_take_profit_sells_half_and_keeps_position_open(self):
+        self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)  # 10 shares
+        pm = self._polymarket({"TOK": 0.56})  # +12%
+        mgr = PositionManager(
+            polymarket=pm,
+            trade_log=self.tl,
+            cfg=self._config(
+                execute=True,
+                partial_take_profit_enabled=True,
+                partial_take_profit_pct=0.10,
+                partial_take_profit_fraction=0.50,
+            ),
+        )
+        result = mgr.check_and_close_positions()
+        self.assertEqual(result["closed_tp"], 1)
+        call = pm.sell_shares.call_args
+        self.assertAlmostEqual(call.kwargs["shares"], 5.0, places=4)
+        rows = self.tl.recent(limit=5)
+        statuses = [r["status"] for r in rows]
+        self.assertIn(CLOSED_PARTIAL_TP, statuses)
+        positions = self.tl.filled_positions_with_id()
+        self.assertEqual(len(positions), 1)
 
     def test_already_closed_position_is_not_aggregated(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)

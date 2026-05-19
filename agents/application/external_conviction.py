@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
+from agents.application.sizing import kelly_size_usdc
 from agents.application.trade_log import TradeLog
 from agents.application.trading_policy import FAST_TAKE_PROFIT_PCT, STOP_LOSS_PCT
 from agents.utils.notify import notify_trade, _safe_balance
@@ -2101,6 +2102,7 @@ class ExternalConvictionAgent:
                     "external_evidence": verdict.evidence,
                 },
                 action=plan.action,
+                signal_source=plan.source,
             )
             if plan.status == "shadow_candidate":
                 traded = self._maybe_execute_live(plan, market)
@@ -2247,6 +2249,7 @@ class ExternalConvictionAgent:
                 asset=market.category or "",
                 features=getattr(decision, "features", {}),
                 action="BUY" if plan.side == "YES" else "SELL",
+                signal_source=",".join(getattr(decision, "signal_sources", []) or [plan.source]),
             )
             if not approved:
                 logger.info(
@@ -2274,8 +2277,24 @@ class ExternalConvictionAgent:
         from agents.application.execution_safety import exitable_size_check
 
         entry_price = market.yes_price if plan.side == "YES" else market.no_price
+        balance_usdc = None
+        try:
+            balance_usdc = self.polymarket.get_usdc_balance()
+        except Exception:
+            pass
+        win_probability = float(
+            getattr(decision, "features", {}).get("internal_probability")
+            or getattr(decision, "score", plan.confidence)
+        )
+        sizing = kelly_size_usdc(
+            balance_usdc=balance_usdc,
+            win_probability=win_probability,
+            entry_price=entry_price,
+            fallback_amount_usdc=self.cfg.position_size_usdc,
+        )
+        amount_usdc = sizing.amount_usdc or self.cfg.position_size_usdc
         safety = exitable_size_check(
-            amount_usdc=self.cfg.position_size_usdc,
+            amount_usdc=amount_usdc,
             entry_price=entry_price,
         )
         if not safety.ok:
@@ -2286,7 +2305,7 @@ class ExternalConvictionAgent:
                 token_id=plan.token_id,
                 side="BUY" if plan.side == "YES" else "SELL",
                 price=market.yes_price,
-                size_usdc=self.cfg.position_size_usdc,
+                size_usdc=amount_usdc,
                 confidence=plan.confidence,
                 error=f"external_conviction_{safety.reason}",
             )
@@ -2300,7 +2319,7 @@ class ExternalConvictionAgent:
             size_fraction=0.0,
             side="BUY" if plan.side == "YES" else "SELL",
             confidence=plan.confidence,
-            amount_usdc=self.cfg.position_size_usdc,
+            amount_usdc=amount_usdc,
             raw_response=plan.reason,
         )
         market_doc = _make_market_doc(market)
@@ -2311,7 +2330,7 @@ class ExternalConvictionAgent:
             token_id=plan.token_id,
             side=recommendation.side,
             price=market.yes_price,
-            size_usdc=self.cfg.position_size_usdc,
+            size_usdc=amount_usdc,
             confidence=plan.confidence,
         )
         try:

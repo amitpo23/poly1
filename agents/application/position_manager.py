@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 # Status constants written to the trades table
 CLOSED_TP = "closed_take_profit"
+CLOSED_PARTIAL_TP = "closed_partial_take_profit"
 CLOSED_SL = "closed_stop_loss"
 CLOSED_TIMEOUT = "closed_timeout"
 CLOSED_DUST = "closed_dust"
@@ -105,6 +106,11 @@ class PositionManagerConfig:
     # Pre-exit bid depth: defer non-stop-loss exits when bid-side depth
     # is below this threshold. stop_loss always attempts regardless.
     min_exit_bid_depth_usdc: float = 5.0
+    # First profit-taking step: sell part of the position at +10%, then keep
+    # the remainder available for the normal +25% cap / brain exit.
+    partial_take_profit_enabled: bool = True
+    partial_take_profit_pct: float = 0.10
+    partial_take_profit_fraction: float = 0.50
     # Heartbeat path for healthcheck.
     heartbeat_path: str = "/app/data/position_manager_heartbeat"
     # When False, log decisions but don't actually post SELL orders.
@@ -121,6 +127,11 @@ class PositionManagerConfig:
             min_exit_notional_usdc=_env_float("MAINTAIN_MIN_EXIT_NOTIONAL_USDC", 1.0),
             max_close_failures=_env_int("MAINTAIN_MAX_CLOSE_FAILURES", 3),
             min_exit_bid_depth_usdc=_env_float("MIN_EXIT_BID_DEPTH_USDC", 5.0),
+            partial_take_profit_enabled=os.getenv(
+                "MAINTAIN_PARTIAL_TAKE_PROFIT_ENABLED", "true"
+            ).lower() in {"1", "true", "yes", "on"},
+            partial_take_profit_pct=_env_float("MAINTAIN_PARTIAL_TAKE_PROFIT_PCT", 0.10),
+            partial_take_profit_fraction=_env_float("MAINTAIN_PARTIAL_TAKE_PROFIT_FRACTION", 0.50),
             heartbeat_path=os.getenv(
                 "MAINTAIN_HEARTBEAT_PATH",
                 "/app/data/position_manager_heartbeat",
@@ -712,6 +723,24 @@ class PositionManager:
                 "position_manager clamp: token=%s journal=%.4f on_chain=%.4f → selling %.4f",
                 pos.token_id[:18], pos.total_shares, on_chain, shares_to_sell,
             )
+        partial_exit = False
+        if (
+            reason == "take_profit"
+            and self.cfg.partial_take_profit_enabled
+            and self.cfg.partial_take_profit_fraction > 0
+            and not self.trade_log.has_partial_take_profit_for_token(pos.token_id)
+        ):
+            pnl_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
+            if pnl_pct >= self.cfg.partial_take_profit_pct:
+                fraction = max(0.0, min(1.0, self.cfg.partial_take_profit_fraction))
+                partial_shares = shares_to_sell * fraction
+                if partial_shares * sell_price >= self.cfg.min_exit_notional_usdc:
+                    shares_to_sell = partial_shares
+                    partial_exit = True
+                    logger.info(
+                        "position_manager partial TP: token=%s pnl=%.2f%% selling %.1f%%",
+                        pos.token_id[:18], pnl_pct * 100.0, fraction * 100.0,
+                    )
         if shares_to_sell <= 0:
             logger.warning(
                 "position_manager: token=%s has no on-chain balance, skipping",
@@ -739,7 +768,7 @@ class PositionManager:
             )
             return True
         status_value = {
-            "take_profit": CLOSED_TP,
+            "take_profit": CLOSED_PARTIAL_TP if partial_exit else CLOSED_TP,
             "stop_loss": CLOSED_SL,
             "timeout": CLOSED_TIMEOUT,
         }[reason]
@@ -809,14 +838,19 @@ class PositionManager:
                 actual_proceeds = float(taking_raw) if taking_raw else (shares_to_sell * sell_price)
             except (TypeError, ValueError):
                 actual_proceeds = shares_to_sell * sell_price
-            pnl_usdc_real = actual_proceeds - pos.total_cost_usdc
+            cost_basis_sold = pos.total_cost_usdc * (
+                shares_to_sell / max(pos.total_shares, 1e-9)
+            )
+            pnl_usdc_real = actual_proceeds - cost_basis_sold
             strategy_pnl_usdc = shares_to_sell * (sell_price - pos.avg_entry_price)
 
             response_with_pnl = dict(exit_result.response or {})
             response_with_pnl["pnl_usdc_real"] = round(pnl_usdc_real, 6)
             response_with_pnl["strategy_pnl_usdc"] = round(strategy_pnl_usdc, 6)
             response_with_pnl["cost_basis_usdc"] = round(pos.total_cost_usdc, 6)
+            response_with_pnl["cost_basis_sold_usdc"] = round(cost_basis_sold, 6)
             response_with_pnl["actual_proceeds_usdc"] = round(actual_proceeds, 6)
+            response_with_pnl["partial_exit"] = partial_exit
 
             self.trade_log.insert_terminal(
                 cycle_id=cycle_id,
@@ -828,7 +862,8 @@ class PositionManager:
                 size_usdc=shares_to_sell * sell_price,
                 response=response_with_pnl,
             )
-            self.trade_log.mark_position_closed(pos.token_id, status=status_value)
+            if not partial_exit:
+                self.trade_log.mark_position_closed(pos.token_id, status=status_value)
             # Straddle TP: remove stop-loss on the partner leg so it can
             # run to its own TP — its cost is already covered by this exit.
             if reason == "take_profit" and pos.straddle_id:

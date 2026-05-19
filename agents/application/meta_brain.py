@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from agents.application.sizing import binary_raw_ev
+
 logger = logging.getLogger(__name__)
 
 
@@ -615,6 +617,133 @@ class ProbVelocityDetector:
 
 
 # ---------------------------------------------------------------------------
+# WhaleSentimentReader
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WhaleSentimentSignal:
+    direction: Optional[str]   # "bullish" | "bearish" | None
+    confidence: float          # 0-1, dampened consensus (50/50 → 0, unanimous → 1)
+    n_whales: int              # unique profitable wallets contributing
+    total_size_usdc: float     # total USDC size of their recorded positions
+    avg_profit_usdc: float     # average historical profit per contributing wallet
+
+
+class WhaleSentimentReader:
+    """Reads the wallet_signals table written by WalletFollowEngine and weights
+    each signal by the wallet's historical profit (wallet_profit_usdc).
+
+    Only considers:
+    - Signals recorded within the last ``max_age_hours`` (default 24 h).
+    - Wallets with wallet_profit_usdc >= min_profit_usdc (default 50 USDC).
+    - One entry per wallet per market — most recent signal wins.
+
+    Confidence is dampened so that a 50/50 split → 0.0 and unanimous → 1.0:
+        confidence = (raw_fraction - 0.5) * 2.0
+
+    Results are cached for ``cache_ttl_sec`` seconds (default 120 s).
+    Fails silently — any DB error returns a neutral signal.
+    """
+
+    def __init__(
+        self,
+        max_age_hours: int = 24,
+        min_profit_usdc: float = 50.0,
+        cache_ttl_sec: int = 120,
+    ):
+        self.max_age_hours = max_age_hours
+        self.min_profit_usdc = min_profit_usdc
+        self.cache_ttl_sec = cache_ttl_sec
+        self._cache: dict = {}
+
+    def query(self, market_id: str, db_path: str) -> WhaleSentimentSignal:
+        """Return whale sentiment for one market from wallet_signals."""
+        key = (db_path, market_id)
+        now = time.time()
+        if key in self._cache:
+            ts, sig = self._cache[key]
+            if now - ts < self.cache_ttl_sec:
+                return sig
+        sig = self._compute(market_id, db_path)
+        self._cache[key] = (now, sig)
+        return sig
+
+    def _compute(self, market_id: str, db_path: str) -> WhaleSentimentSignal:
+        if not db_path or not os.path.isfile(db_path):
+            return WhaleSentimentSignal(None, 0.0, 0, 0.0, 0.0)
+        rows = []
+        try:
+            cutoff = time.strftime(
+                "%Y-%m-%dT%H:%M:%S",
+                time.gmtime(time.time() - self.max_age_hours * 3600),
+            )
+            with sqlite3.connect(db_path, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT direction, wallet_profit_usdc, wallet_size_usdc,
+                           wallet_address
+                    FROM wallet_signals
+                    WHERE market_id = ?
+                      AND ts >= ?
+                      AND wallet_profit_usdc >= ?
+                    ORDER BY ts DESC
+                    LIMIT 100
+                    """,
+                    (market_id, cutoff, self.min_profit_usdc),
+                ).fetchall()
+        except Exception as exc:
+            logger.debug("whale_sentiment: db error: %s", exc)
+            return WhaleSentimentSignal(None, 0.0, 0, 0.0, 0.0)
+
+        if not rows:
+            return WhaleSentimentSignal(None, 0.0, 0, 0.0, 0.0)
+
+        # One signal per wallet — most recent already first (ORDER BY ts DESC).
+        seen: set = set()
+        bull_weight = 0.0
+        bear_weight = 0.0
+        total_size = 0.0
+        profits: list = []
+        for row in rows:
+            wallet = row["wallet_address"]
+            if wallet in seen:
+                continue
+            seen.add(wallet)
+            profit = max(0.0, float(row["wallet_profit_usdc"] or 0))
+            size = float(row["wallet_size_usdc"] or 1.0)
+            weight = max(1.0, profit)  # weight by historical profit in USDC
+            if row["direction"] == "bullish":
+                bull_weight += weight
+            elif row["direction"] == "bearish":
+                bear_weight += weight
+            total_size += size
+            profits.append(profit)
+
+        total_weight = bull_weight + bear_weight
+        if total_weight == 0:
+            return WhaleSentimentSignal(None, 0.0, len(seen), total_size, 0.0)
+
+        if bull_weight >= bear_weight:
+            direction = "bullish"
+            raw_conf = bull_weight / total_weight
+        else:
+            direction = "bearish"
+            raw_conf = bear_weight / total_weight
+
+        # Dampen: map [0.5, 1.0] → [0.0, 1.0] so 50/50 → 0 and unanimous → 1.
+        confidence = round(min(1.0, max(0.0, (raw_conf - 0.5) * 2.0)), 3)
+        avg_profit = sum(profits) / len(profits) if profits else 0.0
+        return WhaleSentimentSignal(
+            direction=direction,
+            confidence=confidence,
+            n_whales=len(seen),
+            total_size_usdc=round(total_size, 2),
+            avg_profit_usdc=round(avg_profit, 2),
+        )
+
+
+# ---------------------------------------------------------------------------
 # MetaBrain
 # ---------------------------------------------------------------------------
 
@@ -658,6 +787,7 @@ class MetaBrain:
         self.winrate_advisor = WinRateAdvisor()
         self.conviction_reader = ConvictionJSONLReader(conviction_paths=conviction_paths)
         self.velocity_detector = ProbVelocityDetector(window_minutes=velocity_window_min)
+        self.whale_reader = WhaleSentimentReader()
 
     def synthesize_crypto_straddle(
         self,
@@ -1083,7 +1213,21 @@ class MetaBrain:
         except Exception as exc:
             logger.debug("meta_brain: velocity detector failed: %s", exc)
 
-        # 5. Weighted score. Missing win-rate data gets a neutral prior, so new
+        # 5. Whale wallet sentiment — profitable on-chain wallets that recently
+        #    traded this market (from wallet_signals table written by WalletFollow).
+        whale = WhaleSentimentSignal(None, 0.0, 0, 0.0, 0.0)
+        try:
+            whale = self.whale_reader.query(market_id, self.db_path)
+            features["whale_direction"] = whale.direction
+            features["whale_confidence"] = whale.confidence
+            features["whale_n"] = whale.n_whales
+            features["whale_size_usdc"] = whale.total_size_usdc
+            if whale.direction:
+                signal_sources.append(f"whale_wallet:{whale.direction}")
+        except Exception as exc:
+            logger.debug("meta_brain: whale reader failed: %s", exc)
+
+        # 6. Weighted score. Missing win-rate data gets a neutral prior, so new
         # strategies can trade, but proven history improves the final score.
         winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.52)
         min_winrate_samples = _env_int("META_BRAIN_MIN_WINRATE_SAMPLES", 5)
@@ -1093,7 +1237,12 @@ class MetaBrain:
             and win_stats.total_with_outcome >= min_winrate_samples
             else winrate_prior
         )
-        conviction_component = float(conviction.confidence or 0.0)
+        # Neutral when no external conviction data — unknown is not negative.
+        conviction_component = (
+            float(conviction.confidence)
+            if conviction.direction in ("yes", "no")
+            else 0.5
+        )
         velocity_component = 0.5
         if velocity.direction in ("rising", "falling"):
             velocity_component = 0.72
@@ -1106,13 +1255,20 @@ class MetaBrain:
         liquidity_component = 0.5
         if liquidity_usdc is not None:
             liquidity_component = min(1.0, max(0.0, float(liquidity_usdc) / 50_000.0))
+        # Whale component: bullish → [0.5, 1.0]; bearish → [0.0, 0.5]; no data → 0.5.
+        whale_component = 0.5
+        if whale.direction == "bullish":
+            whale_component = 0.5 + whale.confidence * 0.5
+        elif whale.direction == "bearish":
+            whale_component = 0.5 - whale.confidence * 0.5
 
         weights = {
-            "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.35),
-            "winrate": _env_float("META_BRAIN_WEIGHT_WINRATE", 0.25),
+            "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.30),
+            "winrate": _env_float("META_BRAIN_WEIGHT_WINRATE", 0.20),
             "conviction": _env_float("META_BRAIN_WEIGHT_CONVICTION", 0.15),
             "velocity": _env_float("META_BRAIN_WEIGHT_VELOCITY", 0.10),
             "cross_market": _env_float("META_BRAIN_WEIGHT_CROSS_MARKET", 0.10),
+            "whale": _env_float("META_BRAIN_WEIGHT_WHALE", 0.10),
             "liquidity": _env_float("META_BRAIN_WEIGHT_LIQUIDITY", 0.05),
         }
         weight_sum = sum(max(0.0, v) for v in weights.values()) or 1.0
@@ -1122,6 +1278,7 @@ class MetaBrain:
             + max(0.0, weights["conviction"]) * conviction_component
             + max(0.0, weights["velocity"]) * velocity_component
             + max(0.0, weights["cross_market"]) * cross_market_component
+            + max(0.0, weights["whale"]) * whale_component
             + max(0.0, weights["liquidity"]) * liquidity_component
         ) / weight_sum
         score = round(max(0.0, min(1.0, score)), 4)
@@ -1133,11 +1290,12 @@ class MetaBrain:
             "conviction": round(conviction_component, 4),
             "velocity": round(velocity_component, 4),
             "cross_market": round(cross_market_component, 4),
+            "whale": round(whale_component, 4),
             "liquidity": round(liquidity_component, 4),
             "weights": weights,
         }
 
-        # 6. Entry timing: "now" if strong signals converge; "wait" if marginal.
+        # 7. Entry timing: "now" if strong signals converge; "wait" if marginal.
         entry_timing = self._compute_timing(
             brain_approved=brain_decision.approved,
             brain_score=brain_decision.score,
@@ -1145,6 +1303,7 @@ class MetaBrain:
             velocity=velocity,
             win_stats=win_stats,
             cross_market_divergence=features.get("cross_market_divergence"),
+            whale=whale,
         )
 
         # 7. If brain gate rejected, propagate as skip.
@@ -1189,17 +1348,48 @@ class MetaBrain:
 
         if poly_prob is not None:
             min_edge = _env_float("META_BRAIN_MIN_EDGE_PCT", 0.02)
+            min_raw_ev = _env_float("META_BRAIN_MIN_RAW_EV", 0.04)
             market_price = max(0.0, min(1.0, float(poly_prob)))
-            internal_probability = score
+            # Use cross_market_prob (Kalshi/Metaculus/Manifold consensus) as the
+            # best estimate of true probability. It is a calibrated external
+            # probability, not a composite quality score.  Fall back to the
+            # composite score only when no cross-market data is available.
+            cross_prob = features.get("cross_market_prob")
+            if cross_prob is not None:
+                internal_probability = max(0.0, min(1.0, float(cross_prob)))
+            else:
+                internal_probability = score
             edge = internal_probability - market_price
+            raw_ev = binary_raw_ev(internal_probability, market_price)
             features["internal_probability"] = round(internal_probability, 4)
+            features["internal_prob_source"] = "cross_market" if cross_prob is not None else "meta_score"
             features["market_entry_price"] = round(market_price, 4)
             features["edge"] = round(edge, 4)
+            features["raw_ev"] = round(raw_ev, 4)
             features["min_edge_pct"] = min_edge
+            features["min_raw_ev"] = min_raw_ev
             if edge < min_edge:
                 return MetaDecision(
                     approved=False,
                     reason=f"internal_edge_too_low:{edge:.3f}<{min_edge:.3f}",
+                    score=score,
+                    entry_timing="skip",
+                    winrate_estimate=win_stats.winrate,
+                    winrate_sample_size=win_stats.total_with_outcome,
+                    signal_sources=signal_sources,
+                    cross_market_prob=features.get("cross_market_prob"),
+                    cross_market_divergence=features.get("cross_market_divergence"),
+                    velocity_direction=velocity.direction,
+                    velocity_pct_per_hour=velocity.pct_per_hour,
+                    conviction_direction=conviction.direction,
+                    conviction_confidence=conviction.confidence,
+                    conviction_sources=conviction.sources,
+                    features=features,
+                )
+            if raw_ev < min_raw_ev:
+                return MetaDecision(
+                    approved=False,
+                    reason=f"raw_ev_too_low:{raw_ev:.3f}<{min_raw_ev:.3f}",
                     score=score,
                     entry_timing="skip",
                     winrate_estimate=win_stats.winrate,
@@ -1246,6 +1436,7 @@ class MetaBrain:
         velocity: VelocitySignal,
         win_stats: WinRateStats,
         cross_market_divergence: Optional[float],
+        whale: Optional[WhaleSentimentSignal] = None,
     ) -> str:
         if not brain_approved:
             return "skip"
@@ -1274,6 +1465,15 @@ class MetaBrain:
 
         # High brain score on its own (>= 0.72 → single strong signal).
         if brain_score >= 0.72:
+            strong_signals += 1
+
+        # Strong whale consensus (>= 60% confident, at least 1 profitable whale).
+        if (
+            whale is not None
+            and whale.direction is not None
+            and whale.confidence >= 0.60
+            and whale.n_whales >= 1
+        ):
             strong_signals += 1
 
         if strong_signals >= 2:

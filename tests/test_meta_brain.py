@@ -15,6 +15,11 @@ from agents.application.meta_brain import (
     WinRateAdvisor,
     WinRateStats,
 )
+from agents.application.sizing import (
+    binary_kelly_fraction,
+    binary_raw_ev,
+    kelly_size_usdc,
+)
 from agents.application.trade_log import TradeLog
 
 
@@ -152,6 +157,36 @@ class TestWinRateAdvisor(unittest.TestCase):
             self.assertEqual(stats.total_with_outcome, 1)
         finally:
             os.unlink(db_path)
+
+
+# ---------------------------------------------------------------------------
+# Sizing helpers
+# ---------------------------------------------------------------------------
+
+class TestKellySizing(unittest.TestCase):
+    def test_binary_kelly_fraction(self):
+        self.assertAlmostEqual(binary_kelly_fraction(0.60, 0.50), 0.20)
+        self.assertEqual(binary_kelly_fraction(0.49, 0.50), 0.0)
+
+    def test_raw_ev_is_price_normalized(self):
+        self.assertAlmostEqual(binary_raw_ev(0.60, 0.50), 0.20)
+        self.assertAlmostEqual(binary_raw_ev(0.33, 0.30), 0.10)
+
+    @patch.dict(os.environ, {
+        "KELLY_SIZING_ENABLED": "true",
+        "KELLY_FRACTION_SCALE": "0.25",
+        "MAX_AGENT_ALLOCATION_FRACTION": "0.50",
+        "KELLY_MAX_POSITION_USDC": "100",
+    })
+    def test_kelly_size_uses_fractional_cap(self):
+        sizing = kelly_size_usdc(
+            balance_usdc=100.0,
+            win_probability=0.60,
+            entry_price=0.50,
+            fallback_amount_usdc=2.5,
+        )
+        self.assertAlmostEqual(sizing.amount_usdc, 5.0)
+        self.assertAlmostEqual(sizing.raw_fraction, 0.20)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +390,15 @@ class TestMetaBrain(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertEqual(decision.entry_timing, "skip")
 
+    @patch.dict(os.environ, {
+        "META_BRAIN_WEIGHT_BRAIN": "1.0",
+        "META_BRAIN_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_WEIGHT_CROSS_MARKET": "0.0",
+        "META_BRAIN_WEIGHT_WHALE": "0.0",
+        "META_BRAIN_WEIGHT_LIQUIDITY": "0.0",
+    })
     def test_approved_has_timing(self):
         mb = self._make_meta_brain(approved=True, score=0.70)
         decision = mb.synthesize(
@@ -423,6 +467,28 @@ class TestMetaBrain(unittest.TestCase):
         self.assertIsInstance(decision, MetaDecision)
         self.assertIsInstance(decision.signal_sources, list)
         self.assertIsInstance(decision.features, dict)
+
+    @patch.dict(os.environ, {
+        "META_BRAIN_WEIGHT_BRAIN": "1.0",
+        "META_BRAIN_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_WEIGHT_CROSS_MARKET": "0.0",
+        "META_BRAIN_WEIGHT_WHALE": "0.0",
+        "META_BRAIN_WEIGHT_LIQUIDITY": "0.0",
+        "META_BRAIN_MIN_EDGE_PCT": "0.02",
+        "META_BRAIN_MIN_RAW_EV": "0.10",
+    })
+    def test_raw_ev_gate_rejects_expensive_thin_edge(self):
+        mb = self._make_meta_brain(approved=True, score=0.84)
+        decision = mb.synthesize(
+            market_id="m1",
+            question="Expensive edge?",
+            poly_prob=0.80,
+        )
+        self.assertFalse(decision.approved)
+        self.assertIn("raw_ev_too_low", decision.reason)
+        self.assertAlmostEqual(decision.features["raw_ev"], 0.05, places=3)
 
     @patch.dict(os.environ, {
         "META_BRAIN_CRYPTO_STRADDLE_MIN_SCORE": "0.65",

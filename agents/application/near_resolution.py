@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from agents.application.sizing import kelly_size_usdc
 from agents.application.trade_log import NEAR_RESOLUTION_OPEN, TradeLog
 
 logger = logging.getLogger(__name__)
@@ -511,6 +512,7 @@ class NearResolutionEngine:
             or 0
         )
 
+        sizing_probability = confidence
         if self.meta_brain is None:
             if self.execute:
                 logger.warning("near_resolution live blocked — missing MetaBrain")
@@ -537,6 +539,10 @@ class NearResolutionEngine:
                 market_type="general_binary",
                 features=meta.features,
                 action=side,
+                signal_source=(
+                    ",".join(getattr(meta, "signal_sources", []) or [])
+                    or "meta_brain"
+                ),
             )
             if not meta.approved:
                 logger.info(
@@ -544,13 +550,27 @@ class NearResolutionEngine:
                     market_id, meta.reason, meta.score, meta.entry_timing,
                 )
                 return False
+            sizing_probability = float(meta.features.get("internal_probability") or meta.score)
+
+        balance_usdc = None
+        try:
+            balance_usdc = self.polymarket.get_usdc_balance()
+        except Exception:
+            pass
+        sizing = kelly_size_usdc(
+            balance_usdc=balance_usdc,
+            win_probability=sizing_probability,
+            entry_price=price,
+            fallback_amount_usdc=self.cfg.position_size_usdc,
+        )
+        amount_usdc = sizing.amount_usdc or self.cfg.position_size_usdc
 
         recommendation = TradeRecommendation(
             price=price,
             size_fraction=0.0,
             side=side,
             confidence=confidence,
-            amount_usdc=self.cfg.position_size_usdc,
+            amount_usdc=amount_usdc,
         )
         market_doc = self._make_market_doc(candidate)
 
@@ -564,7 +584,7 @@ class NearResolutionEngine:
             token_id=token_id_for_log,
             side=side,
             price=price,
-            size_usdc=self.cfg.position_size_usdc,
+            size_usdc=amount_usdc,
             confidence=confidence,
         )
 
