@@ -17,6 +17,40 @@ Final priority order:
 
 ## Implemented
 
+### Expert Arbitration
+
+MetaBrain now has an `EvidenceRouter` layer before the ordinary consensus
+fallback.
+
+The rule is no longer "average every component".  The rule is:
+
+1. Ignore sources that have no evidence.
+2. Let a single expert lead only when it has measured reliability.
+3. Block or defer when a similarly reliable expert conflicts.
+4. Fall back to informed-only consensus when no solo expert exists.
+
+Solo expert defaults:
+
+```text
+EXPERT_SOLO_MIN_PROB="0.65"
+EXPERT_SOLO_MIN_WINRATE="0.65"
+EXPERT_SOLO_MIN_WILSON="0.58"
+EXPERT_SOLO_MIN_SAMPLES="30"
+EXPERT_SOLO_MAX_AGE_SEC="3600"
+```
+
+This means a high unproven score is not an anchor.  A wallet/provider can lead
+alone only after its own `signal_source` has enough resolved outcomes in
+`brain_decisions`.
+
+`wallet_follow` now tags decisions as:
+
+```text
+wallet:<address>
+```
+
+so individual smart wallets can earn or lose trust over time.
+
 ### Provider Backtesting
 
 Added:

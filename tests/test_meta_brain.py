@@ -8,14 +8,19 @@ from unittest.mock import patch
 from agents.application.meta_brain import (
     ConvictionJSONLReader,
     ConvictionSummary,
+    EvidenceClaim,
+    EvidenceRouter,
     MetaBrain,
     MetaDecision,
     ProbVelocityDetector,
+    ReliabilityStats,
+    SourceReliabilityAdvisor,
     VelocitySignal,
     WinRateAdvisor,
     WinRateStats,
     BreakingNewsReader,
     NewsSignal,
+    WhaleSentimentSignal,
 )
 from agents.application.sizing import (
     binary_kelly_fraction,
@@ -157,6 +162,91 @@ class TestWinRateAdvisor(unittest.TestCase):
             self.assertEqual(stats.source, "brain_decisions+daily_journal")
             self.assertLess(stats.winrate, 0.52)
             self.assertEqual(stats.total_with_outcome, 1)
+        finally:
+            os.unlink(db_path)
+
+
+# ---------------------------------------------------------------------------
+# SourceReliability + EvidenceRouter
+# ---------------------------------------------------------------------------
+
+class TestEvidenceRouter(unittest.TestCase):
+    def test_solo_trigger_requires_reliable_track_record(self):
+        router = EvidenceRouter()
+        route = router.route([
+            EvidenceClaim(
+                source_id="wallet:abc",
+                source_type="wallet",
+                direction="yes",
+                probability=0.72,
+                confidence=0.9,
+                reliability=ReliabilityStats(
+                    source_id="wallet:abc",
+                    winrate=0.72,
+                    wins=72,
+                    losses=28,
+                    sample_size=100,
+                    wilson_lower=0.62,
+                    source="test",
+                ),
+            )
+        ])
+        self.assertEqual(route.mode, "solo")
+        self.assertEqual(route.leader.source_id, "wallet:abc")
+
+    def test_unproven_high_confidence_does_not_solo(self):
+        router = EvidenceRouter()
+        route = router.route([
+            EvidenceClaim(
+                source_id="news",
+                source_type="news",
+                direction="yes",
+                probability=0.95,
+                confidence=1.0,
+                reliability=None,
+            )
+        ])
+        self.assertEqual(route.mode, "consensus")
+
+    def test_source_reliability_reads_signal_source(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            log = TradeLog(db_path=db_path)
+            for idx in range(8):
+                decision_id = log.insert_brain_decision(
+                    agent="wallet_follow",
+                    strategy="wallet_follow",
+                    decision_type="entry",
+                    market_id=f"m{idx}",
+                    approved=True,
+                    reason="ok",
+                    score=0.7,
+                    market_type="general_binary",
+                    signal_source="wallet:abc",
+                )
+                log.update_brain_decision_outcome(decision_id, "closed_take_profit", {})
+            for idx in range(2):
+                decision_id = log.insert_brain_decision(
+                    agent="wallet_follow",
+                    strategy="wallet_follow",
+                    decision_type="entry",
+                    market_id=f"l{idx}",
+                    approved=True,
+                    reason="ok",
+                    score=0.7,
+                    market_type="general_binary",
+                    signal_source="wallet:abc",
+                )
+                log.update_brain_decision_outcome(decision_id, "closed_stop_loss", {})
+            stats = SourceReliabilityAdvisor(cache_ttl_sec=0).compute(
+                db_path,
+                "wallet:abc",
+                hours=9999,
+            )
+            self.assertEqual(stats.sample_size, 10)
+            self.assertAlmostEqual(stats.winrate, 0.8)
+            self.assertGreater(stats.wilson_lower, 0.49)
         finally:
             os.unlink(db_path)
 
@@ -489,17 +579,16 @@ class TestMetaBrain(unittest.TestCase):
         "META_BRAIN_MIN_EDGE_PCT": "0.0",
         "META_BRAIN_MIN_RAW_EV": "0.0",
     })
-    def test_single_anchor_signal_triggers_now(self):
-        """A single signal >= anchor_threshold should approve with timing='now'
-        even when no other corroborating signals exist (dilution problem fix)."""
+    def test_unproven_single_high_signal_does_not_anchor(self):
+        """A high score without measured reliability is not an expert anchor."""
         mb = self._make_meta_brain(approved=True, score=0.85)
         decision = mb.synthesize(
             market_id="m1",
             question="Strong anchor test?",
         )
         self.assertTrue(decision.approved)
-        self.assertEqual(decision.entry_timing, "now")
-        self.assertTrue(decision.features.get("has_anchor"))
+        self.assertFalse(decision.features.get("has_anchor"))
+        self.assertTrue(decision.features.get("legacy_anchor_candidate"))
         self.assertEqual(decision.features.get("best_signal"), "brain")
 
     @patch.dict(os.environ, {
@@ -531,6 +620,69 @@ class TestMetaBrain(unittest.TestCase):
             decision.features["weighted_components"]["winrate"],
             0.50,
         )
+
+    @patch.dict(os.environ, {
+        "EXPERT_SOLO_MIN_PROB": "0.65",
+        "EXPERT_SOLO_MIN_WINRATE": "0.65",
+        "EXPERT_SOLO_MIN_WILSON": "0.55",
+        "EXPERT_SOLO_MIN_SAMPLES": "30",
+        "META_BRAIN_MIN_EDGE_PCT": "0.0",
+        "META_BRAIN_MIN_RAW_EV": "0.0",
+    })
+    def test_reliable_wallet_can_lead_as_solo_expert(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            log = TradeLog(db_path=db_path)
+            for idx in range(60):
+                decision_id = log.insert_brain_decision(
+                    agent="wallet_follow",
+                    strategy="wallet_follow",
+                    decision_type="entry",
+                    market_id=f"w{idx}",
+                    approved=True,
+                    reason="ok",
+                    score=0.8,
+                    market_type="general_binary",
+                    signal_source="wallet:abc",
+                )
+                log.update_brain_decision_outcome(decision_id, "closed_take_profit", {})
+            for idx in range(20):
+                decision_id = log.insert_brain_decision(
+                    agent="wallet_follow",
+                    strategy="wallet_follow",
+                    decision_type="entry",
+                    market_id=f"wl{idx}",
+                    approved=True,
+                    reason="ok",
+                    score=0.8,
+                    market_type="general_binary",
+                    signal_source="wallet:abc",
+                )
+                log.update_brain_decision_outcome(decision_id, "closed_stop_loss", {})
+            mb = self._make_meta_brain(approved=True, score=0.55)
+            mb.db_path = db_path
+            mb.source_reliability = SourceReliabilityAdvisor(cache_ttl_sec=0)
+            mb.whale_reader.query = lambda market_id, db: WhaleSentimentSignal(
+                direction="bullish",
+                confidence=1.0,
+                n_whales=1,
+                total_size_usdc=1000.0,
+                avg_profit_usdc=500.0,
+                wallets=["abc"],
+            )
+            decision = mb.synthesize(
+                market_id="m1",
+                question="Wallet lead?",
+                poly_prob=0.50,
+            )
+            self.assertTrue(decision.approved)
+            self.assertEqual(decision.entry_timing, "now")
+            self.assertEqual(decision.features["evidence_route"]["mode"], "solo")
+            self.assertEqual(decision.features["evidence_route"]["leader"], "wallet:abc")
+            self.assertEqual(decision.features["internal_prob_source"], "expert_solo:wallet:abc")
+        finally:
+            os.unlink(db_path)
 
     def test_summary_is_nonempty(self):
         mb = self._make_meta_brain(approved=True, score=0.65)

@@ -167,6 +167,7 @@ class WalletFollowEngine:
         yes_price: float,
         no_price: float,
         liquidity_usdc: float = 0.0,
+        signal_source: str = "",
     ) -> bool:
         if self.brain is None:
             if self.execute:
@@ -202,6 +203,7 @@ class WalletFollowEngine:
                 market_type="general_binary",
                 features=decision.features,
                 action=side,
+                signal_source=signal_source or None,
             )
             if not decision.approved:
                 logger.info(
@@ -496,6 +498,7 @@ class WalletFollowEngine:
                 yes_price=yes_price,
                 no_price=no_price,
                 liquidity_usdc=liquidity,
+                signal_source=f"wallet:{sig.get('wallet_address')}",
             ):
                 self._mark_signal(signal_id, "skipped")
                 continue

@@ -314,6 +314,231 @@ class WinRateAdvisor:
 
 
 # ---------------------------------------------------------------------------
+# Expert evidence routing
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ReliabilityStats:
+    source_id: str
+    winrate: Optional[float]
+    wins: int
+    losses: int
+    sample_size: int
+    wilson_lower: Optional[float]
+    source: str
+
+
+def _wilson_lower_bound(wins: int, total: int, z: float = 1.96) -> Optional[float]:
+    if total <= 0:
+        return None
+    phat = wins / total
+    denom = 1.0 + z * z / total
+    centre = phat + z * z / (2.0 * total)
+    margin = z * ((phat * (1.0 - phat) + z * z / (4.0 * total)) / total) ** 0.5
+    return max(0.0, (centre - margin) / denom)
+
+
+class SourceReliabilityAdvisor:
+    """Computes empirical reliability for specific signal sources.
+
+    Sources are read from brain_decisions.signal_source.  This is intentionally
+    separate from the strategy-level WinRateAdvisor: a provider or wallet should
+    earn trust from its own resolved outcomes, not from the global strategy.
+    """
+
+    WIN_OUTCOMES = WinRateAdvisor.WIN_OUTCOMES
+    LOSS_OUTCOMES = WinRateAdvisor.LOSS_OUTCOMES
+
+    def __init__(self, cache_ttl_sec: int = 300):
+        self._cache: dict = {}
+        self.cache_ttl_sec = cache_ttl_sec
+
+    def best(
+        self,
+        db_path: str,
+        source_ids: list[str],
+        *,
+        market_type: str = "general_binary",
+        hours: int = 720,
+    ) -> ReliabilityStats:
+        candidates = [
+            self.compute(db_path, source_id, market_type=market_type, hours=hours)
+            for source_id in source_ids
+            if source_id
+        ]
+        if not candidates:
+            return ReliabilityStats("", None, 0, 0, 0, None, "no_source")
+        return max(
+            candidates,
+            key=lambda s: (
+                s.wilson_lower if s.wilson_lower is not None else -1.0,
+                s.winrate if s.winrate is not None else -1.0,
+                s.sample_size,
+            ),
+        )
+
+    def compute(
+        self,
+        db_path: str,
+        source_id: str,
+        *,
+        market_type: str = "general_binary",
+        hours: int = 720,
+    ) -> ReliabilityStats:
+        if not source_id:
+            return ReliabilityStats(source_id, None, 0, 0, 0, None, "no_source")
+        if not db_path or not os.path.isfile(db_path):
+            return ReliabilityStats(source_id, None, 0, 0, 0, None, "no_db")
+        key = (db_path, source_id, market_type, hours)
+        now = time.time()
+        if key in self._cache:
+            ts, stats = self._cache[key]
+            if now - ts < self.cache_ttl_sec:
+                return stats
+        cutoff = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.gmtime(now - hours * 3600)
+        )
+        try:
+            with sqlite3.connect(db_path, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT outcome_status
+                    FROM brain_decisions
+                    WHERE approved = 1
+                      AND outcome_status IS NOT NULL
+                      AND market_type = ?
+                      AND ts >= ?
+                      AND signal_source LIKE ?
+                    """,
+                    (market_type, cutoff, f"%{source_id}%"),
+                ).fetchall()
+        except Exception as exc:
+            logger.debug("source_reliability: sqlite error for %s: %s", source_id, exc)
+            return ReliabilityStats(source_id, None, 0, 0, 0, None, "error")
+        wins = sum(1 for r in rows if r["outcome_status"] in self.WIN_OUTCOMES)
+        losses = sum(1 for r in rows if r["outcome_status"] in self.LOSS_OUTCOMES)
+        total = wins + losses
+        stats = ReliabilityStats(
+            source_id=source_id,
+            winrate=(wins / total) if total else None,
+            wins=wins,
+            losses=losses,
+            sample_size=total,
+            wilson_lower=_wilson_lower_bound(wins, total),
+            source="brain_decisions.signal_source",
+        )
+        self._cache[key] = (now, stats)
+        return stats
+
+
+@dataclass
+class EvidenceClaim:
+    source_id: str
+    source_type: str
+    direction: Optional[str]       # "yes" | "no" | None
+    probability: float             # estimated probability for the claimed direction
+    confidence: float
+    reliability: Optional[ReliabilityStats] = None
+    freshness_sec: Optional[float] = None
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
+class EvidenceRoute:
+    mode: str                       # "solo" | "consensus" | "blocked" | "none"
+    direction: Optional[str]
+    probability: Optional[float]
+    leader: Optional[EvidenceClaim]
+    reason: str
+    claims: list[EvidenceClaim] = field(default_factory=list)
+    conflicts: list[EvidenceClaim] = field(default_factory=list)
+
+
+class EvidenceRouter:
+    """Arbitrate evidence instead of averaging silence.
+
+    A proven expert can lead alone.  Otherwise, the caller falls back to the
+    existing informed-only consensus path.
+    """
+
+    def route(self, claims: list[EvidenceClaim]) -> EvidenceRoute:
+        actionable = [c for c in claims if c.direction in {"yes", "no"} and c.probability > 0]
+        if not actionable:
+            return EvidenceRoute("none", None, None, None, "no_actionable_claims", claims)
+
+        solo = [c for c in actionable if self._is_solo_eligible(c)]
+        if solo:
+            leader = max(
+                solo,
+                key=lambda c: (
+                    c.reliability.wilson_lower if c.reliability and c.reliability.wilson_lower is not None else -1.0,
+                    c.reliability.winrate if c.reliability and c.reliability.winrate is not None else -1.0,
+                    c.probability,
+                ),
+            )
+            conflicts = [c for c in actionable if c.direction != leader.direction and self._is_conflict(c)]
+            if conflicts and any(self._conflict_beats_or_ties(c, leader) for c in conflicts):
+                return EvidenceRoute(
+                    "blocked",
+                    None,
+                    None,
+                    leader,
+                    f"expert_conflict:{leader.source_id}",
+                    claims,
+                    conflicts,
+                )
+            return EvidenceRoute(
+                "solo",
+                leader.direction,
+                leader.probability,
+                leader,
+                f"expert_solo:{leader.source_id}",
+                claims,
+                conflicts,
+            )
+
+        return EvidenceRoute("consensus", None, None, None, "no_solo_expert", claims)
+
+    def _is_solo_eligible(self, claim: EvidenceClaim) -> bool:
+        min_prob = _env_float("EXPERT_SOLO_MIN_PROB", 0.65)
+        min_wr = _env_float("EXPERT_SOLO_MIN_WINRATE", 0.65)
+        min_wilson = _env_float("EXPERT_SOLO_MIN_WILSON", 0.58)
+        min_samples = _env_int("EXPERT_SOLO_MIN_SAMPLES", 30)
+        max_age = _env_int("EXPERT_SOLO_MAX_AGE_SEC", 3600)
+        if claim.probability < min_prob:
+            return False
+        if claim.freshness_sec is not None and claim.freshness_sec > max_age:
+            return False
+        rel = claim.reliability
+        if rel is None or rel.sample_size < min_samples or rel.winrate is None:
+            return False
+        if rel.winrate < min_wr:
+            return False
+        if rel.wilson_lower is None or rel.wilson_lower < min_wilson:
+            return False
+        return True
+
+    def _is_conflict(self, claim: EvidenceClaim) -> bool:
+        return (
+            claim.probability >= _env_float("EXPERT_CONFLICT_MIN_PROB", 0.62)
+            and claim.reliability is not None
+            and claim.reliability.winrate is not None
+            and claim.reliability.winrate >= _env_float("EXPERT_CONFLICT_MIN_WINRATE", 0.58)
+            and claim.reliability.sample_size >= _env_int("EXPERT_CONFLICT_MIN_SAMPLES", 15)
+        )
+
+    def _conflict_beats_or_ties(self, conflict: EvidenceClaim, leader: EvidenceClaim) -> bool:
+        c_rel = conflict.reliability
+        l_rel = leader.reliability
+        if c_rel is None or l_rel is None:
+            return False
+        c_lb = c_rel.wilson_lower or 0.0
+        l_lb = l_rel.wilson_lower or 0.0
+        return c_lb >= l_lb - _env_float("EXPERT_CONFLICT_WILSON_MARGIN", 0.03)
+
+
+# ---------------------------------------------------------------------------
 # ConvictionJSONLReader
 # ---------------------------------------------------------------------------
 
@@ -636,6 +861,7 @@ class WhaleSentimentSignal:
     n_whales: int              # unique profitable wallets contributing
     total_size_usdc: float     # total USDC size of their recorded positions
     avg_profit_usdc: float     # average historical profit per contributing wallet
+    wallets: list = field(default_factory=list)  # contributing wallet addresses
 
 
 class WhaleSentimentReader:
@@ -714,11 +940,13 @@ class WhaleSentimentReader:
         bear_weight = 0.0
         total_size = 0.0
         profits: list = []
+        wallets: list = []
         for row in rows:
             wallet = row["wallet_address"]
             if wallet in seen:
                 continue
             seen.add(wallet)
+            wallets.append(str(wallet))
             profit = max(0.0, float(row["wallet_profit_usdc"] or 0))
             size = float(row["wallet_size_usdc"] or 1.0)
             weight = max(1.0, profit)  # weight by historical profit in USDC
@@ -749,6 +977,7 @@ class WhaleSentimentReader:
             n_whales=len(seen),
             total_size_usdc=round(total_size, 2),
             avg_profit_usdc=round(avg_profit, 2),
+            wallets=wallets,
         )
 
 
@@ -986,6 +1215,8 @@ class MetaBrain:
         self.winrate_hours = winrate_hours
 
         self.winrate_advisor = WinRateAdvisor()
+        self.source_reliability = SourceReliabilityAdvisor()
+        self.evidence_router = EvidenceRouter()
         self.conviction_reader = ConvictionJSONLReader(conviction_paths=conviction_paths)
         self.velocity_detector = ProbVelocityDetector(window_minutes=velocity_window_min)
         self.whale_reader = WhaleSentimentReader()
@@ -1506,6 +1737,143 @@ class MetaBrain:
             "news": news_component,
             "liquidity": liquidity_component,
         }
+
+        reliability_hours = _env_int("EXPERT_RELIABILITY_HOURS", 720)
+        brain_reliability = (
+            win_stats
+            if win_stats.winrate is not None
+            else None
+        )
+        conviction_reliability = self.source_reliability.best(
+            self.db_path,
+            [str(s) for s in conviction.sources],
+            hours=reliability_hours,
+        )
+        wallet_source_ids = [f"wallet:{w}" for w in getattr(whale, "wallets", [])]
+        whale_reliability = self.source_reliability.best(
+            self.db_path,
+            wallet_source_ids,
+            hours=reliability_hours,
+        )
+        news_reliability = self.source_reliability.best(
+            self.db_path,
+            [f"news:{s}" for s in getattr(news, "sources", [])],
+            hours=reliability_hours,
+        )
+        brain_rel = None
+        if brain_reliability is not None:
+            brain_rel = ReliabilityStats(
+                source_id="brain",
+                winrate=brain_reliability.winrate,
+                wins=brain_reliability.wins,
+                losses=brain_reliability.losses,
+                sample_size=brain_reliability.total_with_outcome,
+                wilson_lower=_wilson_lower_bound(
+                    brain_reliability.wins,
+                    brain_reliability.total_with_outcome,
+                ),
+                source=brain_reliability.source,
+            )
+        claims = [
+            EvidenceClaim(
+                source_id="brain",
+                source_type="llm_brain",
+                direction="yes",
+                probability=float(brain_decision.score),
+                confidence=float(brain_decision.score),
+                reliability=brain_rel,
+                raw={"component": components["brain"]},
+            )
+        ]
+        cross_prob = features.get("cross_market_prob")
+        if cross_prob is not None:
+            try:
+                cp = max(0.0, min(1.0, float(cross_prob)))
+                claims.append(
+                    EvidenceClaim(
+                        source_id="cross_market",
+                        source_type="cross_market",
+                        direction="yes" if cp >= 0.5 else "no",
+                        probability=cp if cp >= 0.5 else 1.0 - cp,
+                        confidence=abs(cp - 0.5) * 2.0,
+                        raw={
+                            "cross_market_prob": cp,
+                            "divergence": features.get("cross_market_divergence"),
+                        },
+                    )
+                )
+            except (TypeError, ValueError):
+                pass
+        if conviction.direction in ("yes", "no"):
+            claims.append(
+                EvidenceClaim(
+                    source_id=conviction_reliability.source_id or ",".join(conviction.sources) or "conviction",
+                    source_type="conviction",
+                    direction=conviction.direction,
+                    probability=float(conviction.confidence),
+                    confidence=float(conviction.confidence),
+                    reliability=conviction_reliability if conviction_reliability.sample_size else None,
+                    freshness_sec=conviction.age_seconds,
+                    raw={"sources": conviction.sources},
+                )
+            )
+        if whale.direction in ("bullish", "bearish"):
+            wallet_source = whale_reliability.source_id or "whale_wallet"
+            claims.append(
+                EvidenceClaim(
+                    source_id=wallet_source,
+                    source_type="wallet",
+                    direction="yes" if whale.direction == "bullish" else "no",
+                    probability=whale_component if whale.direction == "bullish" else 1.0 - whale_component,
+                    confidence=float(whale.confidence),
+                    reliability=whale_reliability if whale_reliability.sample_size else None,
+                    raw={
+                        "wallets": getattr(whale, "wallets", []),
+                        "avg_profit_usdc": whale.avg_profit_usdc,
+                        "n_whales": whale.n_whales,
+                    },
+                )
+            )
+        if news.direction in ("bullish", "bearish"):
+            claims.append(
+                EvidenceClaim(
+                    source_id=news_reliability.source_id or "news",
+                    source_type="news",
+                    direction="yes" if news.direction == "bullish" else "no",
+                    probability=news_component if news.direction == "bullish" else 1.0 - news_component,
+                    confidence=float(news.confidence),
+                    reliability=news_reliability if news_reliability.sample_size else None,
+                    raw={"sources": news.sources},
+                )
+            )
+        route = self.evidence_router.route(claims)
+        features["evidence_route"] = {
+            "mode": route.mode,
+            "direction": route.direction,
+            "probability": None if route.probability is None else round(route.probability, 4),
+            "leader": None if route.leader is None else route.leader.source_id,
+            "reason": route.reason,
+            "claims": [
+                {
+                    "source_id": c.source_id,
+                    "source_type": c.source_type,
+                    "direction": c.direction,
+                    "probability": round(c.probability, 4),
+                    "confidence": round(c.confidence, 4),
+                    "reliability_winrate": (
+                        None if c.reliability is None or c.reliability.winrate is None
+                        else round(c.reliability.winrate, 4)
+                    ),
+                    "reliability_n": 0 if c.reliability is None else c.reliability.sample_size,
+                    "wilson_lower": (
+                        None if c.reliability is None or c.reliability.wilson_lower is None
+                        else round(c.reliability.wilson_lower, 4)
+                    ),
+                }
+                for c in claims
+            ],
+            "conflicts": [c.source_id for c in route.conflicts],
+        }
         # Informed-only weighting: neutral signals (exactly 0.5) carry no weight
         # so they cannot dilute a single strong signal.  A component at 0.5 means
         # "no data" — it should be invisible, not drag the score toward the median.
@@ -1527,15 +1895,19 @@ class MetaBrain:
             score = sum(max(0.0, weights[k]) * v for k, v in components.items()) / active_weight_sum
         score = round(max(0.0, min(1.0, score)), 4)
 
-        # Identify the strongest individual signal and whether it clears the
-        # "anchor" bar.  A single signal ≥ META_BRAIN_ANCHOR_THRESHOLD is
-        # meaningful on its own and lowers the blended-score requirement.
+        # Identify the strongest individual signal for audit.  "Anchor" status
+        # is reserved for EvidenceRouter solo experts with measured reliability;
+        # a high unproven score is not enough to bypass consensus.
         anchor_threshold = _env_float("META_BRAIN_ANCHOR_THRESHOLD", 0.70)
         best_signal_key = max(components, key=lambda k: components[k])
         best_signal_val = components[best_signal_key]
-        has_anchor = best_signal_val >= anchor_threshold
+        legacy_anchor_candidate = best_signal_val >= anchor_threshold
+        has_anchor = route.mode == "solo"
+        if route.mode == "solo":
+            score = round(max(score, float(route.probability or 0.0)), 4)
         features["best_signal"] = best_signal_key
         features["best_signal_value"] = round(best_signal_val, 4)
+        features["legacy_anchor_candidate"] = legacy_anchor_candidate
         features["has_anchor"] = has_anchor
         features["meta_score"] = score
         features["weighted_components"] = {
@@ -1557,6 +1929,25 @@ class MetaBrain:
             news=news,
             has_anchor=has_anchor,
         )
+
+        if route.mode == "blocked":
+            return MetaDecision(
+                approved=False,
+                reason=route.reason,
+                score=score,
+                entry_timing="skip",
+                winrate_estimate=win_stats.winrate,
+                winrate_sample_size=win_stats.total_with_outcome,
+                signal_sources=signal_sources,
+                cross_market_prob=features.get("cross_market_prob"),
+                cross_market_divergence=features.get("cross_market_divergence"),
+                velocity_direction=velocity.direction,
+                velocity_pct_per_hour=velocity.pct_per_hour,
+                conviction_direction=conviction.direction,
+                conviction_confidence=conviction.confidence,
+                conviction_sources=conviction.sources,
+                features=features,
+            )
 
         # 8. If brain gate rejected, propagate as skip.
         if not brain_decision.approved:
@@ -1615,14 +2006,19 @@ class MetaBrain:
             # probability, not a composite quality score.  Fall back to the
             # composite score only when no cross-market data is available.
             cross_prob = features.get("cross_market_prob")
-            if cross_prob is not None:
+            if route.mode == "solo" and route.probability is not None:
+                internal_probability = max(0.0, min(1.0, float(route.probability)))
+                internal_prob_source = route.reason
+            elif cross_prob is not None:
                 internal_probability = max(0.0, min(1.0, float(cross_prob)))
+                internal_prob_source = "cross_market"
             else:
                 internal_probability = score
+                internal_prob_source = "meta_score"
             edge = internal_probability - market_price
             raw_ev = binary_raw_ev(internal_probability, market_price)
             features["internal_probability"] = round(internal_probability, 4)
-            features["internal_prob_source"] = "cross_market" if cross_prob is not None else "meta_score"
+            features["internal_prob_source"] = internal_prob_source
             features["market_entry_price"] = round(market_price, 4)
             features["edge"] = round(edge, 4)
             features["raw_ev"] = round(raw_ev, 4)
@@ -1667,7 +2063,7 @@ class MetaBrain:
 
         return MetaDecision(
             approved=True,
-            reason=brain_decision.reason,
+            reason=route.reason if route.mode == "solo" else brain_decision.reason,
             score=score,
             entry_timing=entry_timing,
             winrate_estimate=win_stats.winrate,
@@ -1703,8 +2099,9 @@ class MetaBrain:
         if not brain_approved:
             return "skip"
 
-        # A single anchor signal (any component ≥ META_BRAIN_ANCHOR_THRESHOLD)
-        # is strong enough on its own to trigger immediate entry.
+        # A single trusted expert from EvidenceRouter is strong enough on its
+        # own to trigger immediate entry.  Unproven high scores remain in the
+        # normal consensus path.
         if has_anchor:
             return "now"
 
