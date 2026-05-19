@@ -97,7 +97,6 @@ CREATE INDEX IF NOT EXISTS idx_brain_decisions_ts ON brain_decisions(ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_agent_ts ON brain_decisions(agent, ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_market_ts ON brain_decisions(market_id, ts);
 CREATE INDEX IF NOT EXISTS idx_brain_decisions_reason_ts ON brain_decisions(reason, ts);
-CREATE INDEX IF NOT EXISTS idx_brain_decisions_signal_source_ts ON brain_decisions(signal_source, ts);
 
 CREATE TABLE IF NOT EXISTS decision_reflections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -346,6 +345,10 @@ class TradeLog:
                     conn.execute(_migration)
                 except Exception:
                     pass  # column already exists
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_brain_decisions_signal_source_ts "
+                "ON brain_decisions(signal_source, ts)"
+            )
         self.recover_stranded_pendings()
 
     @contextmanager
