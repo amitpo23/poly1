@@ -111,6 +111,7 @@ class PositionManagerConfig:
     partial_take_profit_enabled: bool = True
     partial_take_profit_pct: float = 0.10
     partial_take_profit_fraction: float = 0.50
+    partial_take_profit_min_position_usdc: float = 25.0
     # Heartbeat path for healthcheck.
     heartbeat_path: str = "/app/data/position_manager_heartbeat"
     # When False, log decisions but don't actually post SELL orders.
@@ -132,6 +133,9 @@ class PositionManagerConfig:
             ).lower() in {"1", "true", "yes", "on"},
             partial_take_profit_pct=_env_float("MAINTAIN_PARTIAL_TAKE_PROFIT_PCT", 0.10),
             partial_take_profit_fraction=_env_float("MAINTAIN_PARTIAL_TAKE_PROFIT_FRACTION", 0.50),
+            partial_take_profit_min_position_usdc=_env_float(
+                "MAINTAIN_PARTIAL_TAKE_PROFIT_MIN_POSITION_USDC", 25.0
+            ),
             heartbeat_path=os.getenv(
                 "MAINTAIN_HEARTBEAT_PATH",
                 "/app/data/position_manager_heartbeat",
@@ -728,6 +732,7 @@ class PositionManager:
             reason == "take_profit"
             and self.cfg.partial_take_profit_enabled
             and self.cfg.partial_take_profit_fraction > 0
+            and pos.total_cost_usdc >= self.cfg.partial_take_profit_min_position_usdc
             and not self.trade_log.has_partial_take_profit_for_token(pos.token_id)
         ):
             pnl_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)

@@ -98,6 +98,7 @@ class TestTradingPolicyContract(unittest.TestCase):
         self.assertIn('MAINTAIN_PARTIAL_TAKE_PROFIT_ENABLED="true"', env_text)
         self.assertIn('MAINTAIN_PARTIAL_TAKE_PROFIT_PCT="0.10"', env_text)
         self.assertIn('MAINTAIN_PARTIAL_TAKE_PROFIT_FRACTION="0.50"', env_text)
+        self.assertIn('MAINTAIN_PARTIAL_TAKE_PROFIT_MIN_POSITION_USDC="25.0"', env_text)
         self.assertIn('TELEGRAM_REPORT_SECONDS="3600"', env_text)
         self.assertIn('TELEGRAM_REPORT_SEND_ON_START="true"', env_text)
         self.assertIn('TELEGRAM_DIRECT_NOTIFICATIONS="false"', env_text)
