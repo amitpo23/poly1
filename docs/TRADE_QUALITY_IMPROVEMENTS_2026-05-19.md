@@ -114,6 +114,48 @@ META_BRAIN_MIN_RAW_EV="0.04"
 This rejects trades where the price/spread makes expected value too weak even
 when the raw probability edge appears positive.
 
+### Orderbook Execution-Quality Gate
+
+Added a live orderbook microstructure layer before entry execution.
+
+New daemon:
+
+```bash
+python -m agents.application.orderbook_monitor
+```
+
+It polls current `market_universe` tokens plus open-position tokens and writes:
+
+- `orderbook_snapshots` - append-only book history for audit/backtests
+- `orderbook_latest` - latest executable view per token
+
+MetaBrain now checks `orderbook_latest` after probability/EV gates and before
+approval. A trade can have a good signal and still be rejected if the book is
+not executable enough.
+
+Default gate:
+
+```text
+META_BRAIN_EXECUTION_QUALITY_ENABLED="true"
+EXECUTION_QUALITY_REQUIRE_FRESH="true"
+EXECUTION_QUALITY_MAX_AGE_SEC="10"
+EXECUTION_QUALITY_MAX_SPREAD_PCT="0.05"
+EXECUTION_QUALITY_MIN_BID_DEPTH_USDC="20"
+EXECUTION_QUALITY_MAX_AVG_SLIPPAGE_PCT="0.025"
+EXECUTION_QUALITY_MIN_SCORE="0.65"
+```
+
+Measured features written into `brain_decisions.features_json`:
+
+- best bid / best ask / spread
+- bid and ask depth
+- orderbook imbalance
+- expected average buy price for `$1`, `$3`, `$5`
+- estimated slippage for the intended trade size
+
+Purpose: avoid entering markets where the signal may be right but the spread,
+depth, or expected exit friction already destroys the edge.
+
 ### Kelly Sizing
 
 Added `agents/application/sizing.py`.
@@ -178,7 +220,7 @@ Worth revisiting after provider quality data accumulates:
 Current test suite after implementation:
 
 ```text
-486 tests OK
+515 tests OK
 ```
 
 Relevant commits:

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from agents.application.execution_quality import ExecutionQualityAdvisor
 from agents.application.sizing import binary_raw_ev
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,13 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_timestamp(value: object) -> Optional[float]:
@@ -1276,6 +1284,7 @@ class MetaBrain:
         self.velocity_detector = ProbVelocityDetector(window_minutes=velocity_window_min)
         self.whale_reader = WhaleSentimentReader()
         self.news_reader = BreakingNewsReader()
+        self.execution_quality = ExecutionQualityAdvisor(db_path=self.db_path)
 
     def synthesize_crypto_straddle(
         self,
@@ -1427,6 +1436,25 @@ class MetaBrain:
                 else f"weighted_score_too_low:{score:.3f}<{min_score:.3f}"
             )
             entry_timing = "now" if approved else "skip"
+
+        if approved and _env_bool("META_BRAIN_EXECUTION_QUALITY_ENABLED", True):
+            try:
+                execution_quality = self.execution_quality.evaluate(
+                    token_id=token_id,
+                    intended_usdc=_env_float("META_BRAIN_EXECUTION_QUALITY_USDC", 3.0),
+                )
+                features.update(execution_quality.features)
+                if not execution_quality.ok:
+                    approved = False
+                    reason = execution_quality.reason
+                    entry_timing = "skip"
+            except Exception as exc:
+                logger.debug("meta_brain straddle: execution quality failed: %s", exc)
+                if _env_bool("META_BRAIN_EXECUTION_QUALITY_FAIL_CLOSED", False):
+                    features["execution_quality_error"] = f"{type(exc).__name__}: {exc}"
+                    approved = False
+                    reason = "execution_quality_error"
+                    entry_timing = "skip"
 
         return MetaDecision(
             approved=approved,
@@ -2119,6 +2147,53 @@ class MetaBrain:
                     conviction_sources=conviction.sources,
                     features=features,
                 )
+
+        if _env_bool("META_BRAIN_EXECUTION_QUALITY_ENABLED", True):
+            try:
+                execution_quality = self.execution_quality.evaluate(
+                    token_id=token_id,
+                    intended_usdc=_env_float("META_BRAIN_EXECUTION_QUALITY_USDC", 3.0),
+                )
+                features.update(execution_quality.features)
+                if not execution_quality.ok:
+                    return MetaDecision(
+                        approved=False,
+                        reason=execution_quality.reason,
+                        score=score,
+                        entry_timing="skip",
+                        winrate_estimate=win_stats.winrate,
+                        winrate_sample_size=win_stats.total_with_outcome,
+                        signal_sources=signal_sources,
+                        cross_market_prob=features.get("cross_market_prob"),
+                        cross_market_divergence=features.get("cross_market_divergence"),
+                        velocity_direction=velocity.direction,
+                        velocity_pct_per_hour=velocity.pct_per_hour,
+                        conviction_direction=conviction.direction,
+                        conviction_confidence=conviction.confidence,
+                        conviction_sources=conviction.sources,
+                        features=features,
+                    )
+            except Exception as exc:
+                logger.debug("meta_brain: execution quality failed: %s", exc)
+                if _env_bool("META_BRAIN_EXECUTION_QUALITY_FAIL_CLOSED", False):
+                    features["execution_quality_error"] = f"{type(exc).__name__}: {exc}"
+                    return MetaDecision(
+                        approved=False,
+                        reason="execution_quality_error",
+                        score=score,
+                        entry_timing="skip",
+                        winrate_estimate=win_stats.winrate,
+                        winrate_sample_size=win_stats.total_with_outcome,
+                        signal_sources=signal_sources,
+                        cross_market_prob=features.get("cross_market_prob"),
+                        cross_market_divergence=features.get("cross_market_divergence"),
+                        velocity_direction=velocity.direction,
+                        velocity_pct_per_hour=velocity.pct_per_hour,
+                        conviction_direction=conviction.direction,
+                        conviction_confidence=conviction.confidence,
+                        conviction_sources=conviction.sources,
+                        features=features,
+                    )
 
         return MetaDecision(
             approved=True,

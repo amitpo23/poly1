@@ -950,6 +950,38 @@ services:
     stop_grace_period: 30s
     profiles: ["scanner", "universe"]
 
+  orderbook-monitor:
+    build: .
+    image: poly1:local
+    container_name: poly1-orderbook-monitor
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: orderbook_monitor
+    command: ["python", "-m", "agents.application.orderbook_monitor"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/orderbook_monitor_heartbeat') < 180\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["scanner", "orderbook"]
+
   telegram-reporter:
     build: .
     image: poly1:local

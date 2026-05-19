@@ -224,6 +224,56 @@ CREATE TABLE IF NOT EXISTS market_universe (
 CREATE INDEX IF NOT EXISTS idx_market_universe_ts ON market_universe(ts);
 CREATE INDEX IF NOT EXISTS idx_market_universe_route_score ON market_universe(route_agent, score);
 CREATE INDEX IF NOT EXISTS idx_market_universe_asset_horizon ON market_universe(asset, horizon, period_ts);
+
+CREATE TABLE IF NOT EXISTS orderbook_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    market_id TEXT,
+    source TEXT NOT NULL,
+    best_bid REAL,
+    best_ask REAL,
+    mid REAL,
+    spread_pct REAL,
+    bid_depth_usdc REAL,
+    ask_depth_usdc REAL,
+    bid_levels INTEGER NOT NULL DEFAULT 0,
+    ask_levels INTEGER NOT NULL DEFAULT 0,
+    imbalance REAL,
+    avg_buy_price_1 REAL,
+    avg_buy_price_3 REAL,
+    avg_buy_price_5 REAL,
+    slippage_buy_1_pct REAL,
+    slippage_buy_3_pct REAL,
+    slippage_buy_5_pct REAL,
+    raw_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_orderbook_snapshots_token_ts ON orderbook_snapshots(token_id, ts);
+CREATE INDEX IF NOT EXISTS idx_orderbook_snapshots_market_ts ON orderbook_snapshots(market_id, ts);
+
+CREATE TABLE IF NOT EXISTS orderbook_latest (
+    token_id TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,
+    market_id TEXT,
+    source TEXT NOT NULL,
+    best_bid REAL,
+    best_ask REAL,
+    mid REAL,
+    spread_pct REAL,
+    bid_depth_usdc REAL,
+    ask_depth_usdc REAL,
+    bid_levels INTEGER NOT NULL DEFAULT 0,
+    ask_levels INTEGER NOT NULL DEFAULT 0,
+    imbalance REAL,
+    avg_buy_price_1 REAL,
+    avg_buy_price_3 REAL,
+    avg_buy_price_5 REAL,
+    slippage_buy_1_pct REAL,
+    slippage_buy_3_pct REAL,
+    slippage_buy_5_pct REAL,
+    raw_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_orderbook_latest_market_ts ON orderbook_latest(market_id, ts);
 """
 
 
@@ -261,6 +311,18 @@ ACTIVE_STATUSES = TIME_BOUNDED_ACTIVE_STATUSES + UNBOUNDED_BLOCKING_STATUSES
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_ts(value: object) -> Optional[datetime]:
+    if value is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 
 def _parse_json_obj(value: Optional[str]) -> dict:
@@ -473,6 +535,138 @@ class TradeLog:
         except (TypeError, ValueError):
             value = 0.0
         return bool(row.get("eligible")) and value >= float(min_winrate)
+
+    def market_universe_tokens(self, limit: int = 100) -> list[dict]:
+        """Return distinct token ids from the current market universe."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT market_id, slug, token_id, outcome, score, top_rank, eligible
+                FROM (
+                    SELECT market_id, slug, up_token AS token_id, 'up' AS outcome,
+                           score, top_rank, eligible, COALESCE(top_rank, 999999) AS rank_sort
+                    FROM market_universe
+                    WHERE up_token IS NOT NULL AND up_token != ''
+                    UNION ALL
+                    SELECT market_id, slug, down_token AS token_id, 'down' AS outcome,
+                           score, top_rank, eligible, COALESCE(top_rank, 999999) AS rank_sort
+                    FROM market_universe
+                    WHERE down_token IS NOT NULL AND down_token != ''
+                )
+                ORDER BY rank_sort, score DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_orderbook_snapshot(self, row: dict) -> None:
+        now = row.get("ts") or _now()
+        raw = row.get("raw_json")
+        if isinstance(raw, (dict, list)):
+            raw = json.dumps(raw, default=str)
+        payload = (
+            now,
+            str(row["token_id"]),
+            row.get("market_id"),
+            row.get("source") or "unknown",
+            row.get("best_bid"),
+            row.get("best_ask"),
+            row.get("mid"),
+            row.get("spread_pct"),
+            row.get("bid_depth_usdc"),
+            row.get("ask_depth_usdc"),
+            int(row.get("bid_levels") or 0),
+            int(row.get("ask_levels") or 0),
+            row.get("imbalance"),
+            row.get("avg_buy_price_1"),
+            row.get("avg_buy_price_3"),
+            row.get("avg_buy_price_5"),
+            row.get("slippage_buy_1_pct"),
+            row.get("slippage_buy_3_pct"),
+            row.get("slippage_buy_5_pct"),
+            raw,
+        )
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO orderbook_snapshots (
+                    ts, token_id, market_id, source, best_bid, best_ask, mid,
+                    spread_pct, bid_depth_usdc, ask_depth_usdc, bid_levels,
+                    ask_levels, imbalance, avg_buy_price_1, avg_buy_price_3,
+                    avg_buy_price_5, slippage_buy_1_pct, slippage_buy_3_pct,
+                    slippage_buy_5_pct, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                payload,
+            )
+            conn.execute(
+                """
+                INSERT INTO orderbook_latest (
+                    ts, token_id, market_id, source, best_bid, best_ask, mid,
+                    spread_pct, bid_depth_usdc, ask_depth_usdc, bid_levels,
+                    ask_levels, imbalance, avg_buy_price_1, avg_buy_price_3,
+                    avg_buy_price_5, slippage_buy_1_pct, slippage_buy_3_pct,
+                    slippage_buy_5_pct, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(token_id) DO UPDATE SET
+                    ts=excluded.ts,
+                    market_id=excluded.market_id,
+                    source=excluded.source,
+                    best_bid=excluded.best_bid,
+                    best_ask=excluded.best_ask,
+                    mid=excluded.mid,
+                    spread_pct=excluded.spread_pct,
+                    bid_depth_usdc=excluded.bid_depth_usdc,
+                    ask_depth_usdc=excluded.ask_depth_usdc,
+                    bid_levels=excluded.bid_levels,
+                    ask_levels=excluded.ask_levels,
+                    imbalance=excluded.imbalance,
+                    avg_buy_price_1=excluded.avg_buy_price_1,
+                    avg_buy_price_3=excluded.avg_buy_price_3,
+                    avg_buy_price_5=excluded.avg_buy_price_5,
+                    slippage_buy_1_pct=excluded.slippage_buy_1_pct,
+                    slippage_buy_3_pct=excluded.slippage_buy_3_pct,
+                    slippage_buy_5_pct=excluded.slippage_buy_5_pct,
+                    raw_json=excluded.raw_json
+                """,
+                payload,
+            )
+
+    def latest_orderbook_snapshot(
+        self,
+        token_id: str,
+        *,
+        max_age_seconds: Optional[float] = None,
+    ) -> Optional[dict]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM orderbook_latest WHERE token_id = ?",
+                (str(token_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            data = dict(row)
+        if max_age_seconds is not None:
+            ts = _parse_iso_ts(data.get("ts"))
+            if ts is None:
+                return None
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+            if age > float(max_age_seconds):
+                return None
+            data["age_seconds"] = age
+        return data
+
+    def prune_orderbook_snapshots(self, older_than_minutes: int = 180) -> int:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(minutes=int(older_than_minutes))
+        ).isoformat()
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM orderbook_snapshots WHERE ts < ?",
+                (cutoff,),
+            )
+            return int(cur.rowcount or 0)
 
     def daily_trade_journal_stats(
         self,

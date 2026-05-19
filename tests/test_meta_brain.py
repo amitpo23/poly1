@@ -22,6 +22,7 @@ from agents.application.meta_brain import (
     NewsSignal,
     WhaleSentimentSignal,
 )
+from agents.application.execution_quality import ExecutionQualityAdvisor
 from agents.application.sizing import (
     binary_kelly_fraction,
     binary_raw_ev,
@@ -783,6 +784,27 @@ class TestMetaBrain(unittest.TestCase):
         self.assertAlmostEqual(decision.features["raw_ev"], 0.05, places=3)
 
     @patch.dict(os.environ, {
+        "META_BRAIN_EXECUTION_QUALITY_ENABLED": "true",
+        "EXECUTION_QUALITY_REQUIRE_FRESH": "true",
+        "META_BRAIN_MIN_EDGE_PCT": "0.0",
+        "META_BRAIN_MIN_RAW_EV": "0.0",
+    })
+    def test_execution_quality_blocks_when_token_book_missing(self):
+        mb = self._make_meta_brain(approved=True, score=0.84)
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        self.addCleanup(lambda: os.path.exists(db_path) and os.unlink(db_path))
+        mb.execution_quality = ExecutionQualityAdvisor(db_path=db_path)
+        decision = mb.synthesize(
+            market_id="m1",
+            question="Needs executable book?",
+            poly_prob=0.50,
+            token_id="missing-token",
+        )
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "no_fresh_orderbook")
+
+    @patch.dict(os.environ, {
         "META_BRAIN_CRYPTO_STRADDLE_MIN_SCORE": "0.65",
         "META_BRAIN_STRADDLE_TAVILY_ENABLED": "false",
         "META_BRAIN_STRADDLE_LLM_ENABLED": "false",
@@ -794,6 +816,41 @@ class TestMetaBrain(unittest.TestCase):
         "META_BRAIN_STRADDLE_WEIGHT_CONVICTION": "0.0",
         "META_BRAIN_STRADDLE_WEIGHT_VELOCITY": "0.0",
         "META_BRAIN_STRADDLE_WEIGHT_LIQUIDITY": "0.0",
+        "META_BRAIN_EXECUTION_QUALITY_ENABLED": "true",
+        "EXECUTION_QUALITY_REQUIRE_FRESH": "true",
+    })
+    def test_crypto_straddle_execution_quality_blocks_missing_book(self):
+        mb = self._make_meta_brain(approved=True, score=0.90, conviction_paths=[])
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        self.addCleanup(lambda: os.path.exists(db_path) and os.unlink(db_path))
+        mb.execution_quality = ExecutionQualityAdvisor(db_path=db_path)
+        decision = mb.synthesize_crypto_straddle(
+            slug="btc-updown-5m-1779199200",
+            question="Bitcoin Up or Down - May 19, 2:00PM UTC",
+            asset="BTC",
+            up_price=0.50,
+            down_price=0.50,
+            pair_ask_sum=1.0,
+            seconds_to_expiry=240,
+            token_id="missing-token",
+        )
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "no_fresh_orderbook")
+
+    @patch.dict(os.environ, {
+        "META_BRAIN_CRYPTO_STRADDLE_MIN_SCORE": "0.65",
+        "META_BRAIN_STRADDLE_TAVILY_ENABLED": "false",
+        "META_BRAIN_STRADDLE_LLM_ENABLED": "false",
+        "META_BRAIN_STRADDLE_WEIGHT_BRAIN": "1.0",
+        "META_BRAIN_STRADDLE_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_TAVILY": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_TRADINGVIEW": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_HERMES": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_LIQUIDITY": "0.0",
+        "META_BRAIN_EXECUTION_QUALITY_ENABLED": "false",
     })
     def test_crypto_straddle_uses_weighted_meta_score(self):
         mb = self._make_meta_brain(approved=True, score=0.90, conviction_paths=[])

@@ -99,6 +99,10 @@ class TestTradingPolicyContract(unittest.TestCase):
         self.assertIn('META_BRAIN_ANCHOR_THRESHOLD="0.70"', env_text)
         self.assertIn('META_BRAIN_MIN_WEIGHTED_SCORE_ANCHOR="0.40"', env_text)
         self.assertIn('META_BRAIN_WEIGHT_NEWS="0.10"', env_text)
+        self.assertIn('META_BRAIN_EXECUTION_QUALITY_ENABLED="true"', env_text)
+        self.assertIn('EXECUTION_QUALITY_REQUIRE_FRESH="true"', env_text)
+        self.assertIn('EXECUTION_QUALITY_MAX_SPREAD_PCT="0.05"', env_text)
+        self.assertIn('ORDERBOOK_MONITOR_POLL_SEC="1"', env_text)
         self.assertIn('EXPERT_SOLO_MIN_WINRATE="0.65"', env_text)
         self.assertIn('EXPERT_SOLO_MIN_WILSON="0.58"', env_text)
         self.assertIn('EXPERT_SOLO_MIN_SAMPLES="30"', env_text)
@@ -123,6 +127,9 @@ class TestTradingPolicyContract(unittest.TestCase):
         self.assertIn('CYCLE_SECONDS: "60"', compose)
         self.assertIn('SCANNER_POLL_SEC: "60"', compose)
         self.assertIn('MAINTAIN_LLM_EXIT_INTERVAL_SEC: "60"', compose)
+        self.assertIn("orderbook-monitor:", compose)
+        self.assertIn('RUNTIME_AGENT: orderbook_monitor', compose)
+        self.assertIn('command: ["python", "-m", "agents.application.orderbook_monitor"]', compose)
 
     def test_live_entry_brain_failures_are_fail_closed(self):
         for rel in (
