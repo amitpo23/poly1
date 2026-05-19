@@ -2002,6 +2002,16 @@ class ExternalConvictionAgent:
                 "external_conviction live skip %s: re-entry cooldown (%dh)",
                 market.market_id, reentry_cooldown_hours,
             )
+            self.trade_log.insert_terminal(
+                cycle_id=self.trade_log.new_cycle_id(),
+                market_id=market.market_id,
+                status="skipped_gate",
+                token_id=plan.token_id,
+                side="BUY" if plan.side == "YES" else "SELL",
+                price=market.yes_price,
+                size_usdc=0,
+                error=f"re-entry cooldown ({reentry_cooldown_hours}h)",
+            )
             return False
         # Fix 2: Per-market concentration limit.
         max_fills_24h = _env_int("MAX_FILLS_PER_MARKET_24H", 3)
@@ -2014,6 +2024,16 @@ class ExternalConvictionAgent:
                 "(%d fills in 24h >= max %d)",
                 market.market_id, recent_fills, max_fills_24h,
             )
+            self.trade_log.insert_terminal(
+                cycle_id=self.trade_log.new_cycle_id(),
+                market_id=market.market_id,
+                status="skipped_gate",
+                token_id=plan.token_id,
+                side="BUY" if plan.side == "YES" else "SELL",
+                price=market.yes_price,
+                size_usdc=0,
+                error=f"concentration limit ({recent_fills}/{max_fills_24h} in 24h)",
+            )
             return False
         # Fix 4d: Brain gate for general binary markets.
         if self.brain is not None:
@@ -2022,14 +2042,24 @@ class ExternalConvictionAgent:
                     question=market.question or "",
                     spread_pct=(
                         abs(market.yes_price - (1 - market.no_price))
-                        if market.no_price else None
+                        if market.no_price is not None else None
                     ),
-                    hours_to_close=getattr(market, "hours_to_close", None),
+                    hours_to_close=_hours_to_close_from_snapshot(market),
                 )
                 if not decision.approved:
                     logger.info(
                         "external_conviction brain rejected %s: %s",
                         market.market_id, decision.reason,
+                    )
+                    self.trade_log.insert_terminal(
+                        cycle_id=self.trade_log.new_cycle_id(),
+                        market_id=market.market_id,
+                        status="skipped_gate",
+                        token_id=plan.token_id,
+                        side="BUY" if plan.side == "YES" else "SELL",
+                        price=market.yes_price,
+                        size_usdc=0,
+                        error=f"brain rejected: {decision.reason}",
                     )
                     return False
             except Exception:

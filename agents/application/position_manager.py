@@ -199,7 +199,8 @@ class PositionManager:
         closed_timeout, errors}.
         """
         result = {"evaluated": 0, "closed_tp": 0, "closed_sl": 0,
-                  "closed_timeout": 0, "errors": 0, "skipped_already_closed": 0}
+                  "closed_timeout": 0, "errors": 0, "deferred": 0,
+                  "skipped_already_closed": 0}
         # Sync resolved markets first — this terminates phantom-open journal
         # rows so `_aggregate_open_positions` doesn't list tokens we no
         # longer hold (avoids the dust-skip → mid=0 → wasted cycle pattern).
@@ -226,8 +227,10 @@ class PositionManager:
                 reason = self._llm_exit_check(pos, mid)
                 if reason is None:
                     continue
-            ok = self._close_position(pos, reason, mid)
-            if ok:
+            close_result = self._close_position(pos, reason, mid)
+            if close_result == "deferred":
+                result["deferred"] += 1
+            elif close_result:
                 if reason == "take_profit":
                     result["closed_tp"] += 1
                 elif reason == "stop_loss":
@@ -656,7 +659,7 @@ class PositionManager:
                         reason, pos.token_id[:18], depth,
                         self.cfg.min_exit_bid_depth_usdc,
                     )
-                    return False
+                    return "deferred"
             except Exception:
                 # Fail-open: if we can't read the book, proceed with the sell.
                 logger.warning(

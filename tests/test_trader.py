@@ -1324,7 +1324,7 @@ class TestPreExitBidDepth(TempDataMixin, unittest.TestCase):
     def test_timeout_deferred_on_empty_bids(self):
         mgr, pos = self._make_manager(bid_depth=0.0, execute=True)
         result = mgr._close_position(pos, "timeout", 0.50)
-        self.assertFalse(result)
+        self.assertEqual(result, "deferred")
 
     def test_stop_loss_not_deferred(self):
         mgr, pos = self._make_manager(bid_depth=0.0, execute=False)
@@ -1333,9 +1333,50 @@ class TestPreExitBidDepth(TempDataMixin, unittest.TestCase):
         result = mgr._close_position(pos, "stop_loss", 0.50)
         self.assertTrue(result)
 
+    def test_take_profit_deferred_on_low_bids(self):
+        mgr, pos = self._make_manager(bid_depth=2.0, execute=True)
+        result = mgr._close_position(pos, "take_profit", 0.50)
+        self.assertEqual(result, "deferred")
+
     def test_tp_proceeds_when_bids_sufficient(self):
         mgr, pos = self._make_manager(bid_depth=10.0, execute=False)
         result = mgr._close_position(pos, "take_profit", 0.50)
+        self.assertTrue(result)
+
+    def test_bid_depth_error_is_fail_open(self):
+        """If bid_depth_usdc raises, the exit should proceed (fail-open)."""
+        from agents.application.position_manager import (
+            PositionManager,
+            PositionManagerConfig,
+            AggregatedPosition,
+        )
+        import time as _time
+
+        class BrokenPolymarket:
+            def bid_depth_usdc(self, token_id):
+                raise RuntimeError("API down")
+
+        class FakeExitExecutor:
+            def limit_price_from_mid(self, mid):
+                return mid * 0.98
+            def sell_fak(self, token_id, shares, mid):
+                return None
+
+        tl = TradeLog(self.db_path)
+        mgr = PositionManager(
+            polymarket=BrokenPolymarket(),
+            trade_log=tl,
+            cfg=PositionManagerConfig(execute=False, min_exit_bid_depth_usdc=5.0),
+            exit_executor=FakeExitExecutor(),
+        )
+        pos = AggregatedPosition(
+            token_id="TOK1", market_id="M1", side="BUY",
+            total_cost_usdc=5.0, total_shares=10.0,
+            avg_entry_price=0.50,
+            earliest_ts=_time.time() - 7200,
+        )
+        # Should proceed despite the exception (fail-open) — shadow mode returns True
+        result = mgr._close_position(pos, "timeout", 0.50)
         self.assertTrue(result)
 
 

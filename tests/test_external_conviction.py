@@ -1096,6 +1096,123 @@ class TestConcentrationLive(unittest.TestCase):
                 os.environ.pop("MAX_FILLS_PER_MARKET_24H", None)
 
 
+class TestReentryCooldownAllowsAfterExpiry(unittest.TestCase):
+    """Fix 1 positive case: old close does NOT block re-entry."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_allows_entry_when_close_is_old(self):
+        import os
+        old_val = os.environ.get("REENTRY_COOLDOWN_HOURS")
+        os.environ["REENTRY_COOLDOWN_HOURS"] = "12"
+        try:
+            cfg = ExternalConvictionConfig(
+                min_volume_usdc=1000.0,
+                min_liquidity_usdc=100.0,
+                max_candidates=1,
+                output_path=str(self.root / "ec_allow.jsonl"),
+                heartbeat_path=str(self.root / "hb_allow"),
+                position_size_usdc=3.0,
+                execute=True,
+                min_confidence=0.58,
+            )
+            log = TradeLog(str(self.root / "trade_log.db"))
+            polymarket = FakePolymarket()
+            # Insert a close with an old timestamp (>12h ago)
+            log._connect()  # ensure table exists
+            with log._lock, log._connect() as conn:
+                conn.execute(
+                    "INSERT INTO trades (cycle_id, market_id, status, token_id, ts) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    ("c_old", "M1", "closed_timeout", "TOK_YES", "2025-01-01T00:00:00+00:00"),
+                )
+            agent = ExternalConvictionAgent(
+                cfg=cfg,
+                gamma=FakeGamma([_raw_market()]),
+                provider=FixedProvider(direction="yes", confidence=0.74),
+                trade_log=log,
+                polymarket=polymarket,
+                risk_gate=FakeRiskGate(),
+            )
+            agent.collect_once()
+            # The old close should NOT block — order should be placed
+            self.assertGreater(len(polymarket.orders), 0)
+        finally:
+            if old_val is not None:
+                os.environ["REENTRY_COOLDOWN_HOURS"] = old_val
+            else:
+                os.environ.pop("REENTRY_COOLDOWN_HOURS", None)
+
+
+class TestConcentrationAllowsBelowLimit(unittest.TestCase):
+    """Fix 2 positive case: fills below limit do NOT block re-entry."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_allows_entry_below_limit(self):
+        """1 old fill (outside dedupe) + close → below limit 3, entry allowed."""
+        import os
+        old_fills = os.environ.get("MAX_FILLS_PER_MARKET_24H")
+        old_cool = os.environ.get("REENTRY_COOLDOWN_HOURS")
+        os.environ["MAX_FILLS_PER_MARKET_24H"] = "3"
+        os.environ["REENTRY_COOLDOWN_HOURS"] = "0"  # disable cooldown for this test
+        try:
+            cfg = ExternalConvictionConfig(
+                min_volume_usdc=1000.0,
+                min_liquidity_usdc=100.0,
+                max_candidates=1,
+                output_path=str(self.root / "ec_below.jsonl"),
+                heartbeat_path=str(self.root / "hb_below"),
+                position_size_usdc=3.0,
+                execute=True,
+                min_confidence=0.58,
+            )
+            log = TradeLog(str(self.root / "trade_log.db"))
+            polymarket = FakePolymarket()
+            # Insert 1 old fill (outside the 6h active dedupe window)
+            # so has_active_trade_for_market doesn't block, then a close.
+            log._connect()  # ensure table exists
+            with log._lock, log._connect() as conn:
+                conn.execute(
+                    "INSERT INTO trades (cycle_id, market_id, status, token_id, ts) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    ("c1", "M1", "filled", "TOK_YES", "2025-01-01T00:00:00+00:00"),
+                )
+                conn.execute(
+                    "INSERT INTO trades (cycle_id, market_id, status, token_id, ts) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    ("close1", "M1", "closed_take_profit", "TOK_YES", "2025-01-01T01:00:00+00:00"),
+                )
+            agent = ExternalConvictionAgent(
+                cfg=cfg,
+                gamma=FakeGamma([_raw_market()]),
+                provider=FixedProvider(direction="yes", confidence=0.74),
+                trade_log=log,
+                polymarket=polymarket,
+                risk_gate=FakeRiskGate(),
+            )
+            agent.collect_once()
+            # 1 old fill < 3 limit — order should be placed
+            self.assertGreater(len(polymarket.orders), 0)
+        finally:
+            for var, val in [("MAX_FILLS_PER_MARKET_24H", old_fills),
+                             ("REENTRY_COOLDOWN_HOURS", old_cool)]:
+                if val is not None:
+                    os.environ[var] = val
+                else:
+                    os.environ.pop(var, None)
+
+
 class TestInMemoryDuplicateGuard(unittest.TestCase):
     """Fix 6: same market_id should only get one live entry per cycle."""
 
