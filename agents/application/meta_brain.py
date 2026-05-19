@@ -153,10 +153,15 @@ class WinRateAdvisor:
     """
 
     WIN_OUTCOMES = frozenset({
-        "closed_take_profit", "resolved_yes", "resolved_skipped_no",
+        "closed_take_profit",
+        "resolved_yes",           # held YES token, market resolved YES → payout=1 → profit
+        "resolved_no",            # held NO token, market resolved NO → payout=1 → profit
+        "resolved_skipped_no",    # legacy label; kept for backward-compat
     })
     LOSS_OUTCOMES = frozenset({
-        "closed_stop_loss", "closed_timeout", "resolved_loss", "resolved_no",
+        "closed_stop_loss",
+        "closed_timeout",
+        "resolved_loss",          # held any side that lost → payout=0
     })
 
     def __init__(self, cache_ttl_sec: int = 300):

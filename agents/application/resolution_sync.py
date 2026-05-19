@@ -513,3 +513,63 @@ class ResolutionSync:
             "resolution_sync: token=%s outcome=%s shares=%.2f cost=$%.2f payout=$%.2f pnl=$%+.2f",
             token_id[:18], outcome["status"], total_shares, total_cost, payout, pnl,
         )
+
+        # Stage-0 calibration loop: annotate brain_decisions so WinRateAdvisor
+        # can compute real win-rate from actual outcomes rather than falling
+        # back to the trades table.  This is write-only — no trading decision
+        # reads this path; it only enriches the journal for measurement.
+        if market_id:
+            self._annotate_brain_decisions(
+                market_id=market_id,
+                outcome_status=outcome["status_key"],
+                outcome_context={
+                    "resolution_outcome": outcome["status_key"],
+                    "payout_per_share": outcome["payout_per_share"],
+                    "shares_held": round(total_shares, 4),
+                    "total_cost_usdc": round(total_cost, 4),
+                    "payout_usdc": round(payout, 4),
+                    "realized_pnl_usdc": round(pnl, 4),
+                    "outcome_label": outcome.get("outcome_label"),
+                },
+            )
+
+    def _annotate_brain_decisions(
+        self,
+        market_id: str,
+        outcome_status: str,
+        outcome_context: dict,
+    ) -> None:
+        """Annotate all unannotated brain_decisions rows for *market_id* with
+        their resolution outcome.
+
+        Only updates rows where outcome_status IS NULL (idempotent — calling
+        this twice for the same market is safe and a no-op the second time).
+
+        This method is write-only and does not affect any trading decision.
+        Its sole purpose is to fill the calibration loop so that WinRateAdvisor
+        can compute empirical win-rates from brain_decisions rather than
+        falling back to the coarser trades table.
+        """
+        try:
+            with self.trade_log._lock, self.trade_log._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id FROM brain_decisions "
+                    "WHERE market_id = ? AND outcome_status IS NULL",
+                    (str(market_id),),
+                ).fetchall()
+            for row in rows:
+                self.trade_log.update_brain_decision_outcome(
+                    decision_id=int(row["id"]),
+                    outcome_status=outcome_status,
+                    outcome=outcome_context,
+                )
+            if rows:
+                logger.info(
+                    "resolution_sync: annotated %d brain_decision(s) market=%s outcome=%s",
+                    len(rows), market_id[:24], outcome_status,
+                )
+        except Exception:
+            logger.exception(
+                "resolution_sync: brain_decisions annotation failed for market=%s",
+                market_id[:24],
+            )
