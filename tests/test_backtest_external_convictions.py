@@ -112,6 +112,66 @@ class TestBacktestExternalConvictions(unittest.TestCase):
             )
             self.assertEqual(len(iter_signals([jsonl])), 1)
 
+    def test_resolved_no_counts_as_win(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jsonl = root / "external_convictions_test.jsonl"
+            jsonl.write_text(
+                json.dumps({
+                    "plan": {
+                        "ts": "2026-05-19T10:00:00+00:00",
+                        "market_id": "M1",
+                        "token_id": "TOK_NO",
+                        "action": "BUY",
+                        "side": "NO",
+                        "confidence": 0.66,
+                        "source": "provider_a",
+                    }
+                }) + "\n",
+                encoding="utf-8",
+            )
+            db_path = root / "trade_log.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE trades (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts TEXT NOT NULL,
+                        cycle_id TEXT NOT NULL,
+                        market_id TEXT NOT NULL,
+                        token_id TEXT,
+                        side TEXT,
+                        price REAL,
+                        size_usdc REAL,
+                        confidence REAL,
+                        status TEXT NOT NULL,
+                        response_json TEXT,
+                        error TEXT
+                    )"""
+                )
+                conn.execute(
+                    "INSERT INTO trades (ts, cycle_id, market_id, token_id, side, "
+                    "price, size_usdc, confidence, status) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        "2026-05-19T10:15:00+00:00",
+                        "c1",
+                        "M1",
+                        "TOK_NO",
+                        "RESOLUTION",
+                        1.0,
+                        4.0,
+                        None,
+                        "resolved_no",
+                    ),
+                )
+
+            providers, _ = build_stats(
+                iter_signals([jsonl]),
+                load_outcomes(db_path),
+                max_age_hours=1,
+            )
+            self.assertEqual(providers[0].wins, 1)
+            self.assertEqual(providers[0].losses, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

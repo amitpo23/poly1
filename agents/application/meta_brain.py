@@ -145,8 +145,10 @@ class WinRateAdvisor:
 
     Uses two sources (tried in order):
     1. brain_decisions.outcome_status — best because it's tied to brain scoring.
-       A "win" = outcome_status IN ('closed_take_profit', 'resolved_yes', 'resolved_skipped_no').
-       A "loss" = outcome_status IN ('closed_stop_loss', 'resolved_loss', 'resolved_no').
+       A "win" = outcome_status IN ('closed_take_profit', 'resolved_yes',
+       'resolved_no', 'resolved_skipped_no').
+       A "loss" = outcome_status IN ('closed_stop_loss', 'closed_timeout',
+       'resolved_loss').
     2. trades table — fallback, counts closed_take_profit vs closed_stop_loss.
 
     Results are cached for 5 minutes per (db_path, hours) combination.
@@ -222,7 +224,7 @@ class WinRateAdvisor:
 
         base = stats.winrate
         if base is None:
-            base = _env_float("META_BRAIN_WINRATE_PRIOR", 0.52)
+            base = _env_float("META_BRAIN_WINRATE_PRIOR", 0.50)
         day_wr = day.get("winrate")
         if day_wr is None:
             day_wr = 0.50
@@ -1074,7 +1076,7 @@ class MetaBrain:
         features.update(tradingview_features)
         features.update(hermes_features)
 
-        winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.52)
+        winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.50)
         min_winrate_samples = _env_int("META_BRAIN_MIN_WINRATE_SAMPLES", 5)
         winrate_component = (
             float(win_stats.winrate)
@@ -1444,7 +1446,7 @@ class MetaBrain:
 
         # 7. Weighted score. Missing win-rate data gets a neutral prior, so new
         # strategies can trade, but proven history improves the final score.
-        winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.52)
+        winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.50)
         min_winrate_samples = _env_int("META_BRAIN_MIN_WINRATE_SAMPLES", 5)
         winrate_component = (
             float(win_stats.winrate)

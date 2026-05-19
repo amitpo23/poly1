@@ -512,6 +512,26 @@ class TestMetaBrain(unittest.TestCase):
         decision = mb.synthesize(market_id="m1", question="Weak?")
         self.assertFalse(decision.features.get("has_anchor"))
 
+    @patch.dict(os.environ, {
+        "META_BRAIN_WINRATE_PRIOR": "0.50",
+        "META_BRAIN_WEIGHT_BRAIN": "0.25",
+        "META_BRAIN_WEIGHT_WINRATE": "0.15",
+        "META_BRAIN_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_WEIGHT_CROSS_MARKET": "0.0",
+        "META_BRAIN_WEIGHT_WHALE": "0.0",
+        "META_BRAIN_WEIGHT_NEWS": "0.0",
+        "META_BRAIN_WEIGHT_LIQUIDITY": "0.0",
+    })
+    def test_missing_winrate_prior_is_neutral_not_dilutive(self):
+        mb = self._make_meta_brain(approved=True, score=0.60)
+        decision = mb.synthesize(market_id="m1", question="No history yet?")
+        self.assertAlmostEqual(decision.features["meta_score"], 0.60)
+        self.assertAlmostEqual(
+            decision.features["weighted_components"]["winrate"],
+            0.50,
+        )
+
     def test_summary_is_nonempty(self):
         mb = self._make_meta_brain(approved=True, score=0.65)
         decision = mb.synthesize(

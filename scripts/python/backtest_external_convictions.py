@@ -25,8 +25,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-WIN_STATUSES = {"closed_take_profit", "closed_partial_take_profit", "resolved_yes"}
-LOSS_STATUSES = {"closed_stop_loss", "closed_timeout", "resolved_loss", "resolved_no"}
+WIN_STATUSES = {
+    "closed_take_profit",
+    "closed_partial_take_profit",
+    "resolved_yes",
+    "resolved_no",
+}
+LOSS_STATUSES = {"closed_stop_loss", "closed_timeout", "resolved_loss"}
 TERMINAL_STATUSES = WIN_STATUSES | LOSS_STATUSES
 
 
