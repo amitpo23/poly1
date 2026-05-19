@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -92,6 +93,56 @@ class TestOrderbookExecutionQuality(unittest.TestCase):
         )
         self.assertFalse(quality.ok)
         self.assertEqual(quality.reason, "no_fresh_orderbook")
+
+    def test_market_universe_tokens_prioritize_future_eligible_books(self):
+        now = int(time.time())
+        self.log.upsert_market_universe({
+            "slug": "past-high-score",
+            "horizon": "5m",
+            "asset": "btc",
+            "period_ts": now - 3600,
+            "market_id": "past",
+            "up_token": "PAST_UP",
+            "down_token": "PAST_DOWN",
+            "accepting_orders": True,
+            "route_agent": "btc_5min",
+            "score": 0.99,
+            "eligible": True,
+            "top_rank": 1,
+        })
+        self.log.upsert_market_universe({
+            "slug": "future-active",
+            "horizon": "5m",
+            "asset": "btc",
+            "period_ts": now + 300,
+            "market_id": "future",
+            "up_token": "FUTURE_UP",
+            "down_token": "FUTURE_DOWN",
+            "accepting_orders": True,
+            "route_agent": "btc_5min",
+            "score": 0.70,
+            "eligible": True,
+            "top_rank": 5,
+        })
+        self.log.upsert_market_universe({
+            "slug": "future-ineligible",
+            "horizon": "5m",
+            "asset": "btc",
+            "period_ts": now + 60,
+            "market_id": "blocked",
+            "up_token": "BLOCKED_UP",
+            "down_token": "BLOCKED_DOWN",
+            "accepting_orders": True,
+            "route_agent": "btc_5min",
+            "score": 1.0,
+            "eligible": False,
+            "top_rank": 1,
+        })
+
+        tokens = self.log.market_universe_tokens(limit=4)
+        token_ids = [row["token_id"] for row in tokens]
+        self.assertEqual(token_ids[:2], ["FUTURE_UP", "FUTURE_DOWN"])
+        self.assertNotIn("BLOCKED_UP", token_ids)
 
 
 if __name__ == "__main__":

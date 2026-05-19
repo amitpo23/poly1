@@ -544,16 +544,23 @@ class TradeLog:
                 SELECT market_id, slug, token_id, outcome, score, top_rank, eligible
                 FROM (
                     SELECT market_id, slug, up_token AS token_id, 'up' AS outcome,
-                           score, top_rank, eligible, COALESCE(top_rank, 999999) AS rank_sort
+                           score, top_rank, eligible, accepting_orders, period_ts,
+                           COALESCE(top_rank, 999999) AS rank_sort
                     FROM market_universe
                     WHERE up_token IS NOT NULL AND up_token != ''
                     UNION ALL
                     SELECT market_id, slug, down_token AS token_id, 'down' AS outcome,
-                           score, top_rank, eligible, COALESCE(top_rank, 999999) AS rank_sort
+                           score, top_rank, eligible, accepting_orders, period_ts,
+                           COALESCE(top_rank, 999999) AS rank_sort
                     FROM market_universe
                     WHERE down_token IS NOT NULL AND down_token != ''
                 )
-                ORDER BY rank_sort, score DESC
+                WHERE eligible = 1 AND accepting_orders = 1
+                ORDER BY
+                    CASE WHEN period_ts >= strftime('%s', 'now') THEN 0 ELSE 1 END,
+                    CASE WHEN period_ts >= strftime('%s', 'now') THEN period_ts ELSE -period_ts END,
+                    rank_sort,
+                    score DESC
                 LIMIT ?
                 """,
                 (int(limit),),
