@@ -76,6 +76,15 @@ class Trader:
             trade_log=self.trade_log, polymarket=self.polymarket
         )
         self.brain = MarketBrain()
+        # MetaBrain: single synthesizing layer (wraps brain + win-rate + velocity + conviction).
+        try:
+            from agents.application.meta_brain import MetaBrain
+            self.meta_brain = MetaBrain(
+                db_path=os.getenv("TRADE_LOG_PATH", "./data/poly1.db"),
+                market_brain=self.brain,
+            )
+        except Exception:
+            self.meta_brain = None
         self.shadow_ignore_risk_gate = (
             os.getenv("SHADOW_IGNORE_RISK_GATE", "false").lower() == "true"
         )
@@ -713,11 +722,12 @@ class Trader:
         market,
         news_context: str,
     ) -> bool:
-        """Return False (and log) if MarketBrain rejects this entry.
+        """Return False (and log) if MetaBrain rejects this entry.
 
-        Extracts spread_pct and hours_to_close from market metadata, then
-        delegates to brain.evaluate_general_entry(). Fails open on any
-        extraction error so a missing field never silently blocks a trade.
+        Uses MetaBrain.synthesize() which aggregates: spread/horizon gate,
+        cross-market signals (Kalshi/Metaculus/Manifold), win-rate from
+        history, probability velocity, and external conviction JSONL.
+        Falls back to brain.evaluate_general_entry() if MetaBrain unavailable.
         """
         try:
             metadata = market[0].dict().get("metadata", {})
@@ -742,6 +752,42 @@ class Trader:
                 except Exception:
                     pass
 
+            # Try prices[0] for poly_prob.
+            poly_prob: Optional[float] = None
+            try:
+                prices = market[0].dict().get("tokens", [{}])
+                poly_prob = float(prices[0].get("price", 0.5)) if prices else None
+            except Exception:
+                pass
+
+            # MetaBrain synthesis (preferred).
+            if self.meta_brain is not None:
+                meta = self.meta_brain.synthesize(
+                    market_id=market_id,
+                    question=question,
+                    spread_pct=spread_pct,
+                    hours_to_close=hours_to_close,
+                    poly_prob=poly_prob,
+                    external_context=news_context,
+                    token_id=None,
+                )
+                if not meta.approved:
+                    logger.info(
+                        "cycle %s: market %s skipped (meta_brain: %s score=%.3f timing=%s)",
+                        cycle_id, market_id, meta.reason, meta.score, meta.entry_timing,
+                    )
+                    self.trade_log.insert_terminal(
+                        cycle_id, market_id, SKIPPED_GATE,
+                        error=f"meta_brain:{meta.reason} score={meta.score:.3f}",
+                    )
+                    return False
+                logger.debug(
+                    "cycle %s: market %s meta_brain approved — %s",
+                    cycle_id, market_id, meta.summary,
+                )
+                return True
+
+            # Fallback: legacy brain gate.
             decision = self.brain.evaluate_general_entry(
                 question=question,
                 spread_pct=spread_pct,

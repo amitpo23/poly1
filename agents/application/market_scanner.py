@@ -265,10 +265,19 @@ class MarketScanner:
         cfg: Optional[ScannerConfig] = None,
         trade_log: Optional[TradeLog] = None,
         brain: Optional[MarketBrain] = None,
+        meta_brain=None,
     ):
         self.cfg = cfg or ScannerConfig.from_env()
         self.trade_log = trade_log or TradeLog()
         self.brain = brain or MarketBrain(BrainConfig.from_env())
+        # MetaBrain: single synthesizing layer (wraps brain + win-rate + velocity + conviction).
+        if meta_brain is None:
+            from agents.application.meta_brain import MetaBrain
+            meta_brain = MetaBrain(
+                db_path=os.getenv("TRADE_LOG_PATH", "./data/poly1.db"),
+                market_brain=self.brain,
+            )
+        self.meta_brain = meta_brain
 
     # ---------------------------------------------------------------- public
 
@@ -396,17 +405,21 @@ class MarketScanner:
             except Exception:
                 logger.debug("scanner: vibe failed for %s", market_id[:20])
 
-        # b. Brain gate — reject obviously bad markets before Tavily/Manifold.
-        brain_decision = self.brain.evaluate_general_entry(
+        # b. MetaBrain synthesis: gate + win-rate + cross-market + conviction + velocity.
+        meta = self.meta_brain.synthesize(
+            market_id=market_id,
             question=question,
             spread_pct=spread_pct,
             hours_to_close=hours_to_close,
-            external_context="",  # no external context yet at this stage
+            poly_prob=yes_price,
+            external_context="",  # Tavily context not yet fetched at this stage
             vibe_signals=vibe_signals,
+            token_id=None,
         )
-        if not brain_decision.approved:
+        if not meta.approved:
             return
         result["brain_approved"] += 1
+        logger.debug("scanner: meta_brain: %s", meta.summary)
 
         # c. Tavily news search — cheap, no LLM.
         tavily_ctx = ""
@@ -420,26 +433,35 @@ class MarketScanner:
                     direction_keywords_no=["loses", "fails", "rejected", "falls", "no"],
                 )
 
-        # d. Manifold divergence check.
-        manifold_divergence = 0.0
-        manifold_source = ""
-        if self.cfg.manifold_enabled:
-            manifold_divergence, manifold_source = self._manifold_check(
-                question, yes_price, market_id
-            )
+        # d. Manifold divergence check (kept for near-resolution routing logic;
+        #    MetaBrain already ran cross-market fetch — reuse if available).
+        manifold_divergence = float(meta.cross_market_divergence or 0.0)
+        manifold_source = ",".join(meta.signal_sources) if meta.signal_sources else ""
+        if manifold_divergence == 0.0 and self.cfg.manifold_enabled:
+            try:
+                manifold_divergence, manifold_source = self._manifold_check(
+                    question, yes_price, market_id
+                )
+            except Exception:
+                pass
 
-        # e. Compute overall opportunity score.
-        base_score = brain_decision.score  # 0.0–1.0 from brain
+        # e. Opportunity score — use meta.score (already incorporates conviction + velocity).
+        base_score = meta.score
         tavily_boost = 0.10 if tavily_ctx else 0.0
-        manifold_boost = min(0.15, abs(manifold_divergence) * 2.0)
-        opportunity_score = min(1.0, base_score + tavily_boost + manifold_boost)
+        opportunity_score = min(1.0, base_score + tavily_boost)
 
         features = {
             "yes_price": round(yes_price, 4),
             "spread_pct": round(spread_pct, 4) if spread_pct else None,
             "hours_to_close": round(hours_to_close, 2) if hours_to_close else None,
             "liquidity_usdc": round(liq, 0),
-            "brain_score": round(brain_decision.score, 4),
+            "brain_score": round(meta.score, 4),
+            "meta_timing": meta.entry_timing,
+            "meta_winrate": meta.winrate_estimate,
+            "meta_winrate_n": meta.winrate_sample_size,
+            "meta_conviction": meta.conviction_direction,
+            "meta_velocity": meta.velocity_direction,
+            "meta_signal_sources": meta.signal_sources,
             "tavily_direction": tavily_direction,
             "tavily_confidence": round(tavily_confidence_val, 3),
             "tavily_preview": tavily_ctx[:120] if tavily_ctx else "",
