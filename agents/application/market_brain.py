@@ -10,10 +10,14 @@ import os
 import re
 import time
 import json
+import urllib.parse
 import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -169,6 +173,10 @@ class CryptoSignalFeed:
     The feed is intentionally optional. If network calls fail, callers can still
     make deterministic orderbook decisions; the brain should not crash a bot
     because an external signal endpoint is briefly unavailable.
+
+    Price source priority:
+      1. Binance spot (free, reliable, global) — /api/v3/ticker/price
+      2. Coinbase fallback — /v2/prices/{symbol}/spot
     """
 
     SYMBOLS = {
@@ -177,6 +185,15 @@ class CryptoSignalFeed:
         "sol": "SOL-USD",
         "xrp": "XRP-USD",
     }
+    BINANCE_SYMBOLS = {
+        "btc": "BTCUSDT",
+        "eth": "ETHUSDT",
+        "sol": "SOLUSDT",
+        "xrp": "XRPUSDT",
+    }
+    BINANCE_SPOT_URL = "https://api.binance.com/api/v3/ticker/price"
+    BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+    COINBASE_URL = "https://api.coinbase.com/v2/prices/{symbol}/spot"
 
     def __init__(self, max_history_sec: int = 600, timeout_sec: int = 5):
         self.max_history_sec = max_history_sec
@@ -185,19 +202,36 @@ class CryptoSignalFeed:
             asset: deque() for asset in self.SYMBOLS
         }
 
+    def _fetch_price(self, asset: str) -> Optional[float]:
+        """Try Binance first, fall back to Coinbase. Returns None on failure."""
+        binance_sym = self.BINANCE_SYMBOLS.get(asset)
+        if binance_sym:
+            try:
+                url = f"{self.BINANCE_SPOT_URL}?symbol={binance_sym}"
+                req = urllib.request.Request(url, headers={"User-Agent": "poly1-cryptofeed"})
+                with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
+                    data = json.loads(resp.read())
+                return float(data["price"])
+            except Exception:
+                pass
+        # Fallback to Coinbase
+        cb_symbol = self.SYMBOLS.get(asset)
+        if cb_symbol:
+            try:
+                url = self.COINBASE_URL.format(symbol=cb_symbol)
+                with urllib.request.urlopen(url, timeout=self.timeout_sec) as resp:
+                    payload = json.loads(resp.read())
+                return float(payload["data"]["amount"])
+            except Exception:
+                pass
+        return None
+
     def update(self, asset: str) -> CryptoSignal:
         asset = self._normalize_asset(asset)
-        symbol = self.SYMBOLS.get(asset)
-        if not symbol:
+        if asset not in self.SYMBOLS:
             return CryptoSignal(asset=asset, price=None, changes={}, samples=0, fresh=False)
-        try:
-            with urllib.request.urlopen(
-                f"https://api.coinbase.com/v2/prices/{symbol}/spot",
-                timeout=self.timeout_sec,
-            ) as resp:
-                payload = json.loads(resp.read())
-            price = float(payload["data"]["amount"])
-        except Exception:
+        price = self._fetch_price(asset)
+        if price is None:
             return self.snapshot(asset, fresh=False)
 
         now_ms = int(time.time() * 1000)
@@ -251,6 +285,197 @@ class CryptoSignalFeed:
         }.get(asset, asset)
 
 
+@dataclass
+class CrossMarketSignal:
+    """Consensus probability from free external prediction markets."""
+    question: str
+    sources: list  # list of {"source": str, "prob": float}
+    consensus_prob: Optional[float]  # weighted median; None if no data
+    divergence: Optional[float]      # consensus_prob - poly_prob (if poly_prob given)
+    fresh: bool = True
+
+
+class CrossMarketSignalFeed:
+    """Lightweight, optional feed that queries Kalshi, Metaculus, and Manifold
+    for a question and returns a consensus probability.
+
+    All network calls are best-effort with short timeouts. Failures are silently
+    swallowed so the brain never blocks on network errors.
+
+    Results are cached per question for `cache_ttl_sec` seconds to avoid
+    hammering the free-tier APIs on every cycle.
+    """
+
+    KALSHI_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
+    METACULUS_URL = "https://www.metaculus.com/api/questions/"
+    MANIFOLD_URL = "https://api.manifold.markets/v0/search-markets"
+
+    def __init__(self, timeout_sec: int = 6, cache_ttl_sec: int = 300):
+        self.timeout_sec = timeout_sec
+        self.cache_ttl_sec = cache_ttl_sec
+        self._cache: dict[str, tuple[float, CrossMarketSignal]] = {}
+
+    def query(self, question: str, poly_prob: Optional[float] = None) -> CrossMarketSignal:
+        """Return a CrossMarketSignal for *question*, using cached data if fresh."""
+        key = question[:80].lower()
+        now = time.time()
+        if key in self._cache:
+            cached_ts, cached_signal = self._cache[key]
+            if now - cached_ts < self.cache_ttl_sec:
+                # Recompute divergence with current poly_prob even from cache
+                if poly_prob is not None and cached_signal.consensus_prob is not None:
+                    cached_signal = CrossMarketSignal(
+                        question=cached_signal.question,
+                        sources=cached_signal.sources,
+                        consensus_prob=cached_signal.consensus_prob,
+                        divergence=round(cached_signal.consensus_prob - poly_prob, 4),
+                        fresh=cached_signal.fresh,
+                    )
+                return cached_signal
+
+        sources: list[dict] = []
+        for fetcher in (self._fetch_kalshi, self._fetch_metaculus, self._fetch_manifold):
+            try:
+                result = fetcher(question[:60])
+                if result is not None:
+                    sources.append(result)
+            except Exception:
+                pass
+
+        if sources:
+            probs = [s["prob"] for s in sources]
+            consensus_prob = round(sum(probs) / len(probs), 4)
+        else:
+            consensus_prob = None
+
+        divergence = None
+        if consensus_prob is not None and poly_prob is not None:
+            divergence = round(consensus_prob - poly_prob, 4)
+
+        signal = CrossMarketSignal(
+            question=question[:80],
+            sources=sources,
+            consensus_prob=consensus_prob,
+            divergence=divergence,
+        )
+        self._cache[key] = (now, signal)
+        return signal
+
+    def _fetch_kalshi(self, query: str) -> Optional[dict]:
+        params = urllib.parse.urlencode({"limit": "3", "status": "open", "title": query})
+        url = f"{self.KALSHI_URL}?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "poly1-brain-crossmarket"})
+        with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
+            body = json.loads(resp.read())
+        markets = body.get("markets") if isinstance(body, dict) else []
+        if not isinstance(markets, list) or not markets:
+            return None
+        best = max(
+            markets,
+            key=lambda m: sum(1 for w in query.lower().split() if w in str(m.get("title", "")).lower()),
+        )
+        # yes_ask in cents (0-100)
+        raw_yes = best.get("yes_ask") or best.get("last_price") or 0
+        prob = float(raw_yes) / 100.0
+        if not 0.02 < prob < 0.98:
+            return None
+        return {"source": "kalshi", "prob": prob, "title": str(best.get("title", ""))[:60]}
+
+    def _fetch_metaculus(self, query: str) -> Optional[dict]:
+        params = urllib.parse.urlencode({
+            "search": query, "limit": "3", "type": "forecast", "status": "open",
+        })
+        url = f"{self.METACULUS_URL}?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "poly1-brain-crossmarket"})
+        with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
+            body = json.loads(resp.read())
+        results = body.get("results") if isinstance(body, dict) else body
+        if not isinstance(results, list) or not results:
+            return None
+        best = results[0]
+        community = best.get("community_prediction") or {}
+        prob = float((community.get("full") or {}).get("q2", 0))
+        if not 0.02 < prob < 0.98:
+            return None
+        return {"source": "metaculus", "prob": prob, "title": str(best.get("title", ""))[:60]}
+
+    def _fetch_manifold(self, query: str) -> Optional[dict]:
+        params = urllib.parse.urlencode({"term": query, "limit": "3"})
+        url = f"{self.MANIFOLD_URL}?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "poly1-brain-crossmarket"})
+        with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
+            results = json.loads(resp.read())
+        if not isinstance(results, list) or not results:
+            return None
+        best = results[0]
+        prob = float(best.get("probability", 0))
+        if not 0.02 < prob < 0.98:
+            return None
+        return {"source": "manifold", "prob": prob, "title": str(best.get("question", ""))[:60]}
+
+
+@dataclass
+class CoinGeckoSignal:
+    """Price + 24h change from CoinGecko for a crypto asset."""
+    asset: str
+    price_usd: Optional[float]
+    change_24h: Optional[float]   # fraction, e.g. 0.03 = +3%
+    market_cap_rank: Optional[int]
+    fresh: bool
+
+
+class CoinGeckoFeed:
+    """Thin CoinGecko free-tier wrapper for crypto context in brain decisions.
+
+    Rate limit: 10-30 calls/min on free tier. Aggressive caching (10 min)
+    avoids hitting the limit even across many markets.
+    """
+
+    COIN_IDS = {
+        "btc": "bitcoin", "bitcoin": "bitcoin",
+        "eth": "ethereum", "ethereum": "ethereum",
+        "sol": "solana", "solana": "solana",
+        "xrp": "ripple", "ripple": "ripple",
+    }
+    BASE_URL = "https://api.coingecko.com/api/v3"
+
+    def __init__(self, timeout_sec: int = 6, cache_ttl_sec: int = 600):
+        self.timeout_sec = timeout_sec
+        self.cache_ttl_sec = cache_ttl_sec
+        self._cache: dict[str, tuple[float, CoinGeckoSignal]] = {}
+
+    def get(self, asset: str) -> CoinGeckoSignal:
+        asset = asset.lower()
+        coin_id = self.COIN_IDS.get(asset)
+        if not coin_id:
+            return CoinGeckoSignal(asset=asset, price_usd=None, change_24h=None,
+                                   market_cap_rank=None, fresh=False)
+        now = time.time()
+        if asset in self._cache:
+            ts, sig = self._cache[asset]
+            if now - ts < self.cache_ttl_sec:
+                return sig
+
+        try:
+            url = (f"{self.BASE_URL}/simple/price"
+                   f"?ids={coin_id}&vs_currencies=usd"
+                   f"&include_24hr_change=true&include_market_cap=false")
+            req = urllib.request.Request(url, headers={"User-Agent": "poly1-brain-coingecko"})
+            with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
+                body = json.loads(resp.read())
+            data = body.get(coin_id, {})
+            price = float(data.get("usd", 0)) or None
+            change = data.get("usd_24h_change")
+            change_frac = float(change) / 100.0 if change is not None else None
+            sig = CoinGeckoSignal(asset=asset, price_usd=price,
+                                  change_24h=change_frac, market_cap_rank=None, fresh=True)
+        except Exception:
+            sig = CoinGeckoSignal(asset=asset, price_usd=None, change_24h=None,
+                                  market_cap_rank=None, fresh=False)
+        self._cache[asset] = (now, sig)
+        return sig
+
+
 class MarketBrain:
     """Small deterministic first pass for market context.
 
@@ -268,9 +493,13 @@ class MarketBrain:
         self,
         cfg: Optional[BrainConfig] = None,
         crypto_feed: Optional[CryptoSignalFeed] = None,
+        cross_market_feed: Optional[CrossMarketSignalFeed] = None,
+        coingecko_feed: Optional[CoinGeckoFeed] = None,
     ):
         self.cfg = cfg or BrainConfig.from_env()
         self.crypto_feed = crypto_feed
+        self.cross_market_feed = cross_market_feed or CrossMarketSignalFeed()
+        self.coingecko_feed = coingecko_feed or CoinGeckoFeed()
 
     def classify(self, slug: str, period_ts: Optional[int] = None) -> MarketProfile:
         match = self.CRYPTO_15M_RE.match(slug or "")
@@ -542,6 +771,7 @@ class MarketBrain:
         hours_to_close: Optional[float] = None,
         external_context: str = "",
         vibe_signals: Optional[dict] = None,
+        poly_prob: Optional[float] = None,
     ) -> BrainDecision:
         """Pre-LLM gate for general binary markets (sports, elections, events).
 
@@ -605,6 +835,30 @@ class MarketBrain:
                 score += min(0.15, composite_conf * 0.20)
                 features["vibe_confidence"] = round(composite_conf, 4)
                 features["vibe_direction"] = vibe_signals.get("direction", "")
+
+        # Cross-market signal: Kalshi + Metaculus + Manifold consensus.
+        # If all three agree the probability is far from 0.5, it's a real event
+        # (worth trading). Large divergence from poly_prob = pricing edge.
+        if question:
+            try:
+                cm_signal = self.cross_market_feed.query(question, poly_prob=poly_prob)
+                if cm_signal.consensus_prob is not None:
+                    features["cross_market_sources"] = [s["source"] for s in cm_signal.sources]
+                    features["cross_market_prob"] = cm_signal.consensus_prob
+                    if cm_signal.divergence is not None:
+                        features["cross_market_divergence"] = cm_signal.divergence
+                    n_sources = len(cm_signal.sources)
+                    # Bonus for having cross-market corroboration (market is real & liquid).
+                    score += min(0.10, 0.04 * n_sources)
+                    # Bonus/penalty for large divergence from poly price.
+                    if cm_signal.divergence is not None:
+                        abs_div = abs(cm_signal.divergence)
+                        if abs_div >= 0.10:
+                            # Edge signal: consensus says poly is mispriced.
+                            score += min(0.15, abs_div * 0.60)
+                            features["cross_market_edge"] = round(abs_div, 4)
+            except Exception as exc:
+                logger.debug("brain: cross_market_feed failed: %s", exc)
 
         score = max(0.0, min(1.0, score))
         features["score"] = round(score, 4)

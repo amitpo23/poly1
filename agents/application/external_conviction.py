@@ -596,6 +596,99 @@ class TavilyProvider(ExternalProvider):
         )
 
 
+class GdeltProvider(ExternalProvider):
+    """Free GDELT DOC 2.0 API — news event volume and sentiment for a market question.
+
+    No API key required. Returns a directional signal based on whether recent
+    news tone (goldsteinscale, avgtone) is strongly positive or negative.
+    Query is limited to the first 60 chars of the question to avoid URL length issues.
+
+    GDELT endpoint: http://api.gdeltproject.org/api/v2/doc/doc
+    Rate limit: unauthenticated — be conservative (short caching at caller level).
+    """
+
+    source = "gdelt"
+    BASE_URL = "http://api.gdeltproject.org/api/v2/doc/doc"
+
+    def analyze(self, market: MarketSnapshot) -> ExternalVerdict:
+        question = (market.question or "").strip()
+        if not question:
+            return self._skip("gdelt: empty question")
+
+        # Shorten query and encode it safely.
+        short_q = question[:60]
+        try:
+            params = urllib.parse.urlencode({
+                "query": short_q,
+                "mode": "ArtList",
+                "maxrecords": "10",
+                "timespan": "3d",
+                "format": "json",
+            })
+            url = f"{self.BASE_URL}?{params}"
+            req = urllib.request.Request(url, headers={"User-Agent": "poly1-gdelt"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = json.loads(resp.read())
+        except Exception as exc:
+            return self._skip(f"gdelt: fetch error: {exc}")
+
+        articles = (body or {}).get("articles") if isinstance(body, dict) else []
+        if not isinstance(articles, list) or len(articles) < 2:
+            return self._skip(
+                f"gdelt: only {len(articles) if articles else 0} articles found",
+                {"articles_found": len(articles) if articles else 0},
+            )
+
+        tones: list[float] = []
+        for art in articles:
+            if not isinstance(art, dict):
+                continue
+            raw_tone = art.get("tone", None)
+            if raw_tone is None:
+                raw_tone = art.get("avgtone", None)
+            try:
+                tones.append(float(raw_tone))
+            except (TypeError, ValueError):
+                pass
+
+        if not tones:
+            return self._skip("gdelt: no tone data in articles",
+                              {"articles_found": len(articles)})
+
+        avg_tone = sum(tones) / len(tones)
+        # GDELT tone: negative = negative sentiment (fear/anger), positive = calm/positive.
+        # For a binary YES/NO market: strongly negative news → likely "yes" to bad events,
+        # strongly positive → likely "yes" to good outcomes.
+        # Map: |avg_tone| > 3 → directional signal.
+        abs_tone = abs(avg_tone)
+        if abs_tone < 2.0:
+            return self._skip(
+                f"gdelt: tone too neutral (avg={avg_tone:.2f})",
+                {"avg_tone": round(avg_tone, 3), "articles": len(tones)},
+            )
+
+        confidence = min(0.65, 0.30 + abs_tone * 0.05)
+        # Negative tone → bad events more likely → map to "yes" (e.g. "will X fail?")
+        # This is heuristic — callers should cross-check with question semantics.
+        direction = "no" if avg_tone > 0 else "yes"
+
+        return ExternalVerdict(
+            direction=direction,
+            confidence=round(confidence, 3),
+            source=self.source,
+            reason=(
+                f"gdelt: {len(tones)} articles, avg_tone={avg_tone:.2f} "
+                f"({'positive' if avg_tone > 0 else 'negative'} sentiment)"
+            ),
+            evidence={
+                "articles_found": len(articles),
+                "tones_parsed": len(tones),
+                "avg_tone": round(avg_tone, 3),
+                "abs_tone": round(abs_tone, 3),
+            },
+        )
+
+
 class CLOBWhaleProvider(ExternalProvider):
     """Fetch recent large trades from Polymarket data API and compute directional consensus."""
 
@@ -1634,6 +1727,8 @@ def provider_from_config(cfg: ExternalConvictionConfig) -> ExternalProvider:
         return CryptoDerivativesProvider()
     if provider in ("multi_factor_rank", "multi_factor", "rank"):
         return MultiFactorRankProvider()
+    if provider in ("gdelt", "gdelt_news"):
+        return GdeltProvider()
     if provider == "aggregator":
         return _build_aggregator(cfg)
     if provider not in ("heuristic", "local"):
@@ -1648,7 +1743,13 @@ def _build_aggregator(cfg: ExternalConvictionConfig) -> AggregatorProvider:
     raw = os.getenv("EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS", "")
     names = [n.strip() for n in raw.split(",") if n.strip()]
     if not names:
-        names = ["clob_whale", "public_news", "heuristic"]
+        # Default: all free providers — divergence signals have higher quality
+        # than heuristic-only, so include Manifold/Metaculus/Kalshi when possible.
+        names = [
+            "manifold", "metaculus", "kalshi",
+            "technical_signal", "clob_whale",
+            "public_news", "gdelt", "heuristic",
+        ]
     sub_providers: list[ExternalProvider] = []
     for name in names:
         sub_cfg = ExternalConvictionConfig(

@@ -679,6 +679,10 @@ services:
       EXTERNAL_CONVICTION_POLL_SEC: "10800"
       EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_aggregator.jsonl
       EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_aggregator_heartbeat
+      # All free providers — divergence signals (Manifold/Metaculus/Kalshi) rank first
+      # because they compare cross-platform price vs Poly price.
+      # GDELT adds news sentiment; heuristic is the cheap fallback.
+      EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS: "manifold,metaculus,kalshi,technical_signal,clob_whale,gdelt,public_news,heuristic"
     command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
     volumes:
       - ./data:/app/data
@@ -734,6 +738,44 @@ services:
     cpus: "0.25"
     stop_grace_period: 30s
     profiles: ["external_conviction", "vibe"]
+
+  external-conviction-gdelt:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-gdelt
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_gdelt
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_gdelt
+      EXTERNAL_CONVICTION_STRATEGY_NAME: gdelt_news_event_sentiment
+      EXTERNAL_CONVICTION_PROVIDER: gdelt
+      # Poll every 3h — GDELT is free but should not be hammered.
+      EXTERNAL_CONVICTION_POLL_SEC: "10800"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_gdelt.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_gdelt_heartbeat
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_gdelt_heartbeat') < 14400"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
 
   external-conviction-crypto-deriv:
     build: .

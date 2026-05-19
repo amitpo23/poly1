@@ -69,7 +69,10 @@ Active operating goal:
 | `agents/application/prompts.py` `Prompter` | Versioned prompts; defines BUY/SELL semantics |
 | `agents/application/trade_recommendation.py` | Parses LLM JSON/legacy output → `TradeRecommendation` |
 | `agents/application/execution_safety.py` | Exitable-size gate; shared by all live entry agents |
-| `agents/application/market_brain.py` `MarketBrain` | Pre-LLM veto/scoring layer; spread, horizon, Tavily context gates |
+| `agents/application/market_brain.py` `MarketBrain` | Pre-LLM veto/scoring layer; spread, horizon, Tavily context, cross-market signal gates |
+| `agents/application/market_brain.py` `CrossMarketSignalFeed` | Queries Kalshi + Metaculus + Manifold in parallel for consensus probability; integrated into `evaluate_general_entry` score |
+| `agents/application/market_brain.py` `CoinGeckoFeed` | CoinGecko free-tier crypto price+24h-change feed (10-min cache) |
+| `agents/application/market_brain.py` `CryptoSignalFeed` | Live crypto price feed: Binance primary, Coinbase fallback |
 | `agents/polymarket/polymarket.py` `Polymarket` | CLOB client wrapper, side→token mapping, balance reads |
 | `agents/polymarket/gamma.py` `GammaMarketClient` | Gamma REST reads (events, markets) |
 | `agents/connectors/chroma.py` `PolymarketRAG` | Local Chroma vector store for RAG filtering |
@@ -504,11 +507,11 @@ Provider modes:
   fallback if Polifly bridge is unavailable.
 - `aggregator`: runs N sub-providers configured via
   `EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS` (comma-separated), computes weighted
-  majority verdict. Default sub-providers: `clob_whale,manifold,public_news`.
+  majority verdict. Default sub-providers: `manifold,metaculus,kalshi,technical_signal,clob_whale,gdelt,public_news,heuristic`.
 
 | Var | Default | Notes |
 |---|---|---|
-| `EXTERNAL_CONVICTION_PROVIDER` | `heuristic` | `heuristic`, `public_news`, `tavily`, `http_json`, `polifly_browser`, `clob_whale`, `manifold`, `metaculus`, `cross_market`, `kalshi`, `whale_consensus`, `debate`, `nansen`, `wallet_master`, `polifly_enhanced`, `technical_signal`, `volatility_regime`, `crypto_derivatives`, `multi_factor_rank`, or `aggregator`. |
+| `EXTERNAL_CONVICTION_PROVIDER` | `heuristic` | `heuristic`, `public_news`, `tavily`, `http_json`, `polifly_browser`, `clob_whale`, `manifold`, `metaculus`, `cross_market`, `kalshi`, `whale_consensus`, `debate`, `nansen`, `wallet_master`, `polifly_enhanced`, `technical_signal`, `volatility_regime`, `crypto_derivatives`, `multi_factor_rank`, `gdelt`, or `aggregator`. |
 | `EXTERNAL_CONVICTION_AGENT_NAME` | `external_conviction` | Brain-decision agent identity. |
 | `EXTERNAL_CONVICTION_STRATEGY_NAME` | `event_probability_scalping` | Brain-decision strategy identity. |
 | `EXTERNAL_CONVICTION_API_URL` | empty | Optional POST endpoint for external analysis. |
