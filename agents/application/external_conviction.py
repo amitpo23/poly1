@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from agents.application.trade_log import TradeLog
+from agents.application.trading_policy import FAST_TAKE_PROFIT_PCT, STOP_LOSS_PCT
 from agents.utils.notify import notify_trade, _safe_balance
 
 
@@ -68,8 +69,8 @@ class ExternalConvictionConfig:
     min_price: float = 0.12
     max_price: float = 0.88
     min_confidence: float = 0.58
-    take_profit_pct: float = 0.10
-    stop_loss_pct: float = 0.07
+    take_profit_pct: float = FAST_TAKE_PROFIT_PCT
+    stop_loss_pct: float = STOP_LOSS_PCT
     max_hold_minutes: int = 60
     position_size_usdc: float = 3.0
     max_live_trades_per_cycle: int = 1
@@ -95,9 +96,11 @@ class ExternalConvictionConfig:
             min_liquidity_usdc=_env_float("EXTERNAL_CONVICTION_MIN_LIQUIDITY_USDC", 500.0),
             min_price=_env_float("EXTERNAL_CONVICTION_MIN_PRICE", 0.12),
             max_price=_env_float("EXTERNAL_CONVICTION_MAX_PRICE", 0.88),
-            min_confidence=_env_float("EXTERNAL_CONVICTION_MIN_CONFIDENCE", 0.58),
-            take_profit_pct=_env_float("EXTERNAL_CONVICTION_TAKE_PROFIT_PCT", 0.10),
-            stop_loss_pct=_env_float("EXTERNAL_CONVICTION_STOP_LOSS_PCT", 0.07),
+            min_confidence=_env_float("EXTERNAL_CONVICTION_MIN_CONFIDENCE", 0.52),
+            take_profit_pct=_env_float(
+                "EXTERNAL_CONVICTION_TAKE_PROFIT_PCT", FAST_TAKE_PROFIT_PCT
+            ),
+            stop_loss_pct=_env_float("EXTERNAL_CONVICTION_STOP_LOSS_PCT", STOP_LOSS_PCT),
             max_hold_minutes=_env_int("EXTERNAL_CONVICTION_MAX_HOLD_MINUTES", 60),
             position_size_usdc=_env_float("EXTERNAL_CONVICTION_POSITION_SIZE_USDC", 3.0),
             max_live_trades_per_cycle=_env_int(
@@ -349,6 +352,153 @@ class HeuristicProvider(ExternalProvider):
                 "category": market.category,
                 "event_word_hits": hit_count,
                 "provider_mode": "placeholder_until_external_api_key",
+            },
+        )
+
+
+class TradingViewOptionsProvider(ExternalProvider):
+    """TradingView ES options-chain research hook.
+
+    The TradingView page is a browser-rendered UI, not a stable public JSON
+    API. This provider is intentionally fail-closed: it only produces a
+    directional signal when an operator/browser bridge writes a structured
+    snapshot JSON file. Otherwise it records that the tool is reachable but
+    returns ``skip`` so it cannot create a false win-rate boost.
+    """
+
+    source = "tradingview_options"
+
+    def __init__(
+        self,
+        url: Optional[str] = None,
+        snapshot_path: Optional[str] = None,
+        max_age_sec: Optional[int] = None,
+    ):
+        self.url = url or os.getenv(
+            "TRADINGVIEW_OPTIONS_CHAIN_URL",
+            "https://www.tradingview.com/options/chain/?symbol=CME_MINI%3AES1%21",
+        )
+        self.snapshot_path = snapshot_path or os.getenv(
+            "TRADINGVIEW_OPTIONS_SNAPSHOT_PATH",
+            "/app/data/tradingview_options_es1_snapshot.json",
+        )
+        self.max_age_sec = (
+            max_age_sec
+            if max_age_sec is not None
+            else _env_int("TRADINGVIEW_OPTIONS_MAX_AGE_SEC", 900)
+        )
+
+    @staticmethod
+    def _is_equity_macro_market(market: MarketSnapshot) -> bool:
+        text = " ".join(
+            [market.question, market.slug, market.category, " ".join(market.outcomes)]
+        ).lower()
+        keywords = (
+            "s&p", "spx", "spy", "es1", "e-mini", "e mini", "nasdaq",
+            "ndx", "qqq", "dow", "stock market", "equities", "equity",
+            "cme", "fomc", "fed", "rate cut", "rate hike",
+        )
+        return any(k in text for k in keywords)
+
+    @staticmethod
+    def _parse_snapshot_ts(value: object) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except Exception:
+            return None
+
+    def _load_snapshot(self) -> tuple[Optional[dict], str]:
+        path = Path(self.snapshot_path)
+        if not path.exists():
+            return None, "snapshot_missing"
+        try:
+            body = json.loads(path.read_text())
+        except Exception as exc:
+            return None, f"snapshot_parse_error:{type(exc).__name__}"
+        ts = self._parse_snapshot_ts(body.get("ts") or body.get("timestamp"))
+        age = time.time() - ts if ts else float("inf")
+        if age > self.max_age_sec:
+            return None, f"snapshot_stale:{int(age)}s>{self.max_age_sec}s"
+        return body, "ok"
+
+    def _page_reachable(self) -> bool:
+        try:
+            req = urllib.request.Request(
+                self.url,
+                headers={"User-Agent": "poly1-tradingview-options/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return 200 <= int(getattr(resp, "status", 0)) < 400
+        except Exception:
+            return False
+
+    def analyze(self, market: MarketSnapshot) -> ExternalVerdict:
+        if not self._is_equity_macro_market(market):
+            return self._skip(
+                "non_equity_macro_market",
+                {"url": self.url, "category": market.category},
+            )
+
+        snapshot, status = self._load_snapshot()
+        if not snapshot:
+            return self._skip(
+                f"{status}; tradingview_page_reachable={self._page_reachable()}",
+                {
+                    "url": self.url,
+                    "snapshot_path": self.snapshot_path,
+                    "snapshot_required": True,
+                },
+            )
+
+        put_call_ratio = _safe_float(snapshot.get("put_call_ratio"), 0.0)
+        call_volume = _safe_float(snapshot.get("call_volume"), 0.0)
+        put_volume = _safe_float(snapshot.get("put_volume"), 0.0)
+        if put_call_ratio <= 0 and call_volume + put_volume > 0:
+            put_call_ratio = put_volume / max(call_volume, 1.0)
+        if put_call_ratio <= 0:
+            return self._skip(
+                "snapshot_missing_put_call_signal",
+                {"url": self.url, "snapshot_keys": sorted(snapshot.keys())},
+            )
+
+        risk_on = put_call_ratio < 0.85
+        risk_off = put_call_ratio > 1.15
+        if not risk_on and not risk_off:
+            return self._skip(
+                f"neutral_put_call_ratio:{put_call_ratio:.2f}",
+                {"put_call_ratio": round(put_call_ratio, 4), "url": self.url},
+            )
+
+        text = market.question.lower()
+        asks_up = any(k in text for k in ("above", "higher", "up", "increase", "green", "gain"))
+        asks_down = any(k in text for k in ("below", "lower", "down", "decrease", "red", "drop", "fall"))
+        if risk_on:
+            direction = "yes" if asks_up or not asks_down else "no"
+        else:
+            direction = "yes" if asks_down and not asks_up else "no"
+        confidence = min(0.78, 0.55 + min(0.23, abs(put_call_ratio - 1.0) * 0.30))
+        return ExternalVerdict(
+            direction=direction,
+            confidence=round(confidence, 3),
+            source=self.source,
+            reason=(
+                f"TradingView ES options chain: put/call={put_call_ratio:.2f} "
+                f"({'risk_on' if risk_on else 'risk_off'})"
+            ),
+            evidence={
+                "url": self.url,
+                "symbol": snapshot.get("symbol", "CME_MINI:ES1!"),
+                "put_call_ratio": round(put_call_ratio, 4),
+                "call_volume": call_volume,
+                "put_volume": put_volume,
+                "snapshot_ts": snapshot.get("ts") or snapshot.get("timestamp"),
             },
         )
 
@@ -1089,9 +1239,13 @@ class BullBearDebateProvider(ExternalProvider):
 
     source = "bull_bear_debate"
 
-    def __init__(self, api_key: str = "", model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: str = "", model: str = ""):
         self.api_key = api_key
-        self.model = model
+        if model:
+            self.model = model
+        else:
+            from agents.application.llm_config import openai_model
+            self.model = openai_model()
 
     def analyze(self, market: MarketSnapshot) -> ExternalVerdict:
         if not self.api_key:
@@ -1699,12 +1853,16 @@ def provider_from_config(cfg: ExternalConvictionConfig) -> ExternalProvider:
         return CrossMarketProvider()
     if provider in ("kalshi_divergence", "kalshi"):
         return KalshiDivergenceProvider()
+    if provider in ("tradingview_options", "tradingview", "tv_options"):
+        return TradingViewOptionsProvider()
     if provider in ("whale_consensus", "data_api_whale"):
         return DataAPIWhaleConsensusProvider()
     if provider in ("bull_bear_debate", "debate"):
+        from agents.application.llm_config import openai_model
         return BullBearDebateProvider(
             api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-            model=os.getenv("EXTERNAL_CONVICTION_DEBATE_MODEL", "gpt-4o-mini"),
+            model=os.getenv("EXTERNAL_CONVICTION_DEBATE_MODEL", "").strip()
+            or openai_model(),
         )
     if provider in ("nansen_smart_money", "nansen"):
         return NansenSmartMoneyProvider(
@@ -1747,7 +1905,7 @@ def _build_aggregator(cfg: ExternalConvictionConfig) -> AggregatorProvider:
         # than heuristic-only, so include Manifold/Metaculus/Kalshi when possible.
         names = [
             "manifold", "metaculus", "kalshi",
-            "technical_signal", "clob_whale",
+            "tradingview_options", "technical_signal", "clob_whale",
             "public_news", "gdelt", "heuristic",
         ]
     sub_providers: list[ExternalProvider] = []
@@ -1821,6 +1979,7 @@ class ExternalConvictionAgent:
         polymarket=None,
         risk_gate=None,
         brain=None,
+        meta_brain=None,
     ):
         self.cfg = cfg or ExternalConvictionConfig.from_env()
         self.gamma = gamma
@@ -1829,11 +1988,23 @@ class ExternalConvictionAgent:
         self.polymarket = polymarket
         self.risk_gate = risk_gate
         self.brain = brain
+        self.meta_brain = meta_brain
         self.output_path = Path(self.cfg.output_path)
         self.heartbeat_path = Path(self.cfg.heartbeat_path)
         self._live_entries_this_cycle: set = set()
 
         if self.cfg.execute:
+            if self.brain is None:
+                from agents.application.market_brain import MarketBrain
+
+                self.brain = MarketBrain()
+            if self.meta_brain is None:
+                from agents.application.meta_brain import MetaBrain
+
+                self.meta_brain = MetaBrain(
+                    db_path=os.getenv("TRADE_LOG_DB", "./data/trade_log.db"),
+                    market_brain=self.brain,
+                )
             if self.polymarket is None:
                 from agents.polymarket.polymarket import Polymarket
 
@@ -2035,38 +2206,71 @@ class ExternalConvictionAgent:
                 error=f"concentration limit ({recent_fills}/{max_fills_24h} in 24h)",
             )
             return False
-        # Fix 4d: Brain gate for general binary markets.
-        if self.brain is not None:
-            try:
+        # Fix 4d: MetaBrain gate for general binary markets.
+        if self.meta_brain is None and self.brain is None:
+            logger.warning("external_conviction live blocked — missing MetaBrain/MarketBrain")
+            return False
+        try:
+            spread_pct = (
+                abs(market.yes_price - (1 - market.no_price))
+                if market.no_price is not None else None
+            )
+            hours_to_close = _hours_to_close_from_snapshot(market)
+            if self.meta_brain is not None:
+                decision = self.meta_brain.synthesize(
+                    market_id=market.market_id,
+                    question=market.question or "",
+                    spread_pct=spread_pct,
+                    hours_to_close=hours_to_close,
+                    poly_prob=market.yes_price if plan.side == "YES" else market.no_price,
+                    token_id=plan.token_id,
+                    liquidity_usdc=market.liquidity_usdc,
+                )
+                approved = decision.approved and decision.entry_timing != "skip"
+            else:
                 decision = self.brain.evaluate_general_entry(
                     question=market.question or "",
-                    spread_pct=(
-                        abs(market.yes_price - (1 - market.no_price))
-                        if market.no_price is not None else None
-                    ),
-                    hours_to_close=_hours_to_close_from_snapshot(market),
+                    spread_pct=spread_pct,
+                    hours_to_close=hours_to_close,
                 )
-                if not decision.approved:
-                    logger.info(
-                        "external_conviction brain rejected %s: %s",
-                        market.market_id, decision.reason,
-                    )
-                    self.trade_log.insert_terminal(
-                        cycle_id=self.trade_log.new_cycle_id(),
-                        market_id=market.market_id,
-                        status="skipped_gate",
-                        token_id=plan.token_id,
-                        side="BUY" if plan.side == "YES" else "SELL",
-                        price=market.yes_price,
-                        size_usdc=0,
-                        error=f"brain rejected: {decision.reason}",
-                    )
-                    return False
-            except Exception:
-                logger.warning(
-                    "external_conviction brain gate failed for %s (fail-open)",
+                approved = decision.approved
+            self.trade_log.insert_brain_decision(
+                agent="external_conviction",
+                strategy="external_conviction_meta_brain",
+                decision_type="entry",
+                market_id=market.market_id,
+                token_id=plan.token_id,
+                approved=approved,
+                reason=decision.reason,
+                score=decision.score,
+                market_type="external_conviction",
+                asset=market.category or "",
+                features=getattr(decision, "features", {}),
+                action="BUY" if plan.side == "YES" else "SELL",
+            )
+            if not approved:
+                logger.info(
+                    "external_conviction meta_brain rejected %s: %s",
                     market.market_id,
+                    decision.reason,
                 )
+                self.trade_log.insert_terminal(
+                    cycle_id=self.trade_log.new_cycle_id(),
+                    market_id=market.market_id,
+                    status="skipped_gate",
+                    token_id=plan.token_id,
+                    side="BUY" if plan.side == "YES" else "SELL",
+                    price=market.yes_price,
+                    size_usdc=0,
+                    error=f"brain rejected: {decision.reason}",
+                )
+                return False
+        except Exception:
+            logger.exception(
+                "external_conviction brain gate failed for %s; blocking entry",
+                market.market_id,
+            )
+            return False
         from agents.application.execution_safety import exitable_size_check
 
         entry_price = market.yes_price if plan.side == "YES" else market.no_price

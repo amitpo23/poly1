@@ -6,6 +6,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from agents.application.trading_policy import MAX_TRADES_PER_HOUR, STOP_LOSS_PCT
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -42,8 +44,10 @@ class ScalperConfig:
     discover_every_sec: int = 60
     exit_take_profit_pct: float = 0.05
     exit_trailing_stop_pct: float = 0.02
-    exit_stop_loss_pct: float = 0.07
+    exit_stop_loss_pct: float = STOP_LOSS_PCT
     exit_min_seconds_to_expiry: int = 45
+    require_universe_top: bool = False
+    min_universe_winrate: float = 0.52
 
     @classmethod
     def from_env(cls) -> "ScalperConfig":
@@ -61,8 +65,12 @@ class ScalperConfig:
             discover_every_sec=_env_int("SCALP_DISCOVER_EVERY_SEC", 60),
             exit_take_profit_pct=_env_float("SCALP_EXIT_TAKE_PROFIT_PCT", 0.05),
             exit_trailing_stop_pct=_env_float("SCALP_EXIT_TRAILING_STOP_PCT", 0.02),
-            exit_stop_loss_pct=_env_float("SCALP_EXIT_STOP_LOSS_PCT", 0.07),
+            exit_stop_loss_pct=_env_float("SCALP_EXIT_STOP_LOSS_PCT", STOP_LOSS_PCT),
             exit_min_seconds_to_expiry=_env_int("SCALP_EXIT_MIN_SECONDS_TO_EXPIRY", 45),
+            require_universe_top=os.getenv(
+                "SCALPER_REQUIRE_UNIVERSE_TOP", "false"
+            ).lower() == "true",
+            min_universe_winrate=_env_float("SCALPER_MIN_UNIVERSE_WINRATE", 0.52),
         )
 
 
@@ -209,6 +217,7 @@ class ScalperEngine:
         cfg: ScalperConfig,
         gamma=None,
         brain: MarketBrain = None,
+        meta_brain=None,
         exit_executor: ExitExecutor = None,
         execute: bool = False,
         max_legs_per_hour: int = None,
@@ -219,6 +228,7 @@ class ScalperEngine:
         self.cfg = cfg
         self.gamma = gamma
         self.brain = brain
+        self.meta_brain = meta_brain
         self.exit_executor = exit_executor or ExitExecutor(client)
         self.execute = execute
         if self.execute and not _V2_INSTALLED and _FAK_TYPE == "FAK":
@@ -227,7 +237,7 @@ class ScalperEngine:
             )
         self.max_legs_per_hour = (
             max_legs_per_hour if max_legs_per_hour is not None
-            else _env_int("MAX_SCALP_TRADES_PER_HOUR", 60)
+            else _env_int("MAX_SCALP_TRADES_PER_HOUR", MAX_TRADES_PER_HOUR)
         )
         self.pairs: dict = {}
         self._exit_peak_by_slug_side: dict[tuple[str, str], float] = {}
@@ -530,6 +540,9 @@ class ScalperEngine:
         period_ts: int,
     ) -> bool:
         if self.brain is None:
+            if self.execute:
+                logger.warning("scalper live entry blocked — missing MarketBrain")
+                return False
             return True
         decision = self.brain.evaluate_scalper_entry(
             slug=slug,
@@ -552,6 +565,49 @@ class ScalperEngine:
                 decision.features,
             )
             return False
+        if self.meta_brain is not None:
+            token = None
+            pair = self.pairs.get(slug)
+            if pair is not None:
+                token = pair.up_token if side == "up" else pair.down_token
+            try:
+                meta = self.meta_brain.synthesize(
+                    market_id=slug,
+                    question=slug,
+                    spread_pct=max(0.0, float(up_ask) + float(down_ask) - 1.0),
+                    hours_to_close=max(0.0, ((period_ts + 900) * 1000 - now_ms) / 3_600_000.0),
+                    poly_prob=float(signal["price"]),
+                    token_id=token,
+                    liquidity_usdc=self.cfg.leg_usdc_cap,
+                )
+                meta_approved = meta.approved and meta.entry_timing != "skip"
+                self.log.insert_brain_decision(
+                    agent="scalper",
+                    strategy="scalper_meta_brain",
+                    decision_type="entry",
+                    market_id=slug,
+                    token_id=token,
+                    approved=meta_approved,
+                    reason=meta.reason,
+                    score=meta.score,
+                    market_type="crypto_15m_scalper",
+                    asset="CRYPTO",
+                    features=meta.features,
+                    action=f"BUY_{side.upper()}:{signal.get('reason', '')}",
+                )
+                if not meta_approved:
+                    logger.info(
+                        "scalper meta_brain veto slug=%s side=%s reason=%s score=%.3f timing=%s",
+                        slug,
+                        side,
+                        meta.reason,
+                        meta.score,
+                        meta.entry_timing,
+                    )
+                    return False
+            except Exception:
+                logger.exception("scalper meta_brain failed; blocking live entry")
+                return False
         logger.debug(
             "scalper brain approved slug=%s side=%s score=%.3f reason=%s",
             slug,
@@ -811,10 +867,13 @@ class ScalperDaemon:
         self.dao = ScalperPairsDAO(self.tl)
         self.client = Polymarket(live=self.execute)
         self.gamma = GammaMarketClient()
+        from agents.application.meta_brain import MetaBrain
+        market_brain = MarketBrain(crypto_feed=CryptoSignalFeed())
         self.engine = ScalperEngine(
             client=self.client, log=self.tl, dao=self.dao,
             cfg=self.cfg, gamma=self.gamma,
-            brain=MarketBrain(crypto_feed=CryptoSignalFeed()),
+            brain=market_brain,
+            meta_brain=MetaBrain(db_path=db_path, market_brain=market_brain),
             execute=self.execute,
         )
         # Public client for order book reads — no credentials required.
@@ -903,6 +962,12 @@ class ScalperDaemon:
                         ScalperState.EXITED,
                         ScalperState.SHADOW,
                         ScalperState.RECONCILE_NEEDED,
+                    ):
+                        continue
+                    if self.cfg.require_universe_top and not self.tl.is_market_universe_eligible(
+                        slug,
+                        min_winrate=self.cfg.min_universe_winrate,
+                        require_top_rank=True,
                     ):
                         continue
                     if slug not in self.engine.pairs:

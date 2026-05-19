@@ -78,7 +78,7 @@ class TestNearResolutionConfig(unittest.TestCase):
     def test_defaults(self):
         cfg = NearResolutionConfig()
         self.assertEqual(cfg.max_entry_price, 0.65)
-        self.assertEqual(cfg.direction_min_confidence, 0.65)
+        self.assertEqual(cfg.direction_min_confidence, 0.52)
         self.assertEqual(cfg.poll_sec, 60)
 
 
@@ -161,6 +161,7 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
         engine = NearResolutionEngine(
             polymarket=pm, trade_log=log, risk_gate=rg, cfg=cfg, execute=execute
         )
+        engine.meta_brain = None
         return engine, log
 
     def test_shadow_writes_nr_open(self):
@@ -237,6 +238,18 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
         engine, log = self._engine(execute=True)
         engine.scan_candidates = lambda: [_fake_candidate()]
         engine._llm_direction = lambda q, yp, np, ed: {"direction": "yes", "confidence": 0.80, "reasoning": "test"}
+        engine.meta_brain = MagicMock()
+        engine.meta_brain.synthesize.return_value = type(
+            "Decision",
+            (),
+            {
+                "approved": True,
+                "reason": "test_approved",
+                "score": 0.9,
+                "features": {"test": True},
+                "entry_timing": "now",
+            },
+        )()
         engine.maybe_enter_all()
         engine.polymarket.execute_market_order.assert_called_once()
         rows = log.recent(limit=5)

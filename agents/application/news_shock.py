@@ -130,12 +130,78 @@ class NewsShockEngine:
         risk_gate,
         cfg: NewsShockConfig,
         execute: bool = False,
+        brain=None,
     ):
         self.polymarket = polymarket
         self.trade_log = trade_log
         self.risk_gate = risk_gate
         self.cfg = cfg
         self.execute = execute
+        self.brain = brain
+        self.meta_brain = None
+        if self.brain is not None:
+            try:
+                from agents.application.meta_brain import MetaBrain
+                self.meta_brain = MetaBrain(db_path=os.getenv("TRADE_LOG_DB", "./data/trade_log.db"), market_brain=self.brain)
+            except Exception:
+                logger.exception("news_shock: MetaBrain init failed")
+
+    def _brain_allows_entry(
+        self,
+        *,
+        market_id: str,
+        token_id: str,
+        question: str,
+        side: str,
+        yes_price: float,
+        no_price: float,
+        liquidity_usdc: float = 0.0,
+    ) -> bool:
+        if self.brain is None:
+            if self.execute:
+                logger.warning("news_shock live blocked — missing MarketBrain")
+                return False
+            return True
+        try:
+            if self.meta_brain is not None:
+                decision = self.meta_brain.synthesize(
+                    market_id=market_id,
+                    question=question,
+                    spread_pct=abs(yes_price - (1.0 - no_price)),
+                    hours_to_close=None,
+                    poly_prob=yes_price,
+                    token_id=token_id,
+                    liquidity_usdc=liquidity_usdc,
+                )
+            else:
+                decision = self.brain.evaluate_general_entry(
+                    question=question,
+                    spread_pct=abs(yes_price - (1.0 - no_price)),
+                    hours_to_close=None,
+                )
+            self.trade_log.insert_brain_decision(
+                agent="news_shock",
+                strategy="news_reaction",
+                decision_type="entry",
+                market_id=market_id,
+                token_id=token_id,
+                approved=decision.approved,
+                reason=decision.reason,
+                score=decision.score,
+                market_type="general_binary",
+                features=decision.features,
+                action=side,
+            )
+            if not decision.approved:
+                logger.info(
+                    "news_shock brain rejected %s: %s (score=%.3f)",
+                    market_id, decision.reason, decision.score,
+                )
+                return False
+            return True
+        except Exception:
+            logger.exception("news_shock brain gate failed; blocking entry")
+            return False
 
     # -------------------------------------------------------- read signals
 
@@ -334,13 +400,13 @@ class NewsShockEngine:
             # EV and side determination
             if direction == "bullish":
                 # News supports YES resolving → buy YES (BUY)
-                ev = materiality * (1.0 - yes_price)
+                ev = materiality - yes_price
                 side = "BUY"
                 entry_price = yes_price
                 token_idx = 0
             elif direction == "bearish":
                 # News supports NO resolving → buy NO (SELL)
-                ev = materiality * yes_price
+                ev = materiality - no_price
                 side = "SELL"
                 entry_price = no_price
                 token_idx = 1
@@ -392,6 +458,17 @@ class NewsShockEngine:
                 market_id, outcomes, tokens, yes_price, no_price
             )
             token_id_for_log = tokens[token_idx]
+            if not self._brain_allows_entry(
+                market_id=market_id,
+                token_id=token_id_for_log,
+                question=market_question,
+                side=side,
+                yes_price=yes_price,
+                no_price=no_price,
+                liquidity_usdc=liquidity,
+            ):
+                self._mark_signal(signal_id, "skipped")
+                continue
 
             cycle_id = self.trade_log.new_cycle_id()
             pending_id = self.trade_log.insert_pending(
@@ -478,12 +555,14 @@ class NewsShockDaemon:
             polymarket=self.polymarket,
             news_shock_reserve_usdc=self.cfg.reserve_usdc,
         )
+        from agents.application.market_brain import MarketBrain
         self.engine = NewsShockEngine(
             polymarket=self.polymarket,
             trade_log=self.trade_log,
             risk_gate=self.risk_gate,
             cfg=self.cfg,
             execute=self.execute,
+            brain=MarketBrain(),
         )
         from pathlib import Path
         self.heartbeat = Path(self.cfg.heartbeat_path)

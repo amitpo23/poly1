@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ OPEN_STATUSES = (
     "near_resolution_open",
     "news_shock_open",
     "wallet_follow_open",
+    "btc_5min_open",
 )
 
 TERMINAL_STATUSES = (
@@ -37,6 +39,7 @@ ENTRY_EXECUTE_FLAGS = (
     "EXECUTE",
     "EXECUTE_SCALPER",
     "EXECUTE_BTC_DAILY",
+    "EXECUTE_BTC_5MIN",
     "EXECUTE_NEAR_RESOLUTION",
     "EXECUTE_NEWS_SHOCK",
     "EXECUTE_WALLET_FOLLOW",
@@ -47,6 +50,7 @@ ENTRY_RESERVE_FLAGS = (
     "SWARM_RESERVE_USDC",
     "SCALPER_RESERVE_USDC",
     "BTC_DAILY_RESERVE_USDC",
+    "BTC_5MIN_RESERVE_USDC",
     "NEAR_RESOLUTION_RESERVE_USDC",
     "NEWS_SHOCK_RESERVE_USDC",
     "WALLET_FOLLOW_RESERVE_USDC",
@@ -131,15 +135,13 @@ def check_freeze_config(env: dict[str, str], *, mode: str) -> list[CheckResult]:
                  f"allocator_enforces={allocator_enforces}",
         ))
     else:
-        approved_live_flags = [
-            key for key in live_flags
-            if key != "EXECUTE"
-        ]
+        approved_live_flags = [key for key in live_flags if key != "EXECUTE"]
+        max_allowed = 100 if mode == "live" else 1
         results.append(CheckResult(
             "live_entry_scope_explicit",
-            _is_true(env.get("EXECUTE")) and len(approved_live_flags) <= 1,
-            "global EXECUTE=true and at most one entry agent enabled"
-            if _is_true(env.get("EXECUTE")) and len(approved_live_flags) <= 1
+            _is_true(env.get("EXECUTE")) and 1 <= len(approved_live_flags) <= max_allowed,
+            f"global EXECUTE=true and {len(approved_live_flags)} entry agent(s) enabled"
+            if _is_true(env.get("EXECUTE")) and 1 <= len(approved_live_flags) <= max_allowed
             else f"EXECUTE={env.get('EXECUTE')} live_entry_flags={approved_live_flags}",
         ))
     results.append(CheckResult(
@@ -152,6 +154,42 @@ def check_freeze_config(env: dict[str, str], *, mode: str) -> list[CheckResult]:
         supervisor_enforces,
         "TRADING_SUPERVISOR_ENFORCE_HALT=true"
         if supervisor_enforces else "supervisor only logs; it will not halt",
+    ))
+    brain_required = _is_true(env.get("POLY1_REQUIRE_BRAIN_APPROVAL"))
+    brain_enabled = _is_true(env.get("MARKET_BRAIN_ENABLED"))
+    results.append(CheckResult(
+        "brain_gate_required",
+        brain_required and brain_enabled,
+        "POLY1_REQUIRE_BRAIN_APPROVAL=true and MARKET_BRAIN_ENABLED=true"
+        if brain_required and brain_enabled
+        else f"POLY1_REQUIRE_BRAIN_APPROVAL={env.get('POLY1_REQUIRE_BRAIN_APPROVAL')} "
+             f"MARKET_BRAIN_ENABLED={env.get('MARKET_BRAIN_ENABLED')}",
+    ))
+    max_trades = _as_float(env.get("MAX_TRADES_PER_HOUR"))
+    results.append(CheckResult(
+        "max_trades_per_hour_policy",
+        max_trades <= 100 and max_trades > 0,
+        f"MAX_TRADES_PER_HOUR={max_trades:g} (<=100)"
+        if max_trades <= 100 and max_trades > 0
+        else f"MAX_TRADES_PER_HOUR={env.get('MAX_TRADES_PER_HOUR')}",
+    ))
+    alloc_fraction = _as_float(env.get("MAX_AGENT_ALLOCATION_FRACTION"))
+    results.append(CheckResult(
+        "agent_allocation_cap_policy",
+        0 < alloc_fraction <= 0.50,
+        f"MAX_AGENT_ALLOCATION_FRACTION={alloc_fraction:.2f} (<=0.50)"
+        if 0 < alloc_fraction <= 0.50
+        else f"MAX_AGENT_ALLOCATION_FRACTION={env.get('MAX_AGENT_ALLOCATION_FRACTION')}",
+    ))
+    exit_interval = _as_float(env.get("MAINTAIN_LLM_EXIT_INTERVAL_SEC"))
+    poll_sec = _as_float(env.get("MAINTAIN_POLL_SEC"))
+    results.append(CheckResult(
+        "minute_exit_revalidation",
+        0 < poll_sec <= 60 and 0 < exit_interval <= 60,
+        f"MAINTAIN_POLL_SEC={poll_sec:g}, MAINTAIN_LLM_EXIT_INTERVAL_SEC={exit_interval:g}"
+        if 0 < poll_sec <= 60 and 0 < exit_interval <= 60
+        else f"MAINTAIN_POLL_SEC={env.get('MAINTAIN_POLL_SEC')} "
+             f"MAINTAIN_LLM_EXIT_INTERVAL_SEC={env.get('MAINTAIN_LLM_EXIT_INTERVAL_SEC')}",
     ))
     return results
 
@@ -306,9 +344,23 @@ def check_runtime_control(env: dict[str, str], root: Path, *, mode: str) -> list
         ),
     ]
     if mode != "freeze":
+        expires_at = str(control.get("expires_at") or "").strip()
+        if expires_at:
+            try:
+                expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                expires_ok = expires_dt > datetime.now(timezone.utc)
+                expires_detail = f"expires_at={expires_at}"
+            except ValueError:
+                expires_ok = False
+                expires_detail = f"invalid expires_at={expires_at!r}"
+            results.append(CheckResult(
+                "runtime_expiry_future",
+                expires_ok,
+                expires_detail,
+            ))
         results.append(CheckResult(
             "runtime_live_agent_scope",
-            len(allowed_live_agents) == 1,
+            1 <= len(allowed_live_agents) <= 100,
             f"allowed_live_agents={allowed_live_agents}",
         ))
     return results
@@ -334,6 +386,10 @@ def main() -> int:
 
     root = Path(args.root).resolve()
     env = _parse_env_files(root, args.env)
+    # In Docker, deploy/.env.runtime is applied through compose `env_file`.
+    # The file baked into /app can be stale after runtime_control.py updates,
+    # so the live process environment must win over parsed files.
+    env.update(os.environ)
     db_path = root / args.db
 
     results: list[CheckResult] = []

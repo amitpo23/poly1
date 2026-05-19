@@ -837,6 +837,7 @@ with TAB_LLM:
 
 with TAB_CTRL:
     halted = db.is_halted()
+    direct_control = db.direct_control_allowed()
 
     st.subheader("Kill switch")
     if halted:
@@ -847,7 +848,9 @@ with TAB_CTRL:
     col1, col2 = st.columns(2)
 
     with col1:
-        if not halted:
+        if not direct_control:
+            st.info("Direct dashboard control is disabled. Use scripts/runtime_control.py.")
+        elif not halted:
             if st.button("🛑 HALT trading"):
                 st.session_state["halt_confirm"] = True
             if st.session_state.get("halt_confirm"):
@@ -861,7 +864,9 @@ with TAB_CTRL:
             st.info("Trader already halted.")
 
     with col2:
-        if halted:
+        if not direct_control:
+            st.info("Resume is disabled here. Use scripts/runtime_control.py.")
+        elif halted:
             if st.button("▶️ RESUME trading"):
                 st.session_state["resume_confirm"] = True
             if st.session_state.get("resume_confirm"):

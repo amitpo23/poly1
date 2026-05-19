@@ -19,6 +19,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from agents.application.trading_policy import (
+    FAST_TAKE_PROFIT_PCT,
+    MAX_HOLD_SECONDS,
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_CAP_PCT,
+)
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -55,12 +62,12 @@ class BrainConfig:
     scalper_max_entry_price: float = 0.55
     scalper_max_pair_ask_sum: float = 1.04
     scalper_min_edge_score: float = 0.35
-    exit_take_profit_pct: float = 0.05
+    exit_take_profit_pct: float = TAKE_PROFIT_CAP_PCT
     exit_trailing_stop_pct: float = 0.02
-    exit_stop_loss_pct: float = 0.07
-    exit_max_hold_seconds: int = 1800
+    exit_stop_loss_pct: float = STOP_LOSS_PCT
+    exit_max_hold_seconds: int = MAX_HOLD_SECONDS
     smart_exit_enabled: bool = True
-    smart_exit_min_profit_pct: float = 0.05
+    smart_exit_min_profit_pct: float = FAST_TAKE_PROFIT_PCT
     smart_exit_momentum_window: str = "60s"
     smart_exit_min_momentum_pct: float = 0.001
     smart_exit_peak_drawdown_hold_pct: float = 0.006
@@ -73,6 +80,9 @@ class BrainConfig:
     general_min_hours_to_close: float = 0.5
     general_max_hours_to_close: float = 168.0
     general_min_score: float = 0.30
+    crypto_straddle_min_entry_price: float = 0.05
+    crypto_straddle_max_entry_price: float = 0.98
+    crypto_straddle_max_pair_ask_sum: float = 1.04
 
     @classmethod
     def from_env(cls) -> "BrainConfig":
@@ -91,10 +101,16 @@ class BrainConfig:
             scalper_min_edge_score=_env_float(
                 "MARKET_BRAIN_SCALPER_MIN_EDGE_SCORE", 0.35
             ),
-            exit_take_profit_pct=_env_float("MARKET_BRAIN_EXIT_TAKE_PROFIT_PCT", 0.05),
+            exit_take_profit_pct=_env_float(
+                "MARKET_BRAIN_EXIT_TAKE_PROFIT_PCT", TAKE_PROFIT_CAP_PCT
+            ),
             exit_trailing_stop_pct=_env_float("MARKET_BRAIN_EXIT_TRAILING_STOP_PCT", 0.02),
-            exit_stop_loss_pct=_env_float("MARKET_BRAIN_EXIT_STOP_LOSS_PCT", 0.07),
-            exit_max_hold_seconds=_env_int("MARKET_BRAIN_EXIT_MAX_HOLD_SECONDS", 1800),
+            exit_stop_loss_pct=_env_float(
+                "MARKET_BRAIN_EXIT_STOP_LOSS_PCT", STOP_LOSS_PCT
+            ),
+            exit_max_hold_seconds=_env_int(
+                "MARKET_BRAIN_EXIT_MAX_HOLD_SECONDS", MAX_HOLD_SECONDS
+            ),
             exit_timeout_flat_grace_pct=_env_float(
                 "MARKET_BRAIN_TIMEOUT_FLAT_GRACE_PCT", 0.01
             ),
@@ -103,7 +119,7 @@ class BrainConfig:
             ),
             smart_exit_enabled=_env_bool("MARKET_BRAIN_SMART_EXIT_ENABLED", True),
             smart_exit_min_profit_pct=_env_float(
-                "MARKET_BRAIN_SMART_EXIT_MIN_PROFIT_PCT", 0.05
+                "MARKET_BRAIN_SMART_EXIT_MIN_PROFIT_PCT", FAST_TAKE_PROFIT_PCT
             ),
             smart_exit_momentum_window=os.getenv(
                 "MARKET_BRAIN_SMART_EXIT_MOMENTUM_WINDOW", "60s"
@@ -126,6 +142,15 @@ class BrainConfig:
                 "MARKET_BRAIN_GENERAL_MAX_HOURS_TO_CLOSE", 168.0
             ),
             general_min_score=_env_float("MARKET_BRAIN_GENERAL_MIN_SCORE", 0.30),
+            crypto_straddle_min_entry_price=_env_float(
+                "MARKET_BRAIN_CRYPTO_STRADDLE_MIN_ENTRY_PRICE", 0.05
+            ),
+            crypto_straddle_max_entry_price=_env_float(
+                "MARKET_BRAIN_CRYPTO_STRADDLE_MAX_ENTRY_PRICE", 0.98
+            ),
+            crypto_straddle_max_pair_ask_sum=_env_float(
+                "MARKET_BRAIN_CRYPTO_STRADDLE_MAX_PAIR_ASK_SUM", 1.04
+            ),
         )
 
 
@@ -518,7 +543,7 @@ class MarketBrain:
                 horizon="15m",
             )
         return MarketProfile(
-            market_type="unknown",
+            market_type="general_binary_scalp" if period_ts else "unknown",
             period_ts=period_ts,
         )
 
@@ -552,7 +577,7 @@ class MarketBrain:
                 return BrainDecision(False, "unknown_market_type", 0.0, profile, features)
             return BrainDecision(True, "unknown_market_allowed_non_strict", 0.5, profile, features)
 
-        if profile.market_type != "crypto_15m":
+        if profile.market_type not in {"crypto_15m", "general_binary_scalp"}:
             return BrainDecision(False, f"unsupported_market_type:{profile.market_type}", 0.0, profile, features)
 
         if self.crypto_feed is not None and profile.asset:
@@ -594,7 +619,12 @@ class MarketBrain:
         if score < self.cfg.scalper_min_edge_score:
             return BrainDecision(False, "edge_score_too_low", score, profile, features)
 
-        return BrainDecision(True, "approved", score, profile, features)
+        reason = (
+            "approved_general_scalp"
+            if profile.market_type == "general_binary_scalp"
+            else "approved"
+        )
+        return BrainDecision(True, reason, score, profile, features)
 
     def evaluate_crypto_entry(
         self,
@@ -638,6 +668,54 @@ class MarketBrain:
 
         return BrainDecision(True, "approved_crypto_entry", score, profile, features)
 
+    def evaluate_crypto_straddle_entry(
+        self,
+        *,
+        slug: str,
+        up_price: float,
+        down_price: float,
+        pair_ask_sum: float,
+        seconds_to_expiry: int,
+    ) -> BrainDecision:
+        """Pair-aware brain gate for 5m volatility scalps.
+
+        Unlike directional crypto entries, a straddle intentionally buys both
+        sides. The relevant sanity check is pair cost and exitability, not
+        whether each individual leg is close to 0.50.
+        """
+        profile = self.classify(slug)
+        features = {
+            "up_price": round(up_price, 4),
+            "down_price": round(down_price, 4),
+            "pair_ask_sum": round(pair_ask_sum, 4),
+            "seconds_to_expiry": seconds_to_expiry,
+            "entry_mode": "btc_5min_straddle_scalp",
+        }
+
+        if not self.cfg.enabled:
+            return BrainDecision(True, "brain_disabled", 1.0, profile, features)
+
+        min_price = self.cfg.crypto_straddle_min_entry_price
+        max_price = self.cfg.crypto_straddle_max_entry_price
+        if up_price < min_price or down_price < min_price:
+            return BrainDecision(False, "straddle_leg_too_cheap", 0.0, profile, features)
+        if up_price > max_price or down_price > max_price:
+            return BrainDecision(False, "straddle_leg_too_expensive", 0.0, profile, features)
+
+        max_pair_sum = self.cfg.crypto_straddle_max_pair_ask_sum
+        if pair_ask_sum > max_pair_sum:
+            score = max(0.0, 0.65 - (pair_ask_sum - max_pair_sum) * 5.0)
+            features["score"] = round(score, 4)
+            return BrainDecision(False, "straddle_pair_too_expensive", score, profile, features)
+
+        cheapness = max(0.0, max_pair_sum - pair_ask_sum)
+        time_bonus = 0.03 if seconds_to_expiry >= 90 else 0.0
+        score = min(0.85, 0.65 + cheapness * 5.0 + time_bonus)
+        features["score"] = round(score, 4)
+        if score + 1e-9 < self.cfg.general_min_score:
+            return BrainDecision(False, "crypto_score_too_low", score, profile, features)
+        return BrainDecision(True, "approved_crypto_straddle", score, profile, features)
+
     def evaluate_exit(self, position: ExitPosition, now_ms: Optional[int] = None) -> BrainDecision:
         now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
         profile = self.classify(position.market_id)
@@ -676,13 +754,16 @@ class MarketBrain:
         if pnl_pct <= -self.cfg.exit_stop_loss_pct:
             return BrainDecision(True, "stop_loss", abs(pnl_pct), profile, features)
 
+        if pnl_pct >= self.cfg.exit_take_profit_pct:
+            return BrainDecision(True, "take_profit_cap", pnl_pct, profile, features)
+
         if (
-            mfe_pct >= self.cfg.exit_take_profit_pct
+            mfe_pct >= self.cfg.smart_exit_min_profit_pct
             and drawdown_from_peak_pct >= self.cfg.exit_trailing_stop_pct
         ):
             return BrainDecision(True, "trailing_stop_after_profit", mfe_pct, profile, features)
 
-        if pnl_pct >= self.cfg.exit_take_profit_pct:
+        if pnl_pct >= self.cfg.smart_exit_min_profit_pct:
             if self._smart_exit_should_hold(
                 position=position,
                 profile=profile,

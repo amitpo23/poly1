@@ -239,6 +239,7 @@ class BtcDailyEngine:
         cfg: BtcDailyConfig,
         execute: bool = False,
         brain=None,
+        meta_brain=None,
     ):
         self.polymarket = polymarket
         self.trade_log = trade_log
@@ -247,6 +248,7 @@ class BtcDailyEngine:
         self.cfg = cfg
         self.execute = execute
         self.brain = brain
+        self.meta_brain = meta_brain
         self.shadow_ignore_risk_gate = (
             os.getenv("SHADOW_IGNORE_RISK_GATE", "false").lower() == "true"
         )
@@ -347,6 +349,7 @@ class BtcDailyEngine:
         # The fetched candidate_mid also becomes the anchor price (Fix #4).
         candidate_mid = 0.5  # default if pre-check is unavailable
         token_ids = market_doc.get("token_ids", [])
+        candidate_token = None
         if len(token_ids) >= 2:
             try:
                 candidate_token = token_ids[0] if side == "BUY" else token_ids[1]
@@ -374,7 +377,11 @@ class BtcDailyEngine:
                 return None
 
         # Brain gate: centralized quality check for crypto entries.
-        if self.brain is not None:
+        if self.brain is None:
+            if self.execute:
+                logger.warning("btc_daily: live entry blocked — missing MarketBrain")
+                return None
+        else:
             try:
                 slug = format_btc_daily_slug()
                 decision = self.brain.evaluate_crypto_entry(
@@ -382,14 +389,63 @@ class BtcDailyEngine:
                     candidate_price=candidate_mid,
                     side=side,
                 )
+                self.trade_log.insert_brain_decision(
+                    agent="btc_daily",
+                    strategy="btc_daily_mean_reversion",
+                    decision_type="entry",
+                    market_id=market_doc.get("id") or market_doc.get("market_id") or slug,
+                    token_id=candidate_token,
+                    approved=decision.approved,
+                    reason=decision.reason,
+                    score=decision.score,
+                    market_type="crypto_daily",
+                    asset="BTC",
+                    features=decision.features,
+                    action=side,
+                )
                 if not decision.approved:
                     logger.info(
                         "btc_daily: brain rejected — %s (score=%.3f)",
                         decision.reason, decision.score,
                     )
                     return None
+                if self.meta_brain is not None:
+                    market_id = market_doc.get("id") or market_doc.get("market_id") or slug
+                    meta = self.meta_brain.synthesize(
+                        market_id=market_id,
+                        question=market_doc.get("question") or slug,
+                        spread_pct=None,
+                        hours_to_close=24.0,
+                        poly_prob=candidate_mid,
+                        token_id=candidate_token,
+                        liquidity_usdc=self.cfg.position_size_usdc,
+                    )
+                    meta_approved = meta.approved and meta.entry_timing != "skip"
+                    self.trade_log.insert_brain_decision(
+                        agent="btc_daily",
+                        strategy="btc_daily_meta_brain",
+                        decision_type="entry",
+                        market_id=market_id,
+                        token_id=candidate_token,
+                        approved=meta_approved,
+                        reason=meta.reason,
+                        score=meta.score,
+                        market_type="crypto_daily",
+                        asset="BTC",
+                        features=meta.features,
+                        action=side,
+                    )
+                    if not meta_approved:
+                        logger.info(
+                            "btc_daily: meta_brain rejected — %s (score=%.3f timing=%s)",
+                            meta.reason,
+                            meta.score,
+                            meta.entry_timing,
+                        )
+                        return None
             except Exception:
-                logger.warning("btc_daily brain gate failed (fail-open)")
+                logger.exception("btc_daily brain gate failed; blocking entry")
+                return None
 
         # Tavily fundamental filter: if breaking BTC-specific news is
         # driving this move (ETF news, exchange hack, regulation), the
@@ -624,6 +680,8 @@ class BtcDailyDaemon:
             btc_daily_reserve_usdc=self.cfg.reserve_usdc,
         )
         from agents.application.market_brain import MarketBrain
+        from agents.application.meta_brain import MetaBrain
+        market_brain = MarketBrain()
         self.engine = BtcDailyEngine(
             polymarket=self.polymarket,
             trade_log=self.tl,
@@ -631,7 +689,8 @@ class BtcDailyDaemon:
             feed=self.feed,
             cfg=self.cfg,
             execute=self.execute,
-            brain=MarketBrain(),
+            brain=market_brain,
+            meta_brain=MetaBrain(db_path=db_path, market_brain=market_brain),
         )
         self.heartbeat = Path(self.cfg.heartbeat_path)
         self._stop = threading.Event()

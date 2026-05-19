@@ -18,7 +18,7 @@ Environment variables (all optional, see defaults below):
   NEAR_RESOLUTION_MAX_HOURS       — max hours until market close (default 36; set 336 in .env since active markets close 280h+ away)
   NEAR_RESOLUTION_MAX_ENTRY_PRICE — max price for cheap side (default 0.15)
   NEAR_RESOLUTION_MIN_LIQUIDITY   — min $USDC book depth (default 3000)
-  NEAR_RESOLUTION_MIN_CONFIDENCE  — Tavily threshold 0-1 (default 0.65)
+  NEAR_RESOLUTION_MIN_CONFIDENCE  — Tavily threshold 0-1 (default 0.52)
   NEAR_RESOLUTION_POSITION_SIZE_USDC — size per trade (default 2.5)
   NEAR_RESOLUTION_RESERVE_USDC    — capital reserved for this agent (default 15)
   NEAR_RESOLUTION_POLL_SEC        — loop cadence in seconds (default 60)
@@ -91,7 +91,7 @@ class NearResolutionConfig:
     # and the price sum is low enough to guarantee mathematical edge.
     straddle_max_sum: float = 0.88    # YES_ask + NO_ask < this to straddle
     straddle_min_each: float = 0.30   # each leg must be ≥ this
-    direction_min_confidence: float = 0.65  # LLM confidence < this → try straddle
+    direction_min_confidence: float = 0.52  # LLM confidence < this → try straddle
     # Backward-compatible alias for older callers/tests and env naming.
     min_confidence: Optional[float] = field(default=None, repr=False)
     # Limit how many markets we run LLM on per cycle (API cost control)
@@ -112,7 +112,7 @@ class NearResolutionConfig:
     def from_env(cls) -> "NearResolutionConfig":
         direction_min_confidence = _env_float(
             "NEAR_RESOLUTION_DIRECTION_MIN_CONFIDENCE",
-            _env_float("NEAR_RESOLUTION_MIN_CONFIDENCE", 0.65),
+            _env_float("NEAR_RESOLUTION_MIN_CONFIDENCE", 0.52),
         )
         return cls(
             min_hours=_env_float("NEAR_RESOLUTION_MIN_HOURS", 0.0),
@@ -161,6 +161,16 @@ class NearResolutionEngine:
         # LLM result cache: question → (result_dict, unix_ts)
         # Prevents re-analysing the same market every 60 s (5-min TTL).
         self._llm_cache: dict = {}
+        try:
+            from agents.application.market_brain import MarketBrain
+            from agents.application.meta_brain import MetaBrain
+            self.meta_brain = MetaBrain(
+                db_path=os.getenv("TRADE_LOG_DB", "./data/trade_log.db"),
+                market_brain=MarketBrain(),
+            )
+        except Exception:
+            logger.exception("near_resolution: MetaBrain init failed")
+            self.meta_brain = None
 
     # ------------------------------------------------------------------ scan
 
@@ -352,7 +362,8 @@ class NearResolutionEngine:
         try:
             from langchain_openai import ChatOpenAI
             from agents.application.prompts import Prompter
-            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            from agents.application.llm_config import openai_model
+            model = openai_model()
             self._llm = ChatOpenAI(
                 model=model,
                 temperature=0,
@@ -411,7 +422,8 @@ class NearResolutionEngine:
                 if _is_quota and anthropic_key:
                     try:
                         import anthropic as _anthropic_sdk
-                        _model = "claude-haiku-4-5-20251001"
+                        from agents.application.llm_config import anthropic_model
+                        _model = anthropic_model()
                         logger.warning(
                             "near_resolution: OpenAI quota exhausted — falling back to %s",
                             _model,
@@ -491,6 +503,47 @@ class NearResolutionEngine:
         market_id = candidate["market_id"]
         tokens = candidate["tokens"]
         token_id_for_log = tokens[0] if side == "BUY" else tokens[1]
+        liquidity = float(
+            candidate["raw"].get("liquidityClob")
+            or candidate["raw"].get("liquidity")
+            or candidate["raw"].get("volumeClob")
+            or candidate["raw"].get("volume24hr")
+            or 0
+        )
+
+        if self.meta_brain is None:
+            if self.execute:
+                logger.warning("near_resolution live blocked — missing MetaBrain")
+                return False
+        else:
+            meta = self.meta_brain.synthesize(
+                market_id=market_id,
+                question=str(candidate.get("question") or ""),
+                spread_pct=abs(candidate["yes_price"] - (1.0 - candidate["no_price"])),
+                hours_to_close=candidate.get("hours_left"),
+                poly_prob=price,
+                token_id=token_id_for_log,
+                liquidity_usdc=liquidity,
+            )
+            self.trade_log.insert_brain_decision(
+                agent="near_resolution",
+                strategy="near_resolution",
+                decision_type="entry",
+                market_id=market_id,
+                token_id=token_id_for_log,
+                approved=meta.approved,
+                reason=meta.reason,
+                score=meta.score,
+                market_type="general_binary",
+                features=meta.features,
+                action=side,
+            )
+            if not meta.approved:
+                logger.info(
+                    "near_resolution meta_brain rejected %s: %s score=%.3f timing=%s",
+                    market_id, meta.reason, meta.score, meta.entry_timing,
+                )
+                return False
 
         recommendation = TradeRecommendation(
             price=price,

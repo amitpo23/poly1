@@ -1,6 +1,6 @@
-"""Market Scanner — proactive 5-minute opportunity finder.
+"""Market Scanner — proactive 1-minute opportunity finder.
 
-Runs every SCANNER_POLL_SEC seconds (default 300 = 5 min).  Each cycle:
+Runs every SCANNER_POLL_SEC seconds (default 60 = 1 min).  Each cycle:
 
 1. Fetches the most liquid active markets from Gamma (top SCANNER_MARKET_LIMIT).
 2. Pre-filters with MarketBrain.evaluate_general_entry() (spread, horizon, price).
@@ -47,6 +47,7 @@ from typing import Optional
 from agents.application.market_brain import BrainConfig, MarketBrain
 from agents.application.tavily import tavily_headlines, tavily_confidence
 from agents.application.trade_log import TradeLog
+from agents.application.trading_policy import MARKET_SCAN_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,8 @@ AGENT_GOALS: dict[str, dict] = {
             "Brain score >= 0.30, brain gate pass, conviction gate pass, "
             "LLM confidence >= min_confidence, exitable size check pass."
         ),
-        "exit_criteria": "Take-profit +10%, stop-loss -7%, timeout 6h, LLM EXIT signal.",
-        "poll_seconds": int(os.getenv("TRADER_POLL_SEC", "1800")),
+        "exit_criteria": "Exit as fast as profit/risk allows: brain re-check every minute, TP from +5%, hard cap +25%, stop-loss -3%, hard max 6h, hold only with strong forecast.",
+        "poll_seconds": int(os.getenv("TRADER_POLL_SEC", str(MARKET_SCAN_SECONDS))),
     },
     "near_resolution": {
         "strategy": "resolution_bias_exploitation",
@@ -82,7 +83,7 @@ AGENT_GOALS: dict[str, dict] = {
             "Resolution in 0.5h–24h, Tavily/LLM direction confidence >= 0.65, "
             "liquidity >= $5k, entry price in [0.10, 0.65]."
         ),
-        "exit_criteria": "Take-profit +8%, stop-loss -5%, or natural resolution.",
+        "exit_criteria": "Minute brain re-check, fast TP from +5%, hard cap +25%, stop-loss -3%, or natural resolution.",
         "poll_seconds": int(os.getenv("NEAR_RESOLUTION_POLL_SEC", "300")),
     },
     "news_shock": {
@@ -96,7 +97,7 @@ AGENT_GOALS: dict[str, dict] = {
             "News signal materiality >= 0.5, signal age < 30 min, "
             "price drift since signal < 10%, liquidity >= min_liquidity."
         ),
-        "exit_criteria": "Take-profit +10%, stop-loss -7%, timeout 6h.",
+        "exit_criteria": "Minute brain re-check, fast TP from +5%, hard cap +25%, stop-loss -3%, hard max 6h.",
         "poll_seconds": int(os.getenv("NEWS_SHOCK_POLL_SEC", "60")),
     },
     "wallet_follow": {
@@ -110,7 +111,7 @@ AGENT_GOALS: dict[str, dict] = {
             "Wallet >= 5 trades in 30d, signal age < 1h, max drift 10%, "
             "min liquidity $3k."
         ),
-        "exit_criteria": "Take-profit +10%, stop-loss -7%.",
+        "exit_criteria": "Fast TP from +5%, hard cap +25%, stop-loss -3%.",
         "poll_seconds": int(os.getenv("WALLET_FOLLOW_POLL_SEC", "60")),
     },
     "btc_daily": {
@@ -124,7 +125,7 @@ AGENT_GOALS: dict[str, dict] = {
             "BTC 24h move > 3%, max entry price 0.65, "
             "no fundamental news (ETF/hack/regulation) detected by Tavily."
         ),
-        "exit_criteria": "Take-profit +15%, stop-loss -5%, timeout EOD.",
+        "exit_criteria": "Fast TP from +5%, hard cap +25%, stop-loss -3%, timeout EOD.",
         "poll_seconds": int(os.getenv("BTC_DAILY_POLL_SEC", "900")),
     },
     "scalper": {
@@ -138,7 +139,7 @@ AGENT_GOALS: dict[str, dict] = {
             "Pair ask sum < 1.04, entry price < 0.55, > 90s to expiry, "
             "brain edge score >= 0.35."
         ),
-        "exit_criteria": "Take-profit +5%, trailing stop 2%, stop-loss 7%.",
+        "exit_criteria": "Take-profit +5%, trailing stop 2%, stop-loss -3%.",
         "poll_seconds": int(os.getenv("SCALPER_POLL_SEC", "30")),
     },
     "external_conviction": {
@@ -153,20 +154,20 @@ AGENT_GOALS: dict[str, dict] = {
             "Aggregate confidence >= 0.58, min_volume $5k, "
             "price in [0.12, 0.88]."
         ),
-        "exit_criteria": "Timeout 60 min, take-profit +10%, stop-loss -7%.",
+        "exit_criteria": "Timeout 60 min, fast TP +5%, stop-loss -3%.",
         "poll_seconds": int(os.getenv("EXTERNAL_CONVICTION_POLL_SEC", "10800")),
     },
     "market_scanner": {
         "strategy": "proactive_opportunity_discovery",
         "goal": (
-            "Proactively scan the most liquid Polymarket markets every 5 minutes. "
+            "Proactively scan the most liquid Polymarket markets every minute. "
             "Score each market with brain + Tavily + Manifold divergence. "
             "Route approved signals to the right agent via brain_decisions (conviction "
             "gate) and news_signals (news_shock). Never places orders directly."
         ),
         "entry_criteria": "N/A — discovery only.",
         "exit_criteria": "N/A — discovery only.",
-        "poll_seconds": int(os.getenv("SCANNER_POLL_SEC", "300")),
+        "poll_seconds": int(os.getenv("SCANNER_POLL_SEC", str(MARKET_SCAN_SECONDS))),
     },
 }
 
@@ -198,7 +199,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 @dataclass
 class ScannerConfig:
-    poll_seconds: int = 300
+    poll_seconds: int = MARKET_SCAN_SECONDS
     market_limit: int = 120
     max_candidates: int = 30
     # Market quality gates (applied before any API calls).
@@ -225,7 +226,7 @@ class ScannerConfig:
     @classmethod
     def from_env(cls) -> "ScannerConfig":
         return cls(
-            poll_seconds=_env_int("SCANNER_POLL_SEC", 300),
+            poll_seconds=_env_int("SCANNER_POLL_SEC", MARKET_SCAN_SECONDS),
             market_limit=_env_int("SCANNER_MARKET_LIMIT", 120),
             max_candidates=_env_int("SCANNER_MAX_CANDIDATES", 30),
             min_liquidity_usdc=_env_float("SCANNER_MIN_LIQUIDITY_USDC", 5_000.0),
@@ -415,6 +416,7 @@ class MarketScanner:
             external_context="",  # Tavily context not yet fetched at this stage
             vibe_signals=vibe_signals,
             token_id=None,
+            liquidity_usdc=liq,
         )
         if not meta.approved:
             return
@@ -468,6 +470,8 @@ class MarketScanner:
             "manifold_divergence": round(manifold_divergence, 4),
             "opportunity_score": round(opportunity_score, 4),
         }
+        if meta.features.get("weighted_components"):
+            features["weighted_components"] = meta.features["weighted_components"]
 
         # f. Route to agents.
 

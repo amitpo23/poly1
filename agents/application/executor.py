@@ -18,12 +18,15 @@ try:
 except ImportError:
     _ANTHROPIC_AVAILABLE = False
 
-_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
-
-
 logger = logging.getLogger(__name__)
 
 from agents.application.anthropic_compat import to_anthropic_messages as _to_anthropic_messages
+from agents.application.llm_config import (
+    JSON_MODE_OPENAI_MODELS,
+    OPENAI_TOKEN_LIMITS,
+    anthropic_model,
+    openai_model,
+)
 
 from agents.polymarket.gamma import GammaMarketClient as Gamma
 from agents.connectors.chroma import PolymarketRAG as Chroma
@@ -57,9 +60,8 @@ DEFAULT_TOKEN_PRICING_PER_1K = {
 class Executor:
     def __init__(self, default_model: Optional[str] = None) -> None:
         load_dotenv()
-        model = default_model or os.getenv("OPENAI_MODEL", "gpt-3.5-turbo-16k")
-        max_token_model = {'gpt-3.5-turbo-16k': 15000, 'gpt-4-1106-preview': 95000}
-        self.token_limit = max_token_model.get(model, 15000)
+        model = default_model or openai_model()
+        self.token_limit = OPENAI_TOKEN_LIMITS.get(model, 15000)
         self.model = model
         self.prompter = Prompter()
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -67,8 +69,7 @@ class Executor:
         # response_format so the LLM is structurally constrained to emit
         # valid JSON.  Older models (gpt-3.5-turbo-16k) don't support this
         # parameter and get the standard ChatOpenAI constructor.
-        _JSON_MODE_MODELS = {"gpt-4o", "gpt-4o-mini"}
-        if model in _JSON_MODE_MODELS:
+        if model in JSON_MODE_OPENAI_MODELS:
             self.llm = ChatOpenAI(
                 model=model,
                 temperature=0,
@@ -116,16 +117,17 @@ class Executor:
             )
             anthropic_key = os.getenv("ANTHROPIC_API_KEY")
             if _is_quota and anthropic_key and _ANTHROPIC_AVAILABLE:
+                fallback_model = anthropic_model()
                 logger.warning(
                     "OpenAI quota exhausted — falling back to %s (tag=%s)",
-                    _ANTHROPIC_MODEL,
+                    fallback_model,
                     tag,
                 )
                 _client = _anthropic_sdk.Anthropic(api_key=anthropic_key)
                 # Convert LangChain messages (or plain string) to Anthropic format
                 _system, _anth_msgs = _to_anthropic_messages(messages)
                 _kwargs = {
-                    "model": _ANTHROPIC_MODEL,
+                    "model": fallback_model,
                     "max_tokens": 4096,
                     "messages": _anth_msgs,
                 }

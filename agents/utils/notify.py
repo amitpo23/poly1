@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import time
 from typing import Optional
 
 import requests
@@ -9,6 +10,23 @@ import requests
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 5.0
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def _post_telegram(token: str, chat_id: str, text: str, timeout: float) -> None:
@@ -28,13 +46,20 @@ def _post_telegram(token: str, chat_id: str, text: str, timeout: float) -> None:
 
 
 def notify_telegram(
-    message: str, timeout: float = DEFAULT_TIMEOUT, blocking: bool = False
+    message: str,
+    timeout: float = DEFAULT_TIMEOUT,
+    blocking: bool = False,
+    force: bool = False,
 ) -> bool:
     """Fire-and-forget Telegram notification. Runs on a daemon thread so the
     main loop is never blocked. Set `blocking=True` only in tests."""
+    if not force and not _env_bool("TELEGRAM_DIRECT_NOTIFICATIONS", False):
+        logger.info("telegram direct notification suppressed by policy")
+        return False
     token = os.getenv("TG_BOT_TOKEN")
     chat_id = os.getenv("TG_CHAT_ID")
     if not token or not chat_id:
+        logger.warning("telegram credentials missing: TG_BOT_TOKEN/TG_CHAT_ID")
         return False
 
     if blocking:
@@ -67,6 +92,10 @@ def notify_trade(
     Balance is shown when provided — callers with access to polymarket or
     risk_gate should read and pass it.
     """
+    if not _trade_alert_allowed(event):
+        logger.info("telegram trade notification suppressed event=%s agent=%s", event, agent)
+        return False
+
     icon = {
         "fill": "\U0001f7e2",       # green circle
         "close_tp": "\U0001f4b0",   # money bag
@@ -95,7 +124,48 @@ def notify_trade(
     if balance_usdc is not None:
         lines.append(f"  \U0001f4b5 Balance: ${balance_usdc:.2f}")
 
-    return notify_telegram("\n".join(lines))
+    return notify_telegram("\n".join(lines), force=True)
+
+
+def _trade_alert_allowed(event: str) -> bool:
+    """Return True for immediate Telegram alerts allowed outside the hourly report.
+
+    Default policy is intentionally quiet: hourly dashboard only, plus
+    rate-limited critical/error alerts. Operators can opt into fill/close spam
+    with TELEGRAM_TRADE_ALERTS=true.
+    """
+    event = (event or "").strip().lower()
+    if _env_bool("TELEGRAM_TRADE_ALERTS", False):
+        return True
+    if event not in {"error", "critical", "halt"}:
+        return False
+    min_interval = _env_int("TELEGRAM_CRITICAL_MIN_INTERVAL_SEC", 900)
+    state_path = os.getenv(
+        "TELEGRAM_NOTIFY_STATE_PATH",
+        "/app/data/telegram_notify_state.json",
+    )
+    try:
+        import json
+        from pathlib import Path
+
+        path = Path(state_path)
+        data = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text() or "{}")
+            except Exception:
+                data = {}
+        now = time.time()
+        key = f"last_{event}"
+        last = float(data.get(key) or 0)
+        if now - last < min_interval:
+            return False
+        data[key] = now
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, sort_keys=True))
+    except Exception:
+        logger.debug("telegram critical rate-limit state failed", exc_info=True)
+    return True
 
 
 def _safe_balance(polymarket) -> Optional[float]:

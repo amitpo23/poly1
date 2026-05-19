@@ -23,6 +23,7 @@ from agents.application.external_conviction import (
     PoliflyBrowserProvider,
     PoliflyEnhancedProvider,
     PublicNewsProvider,
+    TradingViewOptionsProvider,
     WalletMasterProvider,
     build_shadow_plan,
     filter_candidates,
@@ -30,6 +31,16 @@ from agents.application.external_conviction import (
     provider_from_config,
 )
 from agents.application.trade_log import TradeLog
+
+
+class AllowBrain:
+    def evaluate_general_entry(self, **_kwargs):
+        class Decision:
+            approved = True
+            reason = "test_approved"
+            score = 0.9
+            features = {"test": True}
+        return Decision()
 
 
 def _raw_market(
@@ -248,7 +259,9 @@ class TestAgent(unittest.TestCase):
             trade_log=log,
             polymarket=polymarket,
             risk_gate=FakeRiskGate(),
+            brain=AllowBrain(),
         )
+        agent.meta_brain = None
         written = agent.collect_once()
         self.assertEqual(written, 1)
         self.assertEqual(len(polymarket.orders), 1)
@@ -277,7 +290,9 @@ class TestAgent(unittest.TestCase):
             trade_log=log,
             polymarket=polymarket,
             risk_gate=FakeRiskGate(),
+            brain=AllowBrain(),
         )
+        agent.meta_brain = None
         agent.collect_once()
         self.assertEqual(len(polymarket.orders), 1)
         _, rec = polymarket.orders[0]
@@ -340,7 +355,9 @@ class TestAgent(unittest.TestCase):
             trade_log=log,
             polymarket=polymarket,
             risk_gate=FakeRiskGate(),
+            brain=AllowBrain(),
         )
+        agent.meta_brain = None
         agent.collect_once()
         # First market fills, second is blocked by max_open_positions
         self.assertEqual(len(polymarket.orders), 1)
@@ -944,6 +961,11 @@ class TestProviderFactory(unittest.TestCase):
         prov = provider_from_config(cfg)
         self.assertIsInstance(prov, KalshiDivergenceProvider)
 
+    def test_factory_creates_tradingview_options(self):
+        cfg = ExternalConvictionConfig(provider="tradingview_options")
+        prov = provider_from_config(cfg)
+        self.assertIsInstance(prov, TradingViewOptionsProvider)
+
     def test_factory_creates_whale_consensus(self):
         cfg = ExternalConvictionConfig(provider="whale_consensus")
         prov = provider_from_config(cfg)
@@ -983,6 +1005,52 @@ class TestProviderFactory(unittest.TestCase):
                 os.environ["EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS"] = old
             else:
                 os.environ.pop("EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS", None)
+
+
+class TestTradingViewOptionsProvider(unittest.TestCase):
+    def test_skips_without_snapshot(self):
+        provider = TradingViewOptionsProvider(
+            snapshot_path="/tmp/poly1_missing_tradingview_snapshot.json",
+            max_age_sec=900,
+        )
+        provider._page_reachable = lambda: True
+        market = market_from_gamma(
+            _raw_market(
+                "TV1",
+                question="Will the S&P 500 close higher today?",
+                yes_price=0.48,
+            )
+        )
+        verdict = provider.analyze(market)
+        self.assertEqual(verdict.direction, "skip")
+        self.assertEqual(verdict.source, "tradingview_options")
+        self.assertIn("snapshot_missing", verdict.reason)
+
+    def test_snapshot_put_call_ratio_produces_macro_signal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tv.json"
+            path.write_text(json.dumps({
+                "ts": "2026-05-19T12:00:00Z",
+                "symbol": "CME_MINI:ES1!",
+                "put_call_ratio": 0.70,
+                "call_volume": 1000,
+                "put_volume": 700,
+            }))
+            provider = TradingViewOptionsProvider(
+                snapshot_path=str(path),
+                max_age_sec=10**9,
+            )
+            market = market_from_gamma(
+                _raw_market(
+                    "TV2",
+                    question="Will the S&P 500 close higher today?",
+                    yes_price=0.48,
+                )
+            )
+            verdict = provider.analyze(market)
+            self.assertEqual(verdict.direction, "yes")
+            self.assertGreaterEqual(verdict.confidence, 0.55)
+            self.assertEqual(verdict.evidence["put_call_ratio"], 0.7)
 
 
 class TestCrossMarketInjection(unittest.TestCase):
@@ -1085,7 +1153,9 @@ class TestConcentrationLive(unittest.TestCase):
                 trade_log=log,
                 polymarket=polymarket,
                 risk_gate=FakeRiskGate(),
+                brain=AllowBrain(),
             )
+            agent.meta_brain = None
             agent.collect_once()
             # Should be blocked by concentration limit (2 fills >= max 2)
             self.assertEqual(len(polymarket.orders), 0)
@@ -1138,7 +1208,9 @@ class TestReentryCooldownAllowsAfterExpiry(unittest.TestCase):
                 trade_log=log,
                 polymarket=polymarket,
                 risk_gate=FakeRiskGate(),
+                brain=AllowBrain(),
             )
+            agent.meta_brain = None
             agent.collect_once()
             # The old close should NOT block — order should be placed
             self.assertGreater(len(polymarket.orders), 0)
@@ -1200,7 +1272,9 @@ class TestConcentrationAllowsBelowLimit(unittest.TestCase):
                 trade_log=log,
                 polymarket=polymarket,
                 risk_gate=FakeRiskGate(),
+                brain=AllowBrain(),
             )
+            agent.meta_brain = None
             agent.collect_once()
             # 1 old fill < 3 limit — order should be placed
             self.assertGreater(len(polymarket.orders), 0)
@@ -1246,7 +1320,9 @@ class TestInMemoryDuplicateGuard(unittest.TestCase):
             trade_log=log,
             polymarket=polymarket,
             risk_gate=FakeRiskGate(),
+            brain=AllowBrain(),
         )
+        agent.meta_brain = None
         agent.collect_once()
         # Only one order should have been placed despite two candidates
         self.assertEqual(len(polymarket.orders), 1)

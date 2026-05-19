@@ -51,10 +51,10 @@ class _TmpDB:
 
     def _config(self, **overrides):
         defaults = dict(
-            take_profit_pct=0.10,
-            stop_loss_pct=0.07,
-            max_hold_hours=24,
-            poll_seconds=60,
+            take_profit_pct=0.25,
+            stop_loss_pct=0.03,
+            max_hold_hours=6,
+            poll_seconds=15,
             sell_slippage=0.02,
             execute=False,
         )
@@ -133,7 +133,7 @@ class TestAggregation(_TmpDB, unittest.TestCase):
         self.assertAlmostEqual(positions[0].avg_entry_price, 0.33, places=4)
         self.assertAlmostEqual(positions[0].total_shares, 3.0 / 0.33, places=4)
 
-    def test_btc_daily_actual_fill_prevents_false_stop_loss(self):
+    def test_btc_daily_actual_fill_uses_real_entry_for_stop_loss(self):
         self._insert_btc_daily_open(
             "BTC_DAILY",
             "TOK_BTC",
@@ -149,7 +149,7 @@ class TestAggregation(_TmpDB, unittest.TestCase):
         mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
         result = mgr.check_and_close_positions()
         self.assertEqual(result["evaluated"], 1)
-        self.assertEqual(result["closed_sl"], 0)
+        self.assertEqual(result["closed_sl"], 1)
         pm.sell_shares.assert_not_called()
         with self.tl._connect() as conn:
             mark = conn.execute(
@@ -196,23 +196,23 @@ class TestEvaluation(_TmpDB, unittest.TestCase):
             earliest_ts=time.time() - age_seconds,
         )
 
-    def test_take_profit_fires_at_10_pct_above_entry(self):
-        pm = self._polymarket({"TOK_X": 0.55})  # 10% above 0.50
+    def test_take_profit_fires_at_5_pct_above_entry(self):
+        pm = self._polymarket({"TOK_X": 0.525})  # 5% above 0.50
         mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
         pos = self._make_position("TOK_X", entry_price=0.50)
         reason, mid = mgr._evaluate_position(pos)
         self.assertEqual(reason, "take_profit")
-        self.assertAlmostEqual(mid, 0.55)
+        self.assertAlmostEqual(mid, 0.525)
 
-    def test_stop_loss_fires_at_7_pct_below_entry(self):
-        pm = self._polymarket({"TOK_X": 0.464})  # below 7% threshold of 0.50
+    def test_stop_loss_fires_at_3_pct_below_entry(self):
+        pm = self._polymarket({"TOK_X": 0.484})  # below 3% threshold of 0.50
         mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
         pos = self._make_position("TOK_X", entry_price=0.50)
         reason, mid = mgr._evaluate_position(pos)
         self.assertEqual(reason, "stop_loss")
 
     def test_within_band_holds(self):
-        pm = self._polymarket({"TOK_X": 0.52})  # 4% above, less than 10%
+        pm = self._polymarket({"TOK_X": 0.52})  # 4% above, less than fast TP
         mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
         pos = self._make_position("TOK_X", entry_price=0.50)
         reason, mid = mgr._evaluate_position(pos)

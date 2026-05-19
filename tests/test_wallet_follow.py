@@ -19,6 +19,16 @@ from agents.application.wallet_follow import (
 from agents.application.trade_log import WALLET_FOLLOW_OPEN, TradeLog
 
 
+class _AllowBrain:
+    def evaluate_general_entry(self, **_kwargs):
+        class Decision:
+            approved = True
+            reason = "test_approved"
+            score = 0.9
+            features = {"test": True}
+        return Decision()
+
+
 class _TmpDB:
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -309,7 +319,9 @@ class TestWalletFollowLive(_TmpDB, unittest.TestCase):
             risk_gate=_PassGate(),
             cfg=self.cfg,
             execute=True,
+            brain=_AllowBrain(),
         )
+        engine.meta_brain = None
         _insert_signal(self.log, "MKT11", "bullish", wallet_profit=700.0, yes_price=0.30)
         with patch.object(engine, "_gamma_market",
                           return_value=_fake_gamma_market("MKT11", yes_price=0.30)):

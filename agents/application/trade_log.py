@@ -194,6 +194,32 @@ CREATE TABLE IF NOT EXISTS settlement_reconciliation (
 );
 CREATE INDEX IF NOT EXISTS idx_settlement_status_ts ON settlement_reconciliation(status, updated_ts);
 CREATE INDEX IF NOT EXISTS idx_settlement_market_ts ON settlement_reconciliation(market_id, updated_ts);
+
+CREATE TABLE IF NOT EXISTS market_universe (
+    slug TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,
+    horizon TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    period_ts INTEGER NOT NULL,
+    market_id TEXT NOT NULL,
+    question TEXT,
+    liquidity_usdc REAL,
+    volume_usdc REAL,
+    yes_price REAL,
+    no_price REAL,
+    up_token TEXT,
+    down_token TEXT,
+    accepting_orders INTEGER NOT NULL DEFAULT 0,
+    route_agent TEXT NOT NULL,
+    score REAL NOT NULL,
+    winrate_estimate REAL,
+    eligible INTEGER NOT NULL DEFAULT 0,
+    top_rank INTEGER,
+    details_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_market_universe_ts ON market_universe(ts);
+CREATE INDEX IF NOT EXISTS idx_market_universe_route_score ON market_universe(route_agent, score);
+CREATE INDEX IF NOT EXISTS idx_market_universe_asset_horizon ON market_universe(asset, horizon, period_ts);
 """
 
 
@@ -233,6 +259,66 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_json_obj(value: Optional[str]) -> dict:
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _utc_day_bounds(day: Optional[str] = None) -> tuple[str, str]:
+    """Return ISO UTC day bounds for ledger queries."""
+    if day:
+        text = str(day).strip()
+        if "T" in text:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        else:
+            dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(timezone.utc)
+    else:
+        dt = datetime.now(timezone.utc)
+    start = datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return start.isoformat(), end.isoformat()
+
+
+def _trade_agent_filter(agent: Optional[str]) -> tuple[str, list]:
+    """Best-effort agent attribution for legacy trades rows.
+
+    The trades table predates the agent column. Use only high-confidence
+    status/market_id patterns so one agent's losses do not poison another
+    agent's intraday win-rate.
+    """
+    if not agent:
+        return "", []
+    agent = agent.lower()
+    if agent == "scalper":
+        return (
+            " AND (status LIKE 'scalper_%' OR market_id LIKE ?)",
+            ["%-updown-15m-%"],
+        )
+    if agent == "btc_5min":
+        return (
+            " AND (status = ? OR market_id LIKE ?)",
+            ["btc_5min_open", "%-updown-5m-%"],
+        )
+    status_by_agent = {
+        "btc_daily": "btc_daily_open",
+        "near_resolution": "near_resolution_open",
+        "news_shock": "news_shock_open",
+        "wallet_follow": "wallet_follow_open",
+    }
+    status = status_by_agent.get(agent)
+    if status:
+        return " AND status = ?", [status]
+    return " AND 1 = 0", []
+
+
 class TradeLog:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or os.getenv("TRADE_LOG_DB", "./data/trade_log.db")
@@ -243,6 +329,9 @@ class TradeLog:
             # Migrations — safe to re-run (SQLite ignores duplicate ADD COLUMN).
             for _migration in [
                 "ALTER TABLE news_signals ADD COLUMN yes_price REAL DEFAULT NULL",
+                "ALTER TABLE market_universe ADD COLUMN winrate_estimate REAL DEFAULT NULL",
+                "ALTER TABLE market_universe ADD COLUMN eligible INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE market_universe ADD COLUMN top_rank INTEGER DEFAULT NULL",
             ]:
                 try:
                     conn.execute(_migration)
@@ -264,6 +353,247 @@ class TradeLog:
 
     def new_cycle_id(self) -> str:
         return str(uuid.uuid4())
+
+    def upsert_market_universe(self, row: dict) -> None:
+        now = row.get("ts") or _now()
+        details = row.get("details_json")
+        if isinstance(details, (dict, list)):
+            details = json.dumps(details, default=str)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO market_universe (
+                    slug, ts, horizon, asset, period_ts, market_id, question,
+                    liquidity_usdc, volume_usdc, yes_price, no_price,
+                    up_token, down_token, accepting_orders, route_agent,
+                    score, winrate_estimate, eligible, top_rank, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(slug) DO UPDATE SET
+                    ts=excluded.ts,
+                    horizon=excluded.horizon,
+                    asset=excluded.asset,
+                    period_ts=excluded.period_ts,
+                    market_id=excluded.market_id,
+                    question=excluded.question,
+                    liquidity_usdc=excluded.liquidity_usdc,
+                    volume_usdc=excluded.volume_usdc,
+                    yes_price=excluded.yes_price,
+                    no_price=excluded.no_price,
+                    up_token=excluded.up_token,
+                    down_token=excluded.down_token,
+                    accepting_orders=excluded.accepting_orders,
+                    route_agent=excluded.route_agent,
+                    score=excluded.score,
+                    winrate_estimate=excluded.winrate_estimate,
+                    eligible=excluded.eligible,
+                    top_rank=excluded.top_rank,
+                    details_json=excluded.details_json
+                """,
+                (
+                    row["slug"],
+                    now,
+                    row["horizon"],
+                    row["asset"],
+                    int(row["period_ts"]),
+                    str(row["market_id"]),
+                    row.get("question"),
+                    row.get("liquidity_usdc"),
+                    row.get("volume_usdc"),
+                    row.get("yes_price"),
+                    row.get("no_price"),
+                    row.get("up_token"),
+                    row.get("down_token"),
+                    1 if row.get("accepting_orders") else 0,
+                    row["route_agent"],
+                    float(row["score"]),
+                    row.get("winrate_estimate"),
+                    1 if row.get("eligible") else 0,
+                    row.get("top_rank"),
+                    details,
+                ),
+            )
+
+    def list_market_universe(
+        self,
+        route_agent: Optional[str] = None,
+        horizon: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        clauses = []
+        params: list = []
+        if route_agent:
+            clauses.append("route_agent = ?")
+            params.append(route_agent)
+        if horizon:
+            clauses.append("horizon = ?")
+            params.append(horizon)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            "SELECT * FROM market_universe "
+            f"{where} ORDER BY score DESC, liquidity_usdc DESC LIMIT ?"
+        )
+        params.append(int(limit))
+        with self._lock, self._connect() as conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    def get_market_universe(self, slug: str) -> Optional[dict]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM market_universe WHERE slug = ?", (slug,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def is_market_universe_eligible(
+        self,
+        slug: str,
+        *,
+        min_winrate: float = 0.52,
+        require_top_rank: bool = True,
+    ) -> bool:
+        row = self.get_market_universe(slug)
+        if not row:
+            return False
+        if require_top_rank and row.get("top_rank") is None:
+            return False
+        winrate = row.get("winrate_estimate")
+        try:
+            value = float(winrate if winrate is not None else row.get("score") or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        return bool(row.get("eligible")) and value >= float(min_winrate)
+
+    def daily_trade_journal_stats(
+        self,
+        *,
+        day: Optional[str] = None,
+        agent: Optional[str] = None,
+        market_id: Optional[str] = None,
+        market_type: Optional[str] = None,
+        asset: Optional[str] = None,
+    ) -> dict:
+        """Summarize today's realized behavior for adaptive win-rate scoring.
+
+        The journal blends two auditable sources:
+        - brain_decisions outcomes, when the decision was later annotated.
+        - terminal trade rows, including scalper exits with response.pnl_pct.
+
+        Failed execution attempts are tracked separately and used by callers as
+        a quality penalty rather than counted as market-direction losses.
+        """
+        start, end = _utc_day_bounds(day)
+        win_outcomes = {
+            "closed_take_profit", "resolved_yes", "resolved_skipped_no",
+        }
+        loss_outcomes = {
+            "closed_stop_loss", "closed_timeout", "closed_dust",
+            "resolved_loss", "resolved_no",
+        }
+        wins = 0
+        losses = 0
+        failures = 0
+        realized_pnl_usdc = 0.0
+        pnl_pct_values: list[float] = []
+        brain_rows = 0
+        trade_rows = 0
+
+        with self._lock, self._connect() as conn:
+            clauses = ["ts >= ?", "ts < ?", "approved = 1", "outcome_status IS NOT NULL"]
+            params: list = [start, end]
+            if agent:
+                clauses.append("agent = ?")
+                params.append(agent)
+            if market_id:
+                clauses.append("market_id = ?")
+                params.append(str(market_id))
+            if market_type:
+                clauses.append("market_type = ?")
+                params.append(market_type)
+            if asset:
+                clauses.append("asset = ?")
+                params.append(asset)
+            rows = conn.execute(
+                "SELECT outcome_status, score FROM brain_decisions WHERE "
+                + " AND ".join(clauses),
+                params,
+            ).fetchall()
+            brain_rows = len(rows)
+            for row in rows:
+                status = row["outcome_status"]
+                if status in win_outcomes:
+                    wins += 1
+                elif status in loss_outcomes:
+                    losses += 1
+
+            trade_clauses = ["ts >= ?", "ts < ?"]
+            trade_params: list = [start, end]
+            if market_id:
+                trade_clauses.append("market_id = ?")
+                trade_params.append(str(market_id))
+            agent_sql, agent_params = _trade_agent_filter(agent)
+            trade_params.extend(agent_params)
+            rows = conn.execute(
+                "SELECT status, response_json, error, size_usdc FROM trades WHERE "
+                + " AND ".join(trade_clauses)
+                + agent_sql,
+                trade_params,
+            ).fetchall()
+            for row in rows:
+                status = row["status"]
+                response = _parse_json_obj(row["response_json"])
+                error = str(row["error"] or "")
+                if error.startswith("SHADOW"):
+                    continue
+                if status in win_outcomes:
+                    wins += 1
+                    trade_rows += 1
+                elif status in loss_outcomes:
+                    losses += 1
+                    trade_rows += 1
+                elif status == "scalper_exit":
+                    pnl_pct = response.get("pnl_pct")
+                    try:
+                        pnl_pct_f = float(pnl_pct)
+                    except (TypeError, ValueError):
+                        continue
+                    pnl_pct_values.append(pnl_pct_f)
+                    if pnl_pct_f > 0:
+                        wins += 1
+                    elif pnl_pct_f < 0:
+                        losses += 1
+                    trade_rows += 1
+                elif status in {"failed", "close_failed", "may_have_fired"}:
+                    failures += 1
+
+                for key in ("realized_pnl_usdc", "pnl_usdc", "pnl"):
+                    if key in response:
+                        try:
+                            realized_pnl_usdc += float(response[key])
+                        except (TypeError, ValueError):
+                            pass
+                        break
+
+        total = wins + losses
+        winrate = (wins / total) if total else None
+        avg_pnl_pct = (
+            sum(pnl_pct_values) / len(pnl_pct_values) if pnl_pct_values else None
+        )
+        return {
+            "day_start": start,
+            "day_end": end,
+            "agent": agent,
+            "market_id": market_id,
+            "market_type": market_type,
+            "asset": asset,
+            "wins": wins,
+            "losses": losses,
+            "total_with_outcome": total,
+            "winrate": winrate,
+            "failures": failures,
+            "brain_rows": brain_rows,
+            "trade_rows": trade_rows,
+            "realized_pnl_usdc": round(realized_pnl_usdc, 6),
+            "avg_pnl_pct": avg_pnl_pct,
+        }
 
     def has_filled_position_for_market(
         self, market_id: str, token_id: Optional[str] = None,

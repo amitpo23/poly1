@@ -1,6 +1,59 @@
 # Current Status
 
-Date: 2026-05-18 (updated) · Previous: 2026-05-12
+## 2026-05-19 Source Of Truth Lock
+
+- Live runtime source of truth is only `trader@83.229.82.193:/srv/poly1`.
+- Local workspace is development/staging only; no local live trading, live journal
+  writes, wallet runtime, or official Telegram dashboard.
+- Single control plane: `scripts/runtime_control.py` writes
+  `deploy/.env.runtime`, `data/runtime_control.json`, and `data/HALT`.
+- Single live journal: server `data/trade_log.db`.
+- Single official Telegram path: `poly1-telegram-reporter`, hourly dashboard only.
+- Local `.env`, local `data/`, and local `deploy/.env.runtime` must never be
+  deployed over server runtime state.
+- Verification command: `scripts/verify_server_source_of_truth.sh`.
+
+See `docs/SERVER_SOURCE_OF_TRUTH_2026-05-19.md`.
+
+## 2026-05-19 API / Model Health
+
+- Added `agents/application/llm_config.py` as the single model-default layer.
+- Updated live server model env keys only:
+  `OPENAI_MODEL=gpt-4o`,
+  `ANTHROPIC_MODEL=claude-sonnet-4-5-20250929`,
+  `EXTERNAL_CONVICTION_DEBATE_MODEL=gpt-4o`.
+- Added `scripts/check_api_health.py` for redacted live API checks.
+- Server API health: Tavily PASS, Anthropic Sonnet PASS, Polymarket Gamma PASS,
+  Polymarket CLOB public API PASS, Builder credentials present, wallet key
+  present.
+- OpenAI is configured but unhealthy: `gpt-4o` returns HTTP `429`; this is a
+  provider/account quota or billing issue, not a code failure.
+- Optional integrations not configured: NewsAPI, Nansen, Wallet Master, Polifly
+  bridge key, persisted CLOB L2 credentials.
+
+See `docs/API_HEALTH_2026-05-19.md`.
+
+Date: 2026-05-19 (updated) · Previous: 2026-05-18
+
+## Status as of 2026-05-19 — commander audit / fast policy alignment
+
+Canonical policy now lives in `agents/application/trading_policy.py` and is
+summarized in `docs/AGENT_MATRIX_2026-05-19.md`.
+
+- Entry agents remain blocked unless runtime control explicitly allows exactly
+  one live agent.
+- No live entry should bypass a brain/signal check plus `RiskGate`.
+- Exit policy: fast profit-taking from +5% when momentum does not justify
+  holding, hard profit cap at +25%, stop-loss at -3%, max hold 6h as a
+  safety ceiling only.
+- Holding is the exception: every open position is revalidated by the
+  brain/LLM each minute, and the default preference is to exit quickly unless
+  a strong forecast says to hold.
+- Scanner/trader cadence defaults to 60s; position manager defaults to 60s.
+- Trading rate cap is 100 trades/hour; any one live agent may receive at most
+  50% of wallet capital.
+- Telegram operator dashboard is batched hourly via
+  `scripts/python/telegram_report.py`.
 
 ## Status as of 2026-05-18 — v0.6.0-scanner
 
@@ -25,7 +78,7 @@ Current tag: `v0.6.0-scanner` (HEAD `db8448d`)
 | btc_daily anchor fix | `0348d54` | Actual mid as anchor, max_entry_price=0.65 |
 | tavily.py shared helper | `85df15f` | Used across 5 agents |
 | market_brain entry gate | `ed3d9c9` | Pre-LLM scoring, spread+horizon+Tavily |
-| market_scanner daemon | `1d6a7e3` | 5-min proactive scan, routes via DB |
+| market_scanner daemon | `1d6a7e3` | Originally 5-min scan; 2026-05-19 policy sets 1-min scan |
 | Scanner → news_shock wiring | `d10ad88` | direction fix + status filter fix |
 | SPEC.md §§17-22 | `84b4f87` | All agents documented |
 | Vibe-Trading provider | `35edd25` | TA signal in external_conviction |
@@ -1147,7 +1200,7 @@ MARKET_BRAIN_ENABLED="true"
 MARKET_BRAIN_STRICT_UNKNOWN="true"
 SCALP_EXIT_TAKE_PROFIT_PCT="0.05"
 SCALP_EXIT_TRAILING_STOP_PCT="0.02"
-SCALP_EXIT_STOP_LOSS_PCT="0.07"
+SCALP_EXIT_STOP_LOSS_PCT="0.03"
 ```
 
 Operational interpretation: the system is live but conservative. It is allowed

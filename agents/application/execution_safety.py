@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from agents.application.trading_policy import STOP_LOSS_PCT
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -39,7 +41,7 @@ def exitable_size_check(
     entry size because $1-$2 positions created dust/retry loops in live logs.
     """
     stop_loss_pct = (
-        _env_float("MIN_EXITABLE_STOP_LOSS_PCT", 0.07)
+        _env_float("MIN_EXITABLE_STOP_LOSS_PCT", STOP_LOSS_PCT)
         if stop_loss_pct is None else float(stop_loss_pct)
     )
     min_exit_notional_usdc = (

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from agents.application.trade import Trader
+from agents.application.trading_policy import MARKET_SCAN_SECONDS
 from agents.utils.notify import notify_telegram, notify_trade, _safe_balance, ping_healthcheck
 
 
@@ -17,7 +18,7 @@ class TraderDaemon:
     def __init__(
         self,
         trader: Trader,
-        poll_seconds: int = 1800,
+        poll_seconds: int = MARKET_SCAN_SECONDS,
         jitter_seconds: int = 30,
         heartbeat_path: Optional[str] = None,
         healthcheck_url: Optional[str] = None,

@@ -157,6 +157,7 @@ def _engine(db_path, execute=False, cfg=None, feed=None, risk_gate=None):
         "token_id": "tok_up",
         "outcome_traded": "Up",
     }
+    pm._fillable_market_buy.return_value = (0.50, 1.50, 0.50)
     pm.client = MagicMock()
     pm.client.get_midpoint.return_value = {"mid": "0.50"}
     if risk_gate is None:
@@ -408,6 +409,73 @@ class TestSideSemantics(_TmpDB, unittest.TestCase):
         sell_rows = [r for r in rows if r.get("side") == "SELL"]
         self.assertTrue(len(sell_rows) > 0)
         self.assertEqual(sell_rows[0]["token_id"], "tok_down")
+
+
+# ---------------------------------------------------------------------------
+# Tests: 5m straddle scalp
+# ---------------------------------------------------------------------------
+
+
+class TestStraddleScalp(_TmpDB, unittest.TestCase):
+    @patch.dict("os.environ", {"MIN_EXITABLE_ENTRY_USDC": "0.1"})
+    def test_straddle_shadow_opens_both_legs_when_pair_sum_is_cheap(self):
+        cfg = Btc5MinConfig(
+            news_veto=False,
+            entry_window_start=20,
+            entry_window_end=180,
+            cooldown_sec=0,
+            min_consensus=2,
+            straddle_enabled=True,
+            straddle_leg_usdc=1.5,
+            straddle_max_pair_ask_sum=1.02,
+            straddle_take_profit_pct=0.03,
+        )
+        eng = _engine(self.db_path, cfg=cfg)
+        eng.polymarket._fillable_market_buy.side_effect = [
+            (0.46, 1.5, 0.46),
+            (0.55, 1.5, 0.55),
+        ]
+        period = _current_period_ts()
+        with patch("agents.application.btc_5min._current_period_ts", return_value=period):
+            with patch("time.time", return_value=float(period + 90)):
+                self.assertTrue(eng.maybe_enter())
+        rows = TradeLog(self.db_path).recent(10)
+        open_rows = [r for r in rows if r["status"] == BTC_5MIN_OPEN]
+        self.assertEqual(len(open_rows), 2)
+        self.assertEqual({r["token_id"] for r in open_rows}, {"tok_up", "tok_down"})
+        self.assertEqual({r["side"] for r in open_rows}, {"BUY", "SELL"})
+        self.assertTrue(all("btc_5min_straddle_scalp" in (r["response_json"] or "") for r in open_rows))
+        for call in eng.polymarket._fillable_market_buy.call_args_list:
+            self.assertEqual(call.kwargs["max_spread_pct"], cfg.straddle_max_entry_spread_pct)
+            self.assertEqual(call.kwargs["min_entry_price"], cfg.straddle_min_entry_price)
+            self.assertEqual(call.kwargs["min_bid_depth_usdc"], cfg.straddle_min_bid_depth_usdc)
+
+    @patch.dict("os.environ", {"MIN_EXITABLE_ENTRY_USDC": "0.1"})
+    def test_straddle_skips_when_pair_sum_is_too_expensive(self):
+        cfg = Btc5MinConfig(
+            news_veto=False,
+            entry_window_start=20,
+            entry_window_end=180,
+            cooldown_sec=0,
+            min_consensus=2,
+            straddle_enabled=True,
+            straddle_leg_usdc=1.5,
+            straddle_max_pair_ask_sum=1.02,
+        )
+        eng = _engine(self.db_path, cfg=cfg)
+        eng.polymarket._fillable_market_buy.side_effect = [
+            (0.55, 1.5, 0.55),
+            (0.55, 1.5, 0.55),
+        ]
+        eng._momentum_signal = lambda: SignalResult("momentum", "skip", 0.0)
+        eng._funding_signal = lambda: SignalResult("funding", "skip", 0.0)
+        eng._rsi_signal = lambda: SignalResult("rsi", "skip", 0.0)
+        period = _current_period_ts()
+        with patch("agents.application.btc_5min._current_period_ts", return_value=period):
+            with patch("time.time", return_value=float(period + 90)):
+                self.assertFalse(eng.maybe_enter())
+        rows = TradeLog(self.db_path).recent(10)
+        self.assertFalse([r for r in rows if r["status"] == BTC_5MIN_OPEN])
 
 
 # ---------------------------------------------------------------------------

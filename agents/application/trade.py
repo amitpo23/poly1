@@ -810,9 +810,12 @@ class Trader:
             )
             return True
         except Exception:
-            # Fail open — never block a trade due to a brain extraction error.
-            logger.exception("brain_entry_gate failed for %s (fail-open)", market_id)
-            return True
+            logger.exception("brain_entry_gate failed for %s; blocking entry", market_id)
+            self.trade_log.insert_terminal(
+                cycle_id, market_id, SKIPPED_GATE,
+                error="brain_gate_failed",
+            )
+            return False
 
     def maintain_positions(self):
         """Inline position-management call. Delegates to PositionManager.

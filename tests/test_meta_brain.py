@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agents.application.meta_brain import (
     ConvictionJSONLReader,
@@ -14,6 +15,7 @@ from agents.application.meta_brain import (
     WinRateAdvisor,
     WinRateStats,
 )
+from agents.application.trade_log import TradeLog
 
 
 # ---------------------------------------------------------------------------
@@ -44,11 +46,12 @@ class TestWinRateAdvisor(unittest.TestCase):
         for r in rows:
             conn.execute(
                 "INSERT INTO brain_decisions (ts, agent, strategy, decision_type, "
-                "market_id, approved, reason, score, outcome_status) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "market_id, approved, reason, score, market_type, outcome_status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (r["ts"], "test", "test", "entry", r.get("market_id", "m1"),
                  r.get("approved", 1), r.get("reason", "ok"),
-                 r.get("score", 0.6), r.get("outcome_status")),
+                 r.get("score", 0.6), r.get("market_type", "general_binary"),
+                 r.get("outcome_status")),
             )
         conn.commit()
         return conn
@@ -78,6 +81,28 @@ class TestWinRateAdvisor(unittest.TestCase):
         finally:
             os.unlink(db_path)
 
+    def test_winrate_filters_by_market_type(self):
+        adv = WinRateAdvisor()
+        rows = [
+            {
+                "ts": "2026-05-19T10:00:00",
+                "approved": 1,
+                "market_type": "general_binary",
+                "outcome_status": "closed_take_profit",
+            },
+            {
+                "ts": "2026-05-19T11:00:00",
+                "approved": 1,
+                "market_type": "crypto_15m",
+                "outcome_status": "closed_stop_loss",
+            },
+        ]
+        conn = self._make_db(rows)
+        stats = adv._from_brain_decisions(conn, "general_binary", 240)
+        self.assertEqual(stats.wins, 1)
+        self.assertEqual(stats.losses, 0)
+        self.assertEqual(stats.total_with_outcome, 1)
+
     def test_all_pending_falls_back_to_trades(self):
         """If brain_decisions has no resolved outcomes, falls back to trades table."""
         adv = WinRateAdvisor()
@@ -98,6 +123,33 @@ class TestWinRateAdvisor(unittest.TestCase):
             stats = adv._from_trades_table(conn, 240)
             self.assertEqual(stats.wins, 1)
             self.assertEqual(stats.source, "trades")
+        finally:
+            os.unlink(db_path)
+
+    def test_daily_journal_refines_intraday_winrate(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            log = TradeLog(db_path=db_path)
+            log.insert_brain_decision(
+                agent="scalper",
+                strategy="test",
+                decision_type="entry",
+                market_id="m1",
+                approved=True,
+                reason="approved",
+                score=0.8,
+                market_type="general_binary",
+            )
+            with log._connect() as conn:
+                conn.execute(
+                    "UPDATE brain_decisions SET outcome_status='closed_stop_loss'"
+                )
+            adv = WinRateAdvisor(cache_ttl_sec=0)
+            stats = adv.compute(db_path, market_type="general_binary", hours=24)
+            self.assertEqual(stats.source, "brain_decisions+daily_journal")
+            self.assertLess(stats.winrate, 0.52)
+            self.assertEqual(stats.total_with_outcome, 1)
         finally:
             os.unlink(db_path)
 
@@ -157,6 +209,29 @@ class TestConvictionJSONLReader(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_age_seconds_uses_real_elapsed_seconds(self):
+        import json
+        import tempfile
+        import time as _time
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False
+        ) as f:
+            ts = _time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.time() - 90)
+            )
+            f.write(json.dumps({
+                "market_id": "0xage", "direction": "yes",
+                "confidence": 0.7, "source": "manifold", "ts": ts,
+            }) + "\n")
+            path = f.name
+        try:
+            reader = ConvictionJSONLReader(conviction_paths=[path])
+            result = reader.query("0xage", "")
+            self.assertGreaterEqual(result.age_seconds, 60)
+            self.assertLess(result.age_seconds, 180)
+        finally:
+            os.unlink(path)
+
 
 # ---------------------------------------------------------------------------
 # ProbVelocityDetector
@@ -194,6 +269,41 @@ class TestProbVelocityDetector(unittest.TestCase):
         sig = det._from_samples([(0, 0.5)])
         self.assertIsNone(sig.direction)
 
+    def test_db_velocity_uses_elapsed_time_not_digit_math(self):
+        det = ProbVelocityDetector(min_abs_velocity=0.01, cache_ttl_sec=0)
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """CREATE TABLE position_marks (
+                    market_id TEXT,
+                    token_id TEXT,
+                    entry_price REAL,
+                    current_price REAL,
+                    first_seen_ts TEXT,
+                    last_seen_ts TEXT
+                )"""
+            )
+            conn.execute(
+                "INSERT INTO position_marks VALUES (?,?,?,?,?,?)",
+                (
+                    "m1",
+                    "tok1",
+                    0.50,
+                    0.55,
+                    "2026-05-19T10:59:00Z",
+                    "2026-05-19T11:01:00Z",
+                ),
+            )
+            conn.commit()
+            conn.close()
+            sig = det._from_db(db_path, "m1", "tok1")
+            self.assertEqual(sig.direction, "rising")
+            self.assertAlmostEqual(sig.pct_per_hour, 3.0, places=1)
+        finally:
+            os.unlink(db_path)
+
 
 # ---------------------------------------------------------------------------
 # MetaBrain integration
@@ -214,6 +324,14 @@ class _MockMarketBrain:
 
     def evaluate_general_entry(self, **kwargs):
         return _MockBrainDecision(self._approved, score=self._score)
+
+    def evaluate_crypto_straddle_entry(self, **kwargs):
+        return _MockBrainDecision(
+            self._approved,
+            reason="approved_crypto_straddle" if self._approved else "blocked",
+            score=self._score,
+            features={"brain_path": "crypto_straddle"},
+        )
 
 
 class TestMetaBrain(unittest.TestCase):
@@ -305,6 +423,64 @@ class TestMetaBrain(unittest.TestCase):
         self.assertIsInstance(decision, MetaDecision)
         self.assertIsInstance(decision.signal_sources, list)
         self.assertIsInstance(decision.features, dict)
+
+    @patch.dict(os.environ, {
+        "META_BRAIN_CRYPTO_STRADDLE_MIN_SCORE": "0.65",
+        "META_BRAIN_STRADDLE_TAVILY_ENABLED": "false",
+        "META_BRAIN_STRADDLE_LLM_ENABLED": "false",
+        "META_BRAIN_STRADDLE_WEIGHT_BRAIN": "1.0",
+        "META_BRAIN_STRADDLE_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_TAVILY": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_TRADINGVIEW": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_HERMES": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_LIQUIDITY": "0.0",
+    })
+    def test_crypto_straddle_uses_weighted_meta_score(self):
+        mb = self._make_meta_brain(approved=True, score=0.90, conviction_paths=[])
+        decision = mb.synthesize_crypto_straddle(
+            slug="btc-updown-5m-1779199200",
+            question="Bitcoin Up or Down - May 19, 2:00PM UTC",
+            asset="BTC",
+            up_price=0.51,
+            down_price=0.52,
+            pair_ask_sum=1.03,
+            seconds_to_expiry=240,
+            token_id="tok_up",
+            liquidity_usdc=3.0,
+        )
+        self.assertIsInstance(decision, MetaDecision)
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.entry_timing, "now")
+        self.assertIn("weighted_components", decision.features)
+
+    @patch.dict(os.environ, {
+        "META_BRAIN_CRYPTO_STRADDLE_MIN_SCORE": "0.65",
+        "META_BRAIN_STRADDLE_TAVILY_ENABLED": "false",
+        "META_BRAIN_STRADDLE_LLM_ENABLED": "false",
+        "META_BRAIN_STRADDLE_WEIGHT_BRAIN": "1.0",
+        "META_BRAIN_STRADDLE_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_TAVILY": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_TRADINGVIEW": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_HERMES": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_STRADDLE_WEIGHT_LIQUIDITY": "0.0",
+    })
+    def test_crypto_straddle_blocks_low_weighted_score(self):
+        mb = self._make_meta_brain(approved=True, score=0.30, conviction_paths=[])
+        decision = mb.synthesize_crypto_straddle(
+            slug="btc-updown-5m-1779199200",
+            question="Bitcoin Up or Down - May 19, 2:00PM UTC",
+            asset="BTC",
+            up_price=0.51,
+            down_price=0.52,
+            pair_ask_sum=1.03,
+            seconds_to_expiry=240,
+        )
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.entry_timing, "skip")
 
 
 if __name__ == "__main__":

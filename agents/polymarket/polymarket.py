@@ -7,6 +7,7 @@ import pdb
 import time
 import ast
 import requests
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -579,7 +580,15 @@ class Polymarket:
             logger.warning("bid_depth_usdc failed for %s: %s", token_id[:18], exc)
             return 0.0
 
-    def _fillable_market_buy(self, token_id: str, amount_usdc: float) -> tuple[float, float, float]:
+    def _fillable_market_buy(
+        self,
+        token_id: str,
+        amount_usdc: float,
+        *,
+        min_entry_price: Optional[float] = None,
+        min_bid_depth_usdc: Optional[float] = None,
+        max_spread_pct: Optional[float] = None,
+    ) -> tuple[float, float, float]:
         """Return (limit_price, fillable_usdc, avg_price) for a FOK market buy.
 
         CLOB market BUY amount is a USDC budget. To avoid FOK kills caused by
@@ -587,6 +596,14 @@ class Polymarket:
         to fill the target amount. If liquidity is thin, fill only the available
         amount above the configured minimum.
         """
+        entry_floor = MIN_ENTRY_PRICE if min_entry_price is None else min_entry_price
+        bid_depth_floor = (
+            MIN_BID_DEPTH_USDC if min_bid_depth_usdc is None else min_bid_depth_usdc
+        )
+        spread_ceiling = (
+            MAX_ENTRY_SPREAD_PCT if max_spread_pct is None else max_spread_pct
+        )
+
         book = self.client.get_order_book(token_id)
         asks = sorted(
             (self._entry_price_size(a) for a in self._book_entries(book, "asks")),
@@ -596,9 +613,9 @@ class Polymarket:
             raise ValueError(f"no asks available for token_id={token_id}")
 
         best_ask = asks[0][0]
-        if best_ask < MIN_ENTRY_PRICE:
+        if best_ask < entry_floor:
             raise ValueError(
-                f"below MIN_ENTRY_PRICE: best_ask={best_ask:.4f} < {MIN_ENTRY_PRICE}"
+                f"below MIN_ENTRY_PRICE: best_ask={best_ask:.4f} < {entry_floor}"
             )
 
         # Fix 2 — bid-side depth check: ensure there is exit liquidity.
@@ -608,19 +625,19 @@ class Polymarket:
             reverse=True,
         )
         total_bid_usdc = sum(p * s for p, s in bids)
-        if not bids or total_bid_usdc < MIN_BID_DEPTH_USDC:
+        if not bids or total_bid_usdc < bid_depth_floor:
             raise ValueError(
                 f"insufficient bid depth: total_bid_usdc={total_bid_usdc:.2f}"
-                f" < {MIN_BID_DEPTH_USDC}"
+                f" < {bid_depth_floor}"
             )
 
         # Fix 3 — spread check: best_ask vs best_bid.
         best_bid = bids[0][0]
         if best_ask > 0:
             spread_pct = (best_ask - best_bid) / best_ask
-            if spread_pct > MAX_ENTRY_SPREAD_PCT:
+            if spread_pct > spread_ceiling:
                 raise ValueError(
-                    f"spread too wide: {spread_pct:.4f} > {MAX_ENTRY_SPREAD_PCT}"
+                    f"spread too wide: {spread_pct:.4f} > {spread_ceiling}"
                 )
 
         remaining = amount_usdc

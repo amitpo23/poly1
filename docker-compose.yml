@@ -11,8 +11,11 @@ services:
     environment:
       TZ: UTC
       RUNTIME_AGENT: trader
+      CYCLE_SECONDS: "60"
+      CYCLE_JITTER_SECONDS: "0"
     volumes:
       - ./data:/app/data
+      - ./deploy/.env.runtime:/app/deploy/.env.runtime:ro
       - ./local_db_events:/app/local_db_events
       - ./local_db_markets:/app/local_db_markets
     logging:
@@ -117,6 +120,37 @@ services:
     stop_grace_period: 30s
     profiles: ["btc_5min"]
 
+  hermes-forecast:
+    build: .
+    image: poly1:local
+    container_name: poly1-hermes-forecast
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: hermes_forecast
+    command: ["python", "-m", "agents.application.hermes_forecast"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import json, urllib.request; assert json.loads(urllib.request.urlopen('http://127.0.0.1:8097/healthz', timeout=3).read()).get('ok')"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["hermes", "btc_5min"]
+
   position_manager:
     build: .
     image: poly1:local
@@ -129,7 +163,7 @@ services:
     environment:
       TZ: UTC
       RESOLUTION_SYNC_ENABLED: "false"
-      MAINTAIN_LLM_EXIT_INTERVAL_SEC: "86400"
+      MAINTAIN_LLM_EXIT_INTERVAL_SEC: "60"
       RUNTIME_AGENT: position_manager
     command: ["python", "-m", "agents.application.position_manager"]
     volumes:
@@ -682,7 +716,7 @@ services:
       # All free providers — divergence signals (Manifold/Metaculus/Kalshi) rank first
       # because they compare cross-platform price vs Poly price.
       # GDELT adds news sentiment; heuristic is the cheap fallback.
-      EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS: "manifold,metaculus,kalshi,technical_signal,clob_whale,gdelt,public_news,heuristic"
+      EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS: "manifold,metaculus,kalshi,tradingview_options,technical_signal,clob_whale,gdelt,public_news,heuristic"
     command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
     volumes:
       - ./data:/app/data
@@ -699,6 +733,46 @@ services:
         max-file: "5"
     mem_limit: 512m
     cpus: "0.50"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-tradingview:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-tradingview
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_tradingview
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_tradingview
+      EXTERNAL_CONVICTION_STRATEGY_NAME: tradingview_options_event_probability_scalping
+      EXTERNAL_CONVICTION_PROVIDER: tradingview_options
+      EXTERNAL_CONVICTION_POLL_SEC: "900"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_tradingview.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_tradingview_heartbeat
+      TRADINGVIEW_OPTIONS_CHAIN_URL: "https://www.tradingview.com/options/chain/?symbol=CME_MINI%3AES1%21"
+      TRADINGVIEW_OPTIONS_SNAPSHOT_PATH: /app/data/tradingview_options_es1_snapshot.json
+      TRADINGVIEW_OPTIONS_MAX_AGE_SEC: "900"
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_tradingview_heartbeat') < 1800"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
     stop_grace_period: 30s
     profiles: ["external_conviction"]
 
@@ -822,6 +896,7 @@ services:
     env_file: .env
     environment:
       RUNTIME_AGENT: market_scanner
+      SCANNER_POLL_SEC: "60"
     command: ["python", "-m", "agents.application.market_scanner"]
     restart: unless-stopped
     volumes:
@@ -842,6 +917,63 @@ services:
     cpus: "0.30"
     stop_grace_period: 30s
     profiles: ["scanner"]
+
+  market_universe:
+    build: .
+    image: poly1:local
+    container_name: poly1-market-universe
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: market_universe
+    command: ["python", "-m", "agents.application.market_universe"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/market_universe_heartbeat') < 180\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["scanner", "universe"]
+
+  telegram-reporter:
+    build: .
+    image: poly1:local
+    container_name: poly1-telegram-reporter
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: telegram_reporter
+    command: ["python", "scripts/python/telegram_report.py", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 128m
+    cpus: "0.10"
+    stop_grace_period: 30s
+    profiles: ["monitoring"]
 
   grafana:
     image: grafana/grafana:10.4.2

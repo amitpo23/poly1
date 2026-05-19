@@ -44,6 +44,9 @@ except ImportError as e:
 
 
 POLY1_HALT_FILE = Path(os.path.expanduser("~/coding/poly1/data/HALT"))
+ALLOW_DIRECT_CONTROL = os.getenv(
+    "POLY1_MONITOR_ALLOW_DIRECT_CONTROL", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -553,6 +556,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._is_loopback():
                 return self._send(403, b"control endpoints require loopback access",
                                   "text/plain")
+            if not ALLOW_DIRECT_CONTROL:
+                return self._send(
+                    403,
+                    b"direct monitor control disabled; use scripts/runtime_control.py",
+                    "text/plain",
+                )
             if self.path == "/control/poly1/halt":
                 POLY1_HALT_FILE.parent.mkdir(parents=True, exist_ok=True)
                 POLY1_HALT_FILE.write_text(

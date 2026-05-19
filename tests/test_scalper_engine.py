@@ -10,6 +10,17 @@ from agents.application.trade_log import TradeLog, SCALPER_EXIT, SCALPER_LEG
 from agents.application.market_brain import BrainConfig, BrainDecision, MarketBrain, MarketProfile
 
 
+class AllowScalperBrain:
+    def evaluate_scalper_entry(self, **_kwargs):
+        return BrainDecision(
+            approved=True,
+            reason="test_approved",
+            score=0.9,
+            profile=MarketProfile("crypto_15m", "test"),
+            features={"test": True},
+        )
+
+
 class TestPlaceLeg(unittest.TestCase):
     def setUp(self):
         # Patch _FAK_TYPE so the execute=True guard doesn't block mock-client tests
@@ -22,7 +33,8 @@ class TestPlaceLeg(unittest.TestCase):
         self.client = MagicMock()
         self.cfg = ScalperConfig()
         self.engine = ScalperEngine(client=self.client, log=self.log,
-                                      dao=self.dao, cfg=self.cfg, execute=True)
+                                      dao=self.dao, cfg=self.cfg, execute=True,
+                                      brain=AllowScalperBrain())
         self.dao.create("s1", 100, "tok_up", "tok_dn")
 
     def tearDown(self):
@@ -128,7 +140,8 @@ class TestTickLoop(unittest.TestCase):
         self.client = MagicMock()
         self.cfg = ScalperConfig(leg_usdc_cap=5.0)
         self.engine = ScalperEngine(client=self.client, log=self.log,
-                                      dao=self.dao, cfg=self.cfg, execute=True)
+                                      dao=self.dao, cfg=self.cfg, execute=True,
+                                      brain=AllowScalperBrain())
         self.dao.create("s1", 100, "tok_up", "tok_dn")
         self.engine.add_pair(ScalpPair(slug="s1", period_ts=100,
                                           up_token="tok_up", down_token="tok_dn",

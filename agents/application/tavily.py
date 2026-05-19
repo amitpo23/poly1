@@ -13,12 +13,89 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _TAVILY_URL = "https://api.tavily.com/search"
+_CACHE_PATH = Path(os.getenv("TAVILY_CACHE_PATH", "./data/tavily_cache.json"))
+_USAGE_PATH = Path(os.getenv("TAVILY_USAGE_PATH", "./data/tavily_usage.json"))
+
+
+def _enabled() -> bool:
+    return os.getenv("TAVILY_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+
+
+def _cache_ttl_sec() -> int:
+    try:
+        return int(os.getenv("TAVILY_CACHE_TTL_SEC", "3600"))
+    except ValueError:
+        return 3600
+
+
+def _daily_limit() -> int:
+    try:
+        return int(os.getenv("TAVILY_DAILY_LIMIT", "50"))
+    except ValueError:
+        return 50
+
+
+def _cache_key(query: str, max_results: int) -> str:
+    return json.dumps(
+        {"query": query.strip().lower(), "max_results": int(max_results)},
+        sort_keys=True,
+    )
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.debug("tavily: failed reading %s", path, exc_info=True)
+    return {}
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    except Exception:
+        logger.debug("tavily: failed writing %s", path, exc_info=True)
+
+
+def _cached(query: str, max_results: int) -> Optional[str]:
+    cache = _read_json(_CACHE_PATH)
+    item = cache.get(_cache_key(query, max_results))
+    if not isinstance(item, dict):
+        return None
+    ts = float(item.get("ts") or 0)
+    if time.time() - ts > _cache_ttl_sec():
+        return None
+    value = item.get("value")
+    return value if isinstance(value, str) else None
+
+
+def _store_cache(query: str, max_results: int, value: str) -> None:
+    cache = _read_json(_CACHE_PATH)
+    cache[_cache_key(query, max_results)] = {"ts": time.time(), "value": value}
+    _write_json(_CACHE_PATH, cache)
+
+
+def _usage_allowed() -> bool:
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    usage = _read_json(_USAGE_PATH)
+    if usage.get("date") != today:
+        usage = {"date": today, "count": 0}
+    if int(usage.get("count") or 0) >= _daily_limit():
+        logger.info("tavily: daily limit reached (%s)", _daily_limit())
+        return False
+    usage["count"] = int(usage.get("count") or 0) + 1
+    _write_json(_USAGE_PATH, usage)
+    return True
 
 
 def tavily_headlines(
@@ -34,7 +111,14 @@ def tavily_headlines(
     missing Tavily context as "no enrichment available".
     """
     key = api_key or os.getenv("TAVILY_API_KEY", "").strip()
+    cached = _cached(query, max_results)
+    if cached is not None:
+        return cached
+    if not _enabled():
+        return ""
     if not key or not query:
+        return ""
+    if not _usage_allowed():
         return ""
     payload = json.dumps({
         "api_key": key,
@@ -61,7 +145,9 @@ def tavily_headlines(
             if (r.get("title") or "").strip()
         ]
         logger.debug("tavily_headlines: %d results for '%s'", len(lines), query[:60])
-        return "\n".join(lines)
+        value = "\n".join(lines)
+        _store_cache(query, max_results, value)
+        return value
     except Exception as exc:
         logger.debug("tavily_headlines failed for '%s': %s", query[:60], exc)
         return ""

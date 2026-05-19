@@ -37,6 +37,18 @@ Blocked:
 
 ## Local Safety Defaults
 
+As of 2026-05-19, the canonical live trading policy is defined in
+`agents/application/trading_policy.py` and summarized in
+`docs/AGENT_MATRIX_2026-05-19.md`:
+
+- stop-loss `3%`
+- fast profit-taking can start at `5%`
+- hard profit cap `25%`
+- max hold `6h`
+- scanner/trader cadence `60s`
+- position-manager cadence `15s`
+- Telegram dashboard cadence `1h`
+
 Do not edit `deploy/.env.runtime` by hand. Regenerate it with:
 
 ```bash

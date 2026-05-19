@@ -559,6 +559,23 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
                          wallet_follow_reserve_usdc=0.0)
         self.assertEqual(gate.available_for_trader(), 60.0)
 
+    def test_agent_allocation_cap_blocks_above_half_wallet(self):
+        log = TradeLog(db_path=self.db_path)
+        poly = MagicMock()
+        poly.get_usdc_balance = MagicMock(return_value=80.0)
+        gate = RiskGate(
+            trade_log=log,
+            polymarket=poly,
+            starting_balance_usdc=80.0,
+            scalper_reserve_usdc=41.0,
+            max_agent_allocation_fraction=0.50,
+            min_usdc_floor=0.0,
+            kill_switch_file=self.kill_path,
+            llm_usage_file=self.usage_path,
+        )
+        self.assertFalse(gate.ok())
+        self.assertIn("above 50%", gate.reason())
+
     def test_scalper_reserve_setter_updates_reserves_dict(self):
         log = TradeLog(db_path=self.db_path)
         gate = RiskGate(trade_log=log, polymarket=None,
@@ -917,6 +934,7 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
                 trade_log=tl,
                 risk_gate=gate,
             )
+            trader.meta_brain = None
 
             trader.one_best_trade_sweep()
 
@@ -963,6 +981,7 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
                 trade_log=tl,
                 risk_gate=gate,
             )
+            trader.meta_brain = None
 
             trader.one_best_trade_sweep()
 
@@ -1064,6 +1083,7 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
                 trade_log=tl,
                 risk_gate=gate,
             )
+            trader.meta_brain = None
 
             trader.one_best_trade_sweep()
 
@@ -1114,6 +1134,7 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
                 trade_log=tl,
                 risk_gate=gate,
             )
+            trader.meta_brain = None
 
             trader.one_best_trade_sweep()
 
@@ -1157,6 +1178,7 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
                 trade_log=tl,
                 risk_gate=gate,
             )
+            trader.meta_brain = None
 
             trader.one_best_trade_sweep()
 
@@ -1204,6 +1226,7 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
                 trade_log=tl,
                 risk_gate=gate,
             )
+            trader.meta_brain = None
 
             trader.one_best_trade_sweep()
 

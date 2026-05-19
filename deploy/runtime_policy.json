@@ -4,31 +4,73 @@
   "entry_agents": {
     "trader": {
       "execute_flag": "EXECUTE",
-      "reserve_flag": null
+      "reserve_flag": null,
+      "compose_service": "trader",
+      "compose_profile": null
     },
     "scalper": {
       "execute_flag": "EXECUTE_SCALPER",
-      "reserve_flag": "SCALPER_RESERVE_USDC"
+      "reserve_flag": "SCALPER_RESERVE_USDC",
+      "compose_service": "scalper",
+      "compose_profile": "scalper"
     },
     "btc_daily": {
       "execute_flag": "EXECUTE_BTC_DAILY",
-      "reserve_flag": "BTC_DAILY_RESERVE_USDC"
+      "reserve_flag": "BTC_DAILY_RESERVE_USDC",
+      "compose_service": "btc_daily",
+      "compose_profile": "btc_daily"
+    },
+    "btc_5min": {
+      "execute_flag": "EXECUTE_BTC_5MIN",
+      "reserve_flag": "BTC_5MIN_RESERVE_USDC",
+      "compose_service": "btc_5min",
+      "compose_profile": "btc_5min"
     },
     "near_resolution": {
       "execute_flag": "EXECUTE_NEAR_RESOLUTION",
-      "reserve_flag": "NEAR_RESOLUTION_RESERVE_USDC"
+      "reserve_flag": "NEAR_RESOLUTION_RESERVE_USDC",
+      "compose_service": "near-resolution",
+      "compose_profile": "near_resolution"
     },
     "news_shock": {
       "execute_flag": "EXECUTE_NEWS_SHOCK",
-      "reserve_flag": "NEWS_SHOCK_RESERVE_USDC"
+      "reserve_flag": "NEWS_SHOCK_RESERVE_USDC",
+      "compose_service": "news-shock",
+      "compose_profile": "news_shock"
     },
     "wallet_follow": {
       "execute_flag": "EXECUTE_WALLET_FOLLOW",
-      "reserve_flag": "WALLET_FOLLOW_RESERVE_USDC"
+      "reserve_flag": "WALLET_FOLLOW_RESERVE_USDC",
+      "compose_service": "wallet-follow",
+      "compose_profile": "wallet"
     },
     "external_conviction_api": {
       "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
-      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC"
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-api",
+      "compose_profile": "external_conviction"
+    }
+  },
+  "live_support_services": {
+    "trader": {
+      "compose_service": "trader",
+      "compose_profile": null
+    },
+    "position_manager": {
+      "compose_service": "position_manager",
+      "compose_profile": "positions"
+    },
+    "trading_supervisor": {
+      "compose_service": "trading-supervisor",
+      "compose_profile": "supervisor"
+    },
+    "settlement_reconciler": {
+      "compose_service": "settlement-reconciler",
+      "compose_profile": "settlement"
+    },
+    "telegram_reporter": {
+      "compose_service": "telegram-reporter",
+      "compose_profile": "monitoring"
     }
   },
   "freeze": {

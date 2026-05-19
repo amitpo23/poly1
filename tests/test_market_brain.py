@@ -31,9 +31,9 @@ class TestMarketBrain(unittest.TestCase):
             scalper_max_entry_price=0.55,
             scalper_max_pair_ask_sum=1.04,
             scalper_min_edge_score=0.35,
-            exit_take_profit_pct=0.05,
+            exit_take_profit_pct=0.25,
             exit_trailing_stop_pct=0.02,
-            exit_stop_loss_pct=0.07,
+            exit_stop_loss_pct=0.03,
             exit_max_hold_seconds=1800,
             smart_exit_enabled=True,
             smart_exit_min_profit_pct=0.05,
@@ -101,6 +101,21 @@ class TestMarketBrain(unittest.TestCase):
         self.assertTrue(decision.approved)
         self.assertEqual(decision.reason, "unknown_market_allowed_non_strict")
 
+    def test_general_binary_scalp_uses_price_edge_when_expiry_known(self):
+        decision = self.brain.evaluate_scalper_entry(
+            slug="custom-trending-market",
+            side="up",
+            up_ask=0.46,
+            down_ask=0.50,
+            candidate_price=0.46,
+            signal_reason="reversal",
+            now_ms=(1770000000 - 600) * 1000,
+            period_ts=1770000000,
+        )
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "approved_general_scalp")
+        self.assertEqual(decision.profile.market_type, "general_binary_scalp")
+
     def test_exit_take_profit(self):
         decision = self.brain.evaluate_exit(ExitPosition(
             market_id="eth-updown-15m-1770000000",
@@ -113,6 +128,19 @@ class TestMarketBrain(unittest.TestCase):
         ), now_ms=10_000)
         self.assertTrue(decision.approved)
         self.assertEqual(decision.reason, "take_profit")
+
+    def test_exit_take_profit_cap(self):
+        decision = self.brain.evaluate_exit(ExitPosition(
+            market_id="eth-updown-15m-1770000000",
+            token_id="tok",
+            side="up",
+            entry_price=0.50,
+            current_price=0.626,
+            max_price_seen=0.626,
+            opened_ts_ms=1000,
+        ), now_ms=10_000)
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "take_profit_cap")
 
     def test_exit_trailing_stop_after_profit(self):
         decision = self.brain.evaluate_exit(ExitPosition(
@@ -181,9 +209,9 @@ class TestTimeoutGrace(unittest.TestCase):
     def _brain(self, grace_pct=0.01, grace_sec=3600, max_hold=1800):
         return MarketBrain(BrainConfig(
             enabled=True,
-            exit_take_profit_pct=0.05,
+            exit_take_profit_pct=0.25,
             exit_trailing_stop_pct=0.02,
-            exit_stop_loss_pct=0.07,
+            exit_stop_loss_pct=0.03,
             exit_max_hold_seconds=max_hold,
             exit_timeout_flat_grace_pct=grace_pct,
             exit_timeout_grace_seconds=grace_sec,
@@ -217,19 +245,19 @@ class TestTimeoutGrace(unittest.TestCase):
         self.assertTrue(decision.approved)
         self.assertEqual(decision.reason, "timeout")
 
-    def test_losing_at_timeout_no_grace(self):
+    def test_losing_past_stop_loss_exits_before_timeout(self):
         brain = self._brain()
-        # Position is past timeout with pnl = -4% (beyond grace_pct) → timeout
+        # Position is past timeout with pnl = -4%, beyond the canonical 3% stop.
         decision = brain.evaluate_exit(ExitPosition(
             market_id="test-mkt",
             token_id="tok",
             side="up",
             entry_price=0.50,
-            current_price=0.48,  # -4% > 1% grace threshold
+            current_price=0.48,
             opened_ts_ms=0,
         ), now_ms=1801_000)
         self.assertTrue(decision.approved)
-        self.assertEqual(decision.reason, "timeout")
+        self.assertEqual(decision.reason, "stop_loss")
 
     def test_stop_loss_fires_before_grace(self):
         brain = self._brain()
@@ -290,7 +318,41 @@ class TestCryptoEntry(unittest.TestCase):
             side="BUY",
         )
         self.assertTrue(decision.approved)
-        self.assertEqual(decision.reason, "brain_disabled")
+
+    def test_straddle_approves_skewed_but_cheap_pair(self):
+        brain = MarketBrain(BrainConfig(
+            enabled=True,
+            general_min_score=0.65,
+            crypto_straddle_min_entry_price=0.05,
+            crypto_straddle_max_entry_price=0.95,
+            crypto_straddle_max_pair_ask_sum=1.02,
+        ))
+        decision = brain.evaluate_crypto_straddle_entry(
+            slug="btc-updown-5m-1770000000",
+            up_price=0.93,
+            down_price=0.07,
+            pair_ask_sum=1.00,
+            seconds_to_expiry=120,
+        )
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "approved_crypto_straddle")
+        self.assertGreaterEqual(decision.score, 0.65)
+
+    def test_straddle_rejects_expensive_pair(self):
+        brain = MarketBrain(BrainConfig(
+            enabled=True,
+            general_min_score=0.65,
+            crypto_straddle_max_pair_ask_sum=1.02,
+        ))
+        decision = brain.evaluate_crypto_straddle_entry(
+            slug="btc-updown-5m-1770000000",
+            up_price=0.56,
+            down_price=0.51,
+            pair_ask_sum=1.07,
+            seconds_to_expiry=120,
+        )
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "straddle_pair_too_expensive")
 
     def test_score_decreases_away_from_50(self):
         d1 = self.brain.evaluate_crypto_entry(

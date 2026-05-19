@@ -158,10 +158,9 @@ def match_news_to_markets(
 class NewsSignalClassifier:
     def __init__(self, model: Optional[str] = None):
         from langchain_openai import ChatOpenAI
+        from agents.application.llm_config import openai_model
 
-        self.model = model or os.getenv("NEWS_CLASSIFICATION_MODEL") or os.getenv(
-            "OPENAI_MODEL", "gpt-4o-mini"
-        )
+        self.model = model or os.getenv("NEWS_CLASSIFICATION_MODEL") or openai_model()
         self.llm = ChatOpenAI(model=self.model, temperature=0)
         self.quota_cooldown_sec = _env_int_ns("NEWS_SIGNAL_QUOTA_COOLDOWN_SEC", 3600)
         self._quota_blocked_until = 0.0
@@ -202,7 +201,8 @@ class NewsSignalClassifier:
                 if _is_quota and _anth_key:
                     try:
                         import anthropic as _anth
-                        _model = "claude-haiku-4-5-20251001"
+                        from agents.application.llm_config import anthropic_model
+                        _model = anthropic_model()
                         logger.warning("news_signal: OpenAI quota exhausted — fallback to %s", _model)
                         _c = _anth.Anthropic(api_key=_anth_key)
                         _r = _c.messages.create(model=_model, max_tokens=1024, messages=[{"role": "user", "content": prompt}])

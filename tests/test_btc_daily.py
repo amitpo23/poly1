@@ -14,6 +14,16 @@ from agents.application.btc_daily import (
 from agents.application.trade_log import TradeLog
 
 
+class _AllowBrain:
+    def evaluate_crypto_entry(self, **_kwargs):
+        class Decision:
+            approved = True
+            reason = "test_approved"
+            score = 0.9
+            features = {"test": True}
+        return Decision()
+
+
 import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
@@ -88,6 +98,7 @@ class TestEntryTrigger(_TmpDB, unittest.TestCase):
             feed=feed,
             cfg=cfg,
             execute=execute,
+            brain=_AllowBrain(),
         )
         # Stub get_midpoint so the candidate-price pre-check doesn't block.
         polymarket.client.get_midpoint.return_value = {"mid": "0.50"}

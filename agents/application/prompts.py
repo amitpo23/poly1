@@ -336,8 +336,8 @@ Current prices — YES: {yes_price:.3f}  NO: {no_price:.3f}  (sum={sum_prices:.3
 Task: Decide the most likely outcome.
 
 Rules:
-- Return "yes" ONLY if you are >65% confident the market resolves YES (crowd is underpricing YES).
-- Return "no" ONLY if you are >65% confident the market resolves NO (crowd is underpricing NO).
+- Return "yes" ONLY if you are >52% confident the market resolves YES (crowd is underpricing YES).
+- Return "no" ONLY if you are >52% confident the market resolves NO (crowd is underpricing NO).
 - Return "uncertain" if the outcome is genuinely unclear — this is the HONEST answer when you
   cannot find clear evidence the crowd is wrong.
 

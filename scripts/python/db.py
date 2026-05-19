@@ -21,6 +21,9 @@ _SCOUT_DB = os.getenv("SCOUT_DB", "./data/scout.db")
 _HALT_FILE = Path(os.getenv("KILL_SWITCH_FILE", "./data/HALT"))
 _HB_TRADER = Path(os.getenv("HEARTBEAT_PATH", "./data/heartbeat"))
 _HB_SCALPER = Path("./data/scalper_heartbeat")
+_ALLOW_DIRECT_CONTROL = os.getenv(
+    "POLY1_DASHBOARD_ALLOW_DIRECT_CONTROL", "false"
+).strip().lower() in {"1", "true", "yes", "on"}
 _SWARM_DB = Path(os.path.expanduser(os.getenv(
     "SWARM_DB", "~/Desktop/poly/bot/data/swarm.db"
 )))
@@ -108,12 +111,20 @@ def is_halted() -> bool:
     return _HALT_FILE.exists()
 
 
+def direct_control_allowed() -> bool:
+    return _ALLOW_DIRECT_CONTROL
+
+
 def halt() -> None:
+    if not _ALLOW_DIRECT_CONTROL:
+        raise RuntimeError("dashboard direct control disabled; use runtime_control.py")
     _HALT_FILE.parent.mkdir(parents=True, exist_ok=True)
     _HALT_FILE.write_text("halted by dashboard")
 
 
 def resume() -> None:
+    if not _ALLOW_DIRECT_CONTROL:
+        raise RuntimeError("dashboard direct control disabled; use runtime_control.py")
     if _HALT_FILE.exists():
         _HALT_FILE.unlink()
 

@@ -4,9 +4,13 @@ This is the implementation of the long-stubbed `Trader.maintain_positions`.
 It periodically scans open journal positions (`filled` and `btc_daily_open`),
 computes their MTM via Polymarket midpoint, and closes them on three triggers:
 
-- **take_profit:** mid >= entry × (1 + take_profit_pct)  (default 10%)
-- **stop_loss:**   mid <= entry × (1 - stop_loss_pct)    (default 7%)
-- **timeout:**     position age >= max_hold_hours        (default 24h)
+- **take_profit:** fast exit can start at +5%; hard cap at +25%
+- **stop_loss:**   mid <= entry × (1 - stop_loss_pct)    (default 3%)
+- **timeout:**     position age >= max_hold_hours        (default 6h hard cap)
+
+The 6h value is not a target hold. Each cycle revalidates whether to exit now;
+holding is allowed only when the brain/forecast evidence says the edge is still
+strong enough to justify staying in the position.
 
 Closing places a SELL LIMIT order via Polymarket V2 (the swarm pattern).
 On success a new `closed_*` row is written to the journal preserving the
@@ -38,6 +42,12 @@ from agents.application.exit_executor import ExitExecutor
 from agents.application.market_brain import BrainConfig, ExitPosition, MarketBrain
 from agents.application.tavily import tavily_headlines
 from agents.application.trade_log import TradeLog, RESOLVED_LOSS
+from agents.application.trading_policy import (
+    MAX_HOLD_SECONDS,
+    POSITION_POLL_SECONDS,
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_CAP_PCT,
+)
 from agents.utils.notify import notify_trade, _safe_balance
 
 
@@ -75,17 +85,16 @@ def _env_int(name: str, default: int) -> int:
 @dataclass
 class PositionManagerConfig:
     """Env-driven config for exit thresholds."""
-    # Take profit triggers when mid >= entry × (1 + take_profit_pct).
-    # User asked for "exit at >10%" — default 0.10.
-    take_profit_pct: float = 0.10
-    # Asymmetric R/R: stop slightly tighter than profit target.
-    stop_loss_pct: float = 0.07
+    # Hard profit cap: the brain may exit earlier, but never holds past this.
+    take_profit_pct: float = TAKE_PROFIT_CAP_PCT
+    # Hard loss guard: no position is allowed to drift into "hope mode".
+    stop_loss_pct: float = STOP_LOSS_PCT
     # Hard close after this many hours regardless of price (long-tail
     # positions on multi-week markets shouldn't sit indefinitely).
-    max_hold_hours: int = 24
+    max_hold_hours: int = int(MAX_HOLD_SECONDS / 3600)
     # Polling cadence — every minute is enough for poly1 main positions
     # which are typically multi-day or longer-resolution markets.
-    poll_seconds: int = 60
+    poll_seconds: int = POSITION_POLL_SECONDS
     # Slippage allowance on the SELL side. We aim to sell at
     # `mid × (1 - slippage)` so the order is competitive at the bid.
     sell_slippage: float = 0.02
@@ -104,10 +113,10 @@ class PositionManagerConfig:
     @classmethod
     def from_env(cls) -> "PositionManagerConfig":
         return cls(
-            take_profit_pct=_env_float("MAINTAIN_TAKE_PROFIT_PCT", 0.10),
-            stop_loss_pct=_env_float("MAINTAIN_STOP_LOSS_PCT", 0.07),
-            max_hold_hours=_env_int("MAINTAIN_MAX_HOLD_HOURS", 24),
-            poll_seconds=_env_int("MAINTAIN_POLL_SEC", 60),
+            take_profit_pct=_env_float("MAINTAIN_TAKE_PROFIT_PCT", TAKE_PROFIT_CAP_PCT),
+            stop_loss_pct=_env_float("MAINTAIN_STOP_LOSS_PCT", STOP_LOSS_PCT),
+            max_hold_hours=_env_int("MAINTAIN_MAX_HOLD_HOURS", int(MAX_HOLD_SECONDS / 3600)),
+            poll_seconds=_env_int("MAINTAIN_POLL_SEC", POSITION_POLL_SECONDS),
             sell_slippage=_env_float("MAINTAIN_SELL_SLIPPAGE", 0.02),
             min_exit_notional_usdc=_env_float("MAINTAIN_MIN_EXIT_NOTIONAL_USDC", 1.0),
             max_close_failures=_env_int("MAINTAIN_MAX_CLOSE_FAILURES", 3),
@@ -137,6 +146,7 @@ class AggregatedPosition:
     # rule. None means "use global config / brain".
     tp_pct_override: Optional[float] = None
     no_sl: bool = False
+    max_hold_seconds_override: Optional[int] = None
     # When set, this position is one leg of a straddle. After the first
     # leg exits at TP, the partner leg's stop-loss is removed so it can
     # run freely to its own TP (its cost is already covered by the TP exit).
@@ -264,6 +274,7 @@ class PositionManager:
             # for semantic SELL rows.
             tp_override: Optional[float] = None
             no_sl_flag = False
+            max_hold_seconds_override: Optional[int] = None
             straddle_id_val: Optional[str] = None
             actual_entry_price: Optional[float] = None
             rj = r.get("response_json")
@@ -275,6 +286,8 @@ class PositionManager:
                             tp_override = float(payload["tp_pct_override"])
                         if payload.get("no_sl"):
                             no_sl_flag = True
+                        if payload.get("max_hold_seconds") is not None:
+                            max_hold_seconds_override = int(payload["max_hold_seconds"])
                         if payload.get("straddle_id"):
                             straddle_id_val = str(payload["straddle_id"])
                         for key in ("actual_entry_price", "order_avg_price_estimate"):
@@ -313,6 +326,7 @@ class PositionManager:
                     journal_row_ids=[r.get("id")] if r.get("id") else [],
                     tp_pct_override=tp_override,
                     no_sl=no_sl_flag,
+                    max_hold_seconds_override=max_hold_seconds_override,
                     straddle_id=straddle_id_val,
                 )
             else:
@@ -332,6 +346,11 @@ class PositionManager:
                     existing.tp_pct_override = tp_override
                 if no_sl_flag:
                     existing.no_sl = True
+                if (
+                    max_hold_seconds_override is not None
+                    and existing.max_hold_seconds_override is None
+                ):
+                    existing.max_hold_seconds_override = max_hold_seconds_override
                 if straddle_id_val and not existing.straddle_id:
                     existing.straddle_id = straddle_id_val
         return list(by_token.values())
@@ -383,6 +402,11 @@ class PositionManager:
                 return ("take_profit", mid)
             if not pos.no_sl and gain_pct <= -self.cfg.stop_loss_pct:
                 return ("stop_loss", mid)
+            if (
+                pos.max_hold_seconds_override is not None
+                and time.time() - pos.earliest_ts >= pos.max_hold_seconds_override
+            ):
+                return ("timeout", mid)
             return (None, mid)
 
         decision = self.brain.evaluate_exit(
@@ -403,6 +427,7 @@ class PositionManager:
             return (None, mid)
         reason_map = {
             "take_profit": "take_profit",
+            "take_profit_cap": "take_profit",
             "trailing_stop_after_profit": "take_profit",
             "stop_loss": "stop_loss",
             "timeout": "timeout",
@@ -415,7 +440,8 @@ class PositionManager:
         """Lazy-init the LLM client (same model as executor)."""
         if self._llm is None:
             from langchain_openai import ChatOpenAI
-            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            from agents.application.llm_config import openai_model
+            model = openai_model()
             self._llm = ChatOpenAI(model=model, temperature=0)
         return self._llm
 
@@ -500,7 +526,8 @@ class PositionManager:
                 if _is_quota and _anth_key:
                     try:
                         import anthropic as _anth
-                        _model = "claude-haiku-4-5-20251001"
+                        from agents.application.llm_config import anthropic_model
+                        _model = anthropic_model()
                         logger.warning("position_manager: OpenAI quota exhausted — fallback to %s", _model)
                         _c = _anth.Anthropic(api_key=_anth_key)
                         _content = prompt if isinstance(prompt, str) else prompt[0].content if hasattr(prompt[0], "content") else str(prompt[0])
@@ -514,9 +541,17 @@ class PositionManager:
 
             import json as _json
             import re as _re
+            if raw is None:
+                logger.warning("llm_exit_check: empty response for %s", pos.token_id[:18])
+                return None
+            if not isinstance(raw, str):
+                raw = str(raw)
             m = _re.search(r"\{.*?\}", raw, _re.DOTALL)
             if not m:
-                logger.warning("llm_exit_check: no JSON in response for %s", pos.token_id[:18])
+                logger.warning(
+                    "llm_exit_check: no JSON in response for %s",
+                    pos.token_id[:18],
+                )
                 return None
             data = _json.loads(m.group())
             action = data.get("action", "HOLD").upper()

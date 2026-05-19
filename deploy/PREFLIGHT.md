@@ -8,7 +8,8 @@ Run through every box. Each must be true before live trading. **If any item fail
 - [ ] `POLYGON_WALLET_PRIVATE_KEY` set, wallet known to operator
 - [ ] `POLYMARKET_FUNDER` set if using a Privy/Magic (Google/email login) account — must equal the proxy address shown on `polymarket.com/settings`
 - [ ] `OPENAI_API_KEY` set, account has positive credit balance
-- [ ] `OPENAI_MODEL` set (recommended: `gpt-4o-mini` for cost, `gpt-4o` for quality)
+- [ ] `OPENAI_MODEL` set (recommended live quality default: `gpt-4o`)
+- [ ] `ANTHROPIC_MODEL` set for fallback when OpenAI quota/rate limits fail
 - [ ] `STARTING_BALANCE_USDC` set to the wallet's actual balance
 - [ ] `MAX_POSITION_FRACTION` ≤ 0.05 for the first $50 run
 - [ ] `MIN_CONFIDENCE` ≥ 0.65

@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Optional
 
 from agents.application.trade_log import TradeLog, SUBMITTED, FILLED
+from agents.application.trading_policy import (
+    MAX_AGENT_ALLOCATION_FRACTION,
+    MAX_TRADES_PER_HOUR,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +51,7 @@ class RiskGate:
         max_open_positions: Optional[int] = None,
         min_usdc_floor: Optional[float] = None,
         max_daily_token_usd: Optional[float] = None,
+        max_agent_allocation_fraction: Optional[float] = None,
         kill_switch_file: Optional[str] = None,
         llm_usage_file: Optional[str] = None,
         scalper_reserve_usdc: Optional[float] = None,
@@ -74,7 +79,15 @@ class RiskGate:
         self.max_trades_per_hour = (
             max_trades_per_hour
             if max_trades_per_hour is not None
-            else _env_int("MAX_TRADES_PER_HOUR", 4)
+            else _env_int("MAX_TRADES_PER_HOUR", MAX_TRADES_PER_HOUR)
+        )
+        self.max_agent_allocation_fraction = (
+            max_agent_allocation_fraction
+            if max_agent_allocation_fraction is not None
+            else _env_float(
+                "MAX_AGENT_ALLOCATION_FRACTION",
+                MAX_AGENT_ALLOCATION_FRACTION,
+            )
         )
         self.max_open_positions = (
             max_open_positions
@@ -275,6 +288,21 @@ class RiskGate:
                     f"available {available:.4f} (after reserves [{reserves_breakdown}]) "
                     f"below floor {self.min_usdc_floor}"
                 )
+            if self.max_agent_allocation_fraction > 0:
+                max_agent_reserve = bal * self.max_agent_allocation_fraction
+                oversized = {
+                    name: reserve
+                    for name, reserve in self.reserves.items()
+                    if reserve > max_agent_reserve
+                }
+                if oversized:
+                    detail = ", ".join(
+                        f"{name}={reserve:.2f}" for name, reserve in oversized.items()
+                    )
+                    return (
+                        f"agent allocation above {self.max_agent_allocation_fraction:.0%} "
+                        f"of wallet ${bal:.2f}: {detail}"
+                    )
             if self.starting_balance > 0:
                 # Drawdown is based on portfolio value (cash + MTM of open
                 # positions), not cash alone. Otherwise capital deployed to
@@ -332,6 +360,15 @@ class RiskGate:
 
         if mode not in {"paper", "live_probe", "live"}:
             return f"runtime control mode {mode!r} is not trade-enabled"
+
+        expires_at = str(control.get("expires_at") or "").strip()
+        if expires_at:
+            try:
+                expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) >= expires_dt:
+                    return f"runtime control expired at {expires_at}"
+            except ValueError:
+                return f"runtime control expires_at invalid: {expires_at!r}"
 
         agent = os.getenv("RUNTIME_AGENT", "").strip()
         allowed = [str(a).strip() for a in control.get("allowed_live_agents") or []]

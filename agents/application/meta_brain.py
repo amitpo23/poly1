@@ -22,10 +22,52 @@ import logging
 import os
 import sqlite3
 import time
+import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _parse_timestamp(value: object) -> Optional[float]:
+    """Parse compact or ISO timestamps into epoch seconds."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.isdigit() and len(text) >= 14:
+            return datetime.strptime(text[:14], "%Y%m%d%H%M%S").replace(
+                tzinfo=timezone.utc
+            ).timestamp()
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -139,10 +181,60 @@ class WinRateAdvisor:
         try:
             with sqlite3.connect(db_path, timeout=5) as conn:
                 conn.row_factory = sqlite3.Row
-                return self._from_brain_decisions(conn, market_type, hours)
+                stats = self._from_brain_decisions(conn, market_type, hours)
+            return self._refine_with_daily_journal(db_path, stats, market_type)
         except Exception as exc:
             logger.debug("winrate_advisor: sqlite error: %s", exc)
             return WinRateStats(None, 0, 0, 0, None, None, "error")
+
+    def _refine_with_daily_journal(
+        self,
+        db_path: str,
+        stats: WinRateStats,
+        market_type: str,
+    ) -> WinRateStats:
+        if os.getenv("META_BRAIN_DAILY_JOURNAL_ENABLED", "true").lower() not in {
+            "1", "true", "yes", "on",
+        }:
+            return stats
+        try:
+            from agents.application.trade_log import TradeLog
+
+            journal = TradeLog(db_path=db_path)
+            day = journal.daily_trade_journal_stats(market_type=market_type)
+        except Exception as exc:
+            logger.debug("winrate_advisor: daily journal refine failed: %s", exc)
+            return stats
+
+        day_total = int(day.get("total_with_outcome") or 0)
+        failures = int(day.get("failures") or 0)
+        if day_total <= 0 and failures <= 0:
+            return stats
+
+        base = stats.winrate
+        if base is None:
+            base = _env_float("META_BRAIN_WINRATE_PRIOR", 0.52)
+        day_wr = day.get("winrate")
+        if day_wr is None:
+            day_wr = 0.50
+
+        # Intraday evidence should matter quickly, but tiny samples should not
+        # whip the system around. This Bayesian-style blend gives the live day
+        # up to 60% influence once there are roughly ten resolved outcomes.
+        day_weight = min(0.60, max(0.10, day_total / 16.0))
+        failure_penalty = min(0.18, failures * _env_float("META_BRAIN_FAILURE_PENALTY", 0.03))
+        refined = ((1.0 - day_weight) * float(base)) + (day_weight * float(day_wr))
+        refined = max(0.0, min(1.0, refined - failure_penalty))
+
+        return WinRateStats(
+            winrate=round(refined, 4),
+            wins=stats.wins,
+            losses=stats.losses,
+            total_with_outcome=max(stats.total_with_outcome, day_total),
+            avg_brain_score_wins=stats.avg_brain_score_wins,
+            avg_brain_score_losses=stats.avg_brain_score_losses,
+            source=f"{stats.source}+daily_journal",
+        )
 
     def _from_brain_decisions(
         self, conn: sqlite3.Connection, market_type: str, hours: int
@@ -158,9 +250,10 @@ class WinRateAdvisor:
             FROM brain_decisions
             WHERE approved = 1
               AND outcome_status IS NOT NULL
+              AND market_type = ?
               AND ts >= ?
             """,
-            (cutoff,),
+            (market_type, cutoff),
         ).fetchall()
 
         if not rows:
@@ -240,6 +333,7 @@ class ConvictionJSONLReader:
     DEFAULT_FALLBACK_PATHS = [
         "./data/external_convictions.jsonl",
         "./data/external_convictions_aggregator.jsonl",
+        "./data/external_convictions_tradingview.jsonl",
         "./data/external_convictions_20test.jsonl",
     ]
 
@@ -331,13 +425,8 @@ class ConvictionJSONLReader:
 
         # Sort by recency; use ts field (ISO string) or fallback to position.
         def _ts(r):
-            try:
-                import re
-                ts_str = r.get("ts") or r.get("timestamp") or ""
-                digits = re.sub(r"[^0-9]", "", ts_str[:19])
-                return int(digits) if digits else 0
-            except Exception:
-                return 0
+            ts_val = _parse_timestamp(r.get("ts") or r.get("timestamp"))
+            return ts_val if ts_val is not None else 0
 
         best_records.sort(key=_ts, reverse=True)
         recent = best_records[:5]
@@ -369,9 +458,8 @@ class ConvictionJSONLReader:
             confidence = no_conf / len(recent)
 
         # Age of most recent record.
-        latest_ts_int = _ts(best_records[0])
-        now_int = int(time.strftime("%Y%m%d%H%M%S", time.gmtime()))
-        age = max(0.0, float(now_int - latest_ts_int))
+        latest_ts = _ts(best_records[0])
+        age = max(0.0, time.time() - latest_ts) if latest_ts else float("inf")
 
         return ConvictionSummary(
             direction=direction,
@@ -505,16 +593,11 @@ class ProbVelocityDetector:
             first_ts = row["first_seen_ts"] or ""
             last_ts = row["last_seen_ts"] or ""
 
-            import re
-            def _parse_ts(s: str) -> float:
-                try:
-                    return float(re.sub(r"[^0-9]", "", s[:19])[:14])
-                except Exception:
-                    return 0.0
-
-            dt_hours = max(
-                (_parse_ts(last_ts) - _parse_ts(first_ts)) / 1e6, 1e-6
-            )
+            first_epoch = _parse_timestamp(first_ts)
+            last_epoch = _parse_timestamp(last_ts)
+            if first_epoch is None or last_epoch is None:
+                return VelocitySignal(None, None, self.window_minutes, 0)
+            dt_hours = max((last_epoch - first_epoch) / 3600.0, 1e-6)
             if entry_price <= 0:
                 return VelocitySignal(None, None, self.window_minutes, 1)
             velocity = (current_price - entry_price) / entry_price / dt_hours
@@ -576,6 +659,359 @@ class MetaBrain:
         self.conviction_reader = ConvictionJSONLReader(conviction_paths=conviction_paths)
         self.velocity_detector = ProbVelocityDetector(window_minutes=velocity_window_min)
 
+    def synthesize_crypto_straddle(
+        self,
+        *,
+        slug: str,
+        question: str,
+        asset: str,
+        up_price: float,
+        down_price: float,
+        pair_ask_sum: float,
+        seconds_to_expiry: int,
+        token_id: Optional[str] = None,
+        liquidity_usdc: Optional[float] = None,
+    ) -> MetaDecision:
+        """Pair-aware synthesis for very short crypto up/down straddles.
+
+        This path keeps MarketBrain as the hard gate, then blends the existing
+        signal layer: intraday win-rate journal, external conviction JSONL,
+        probability velocity, Tavily news context, TradingView macro options
+        snapshot, and an optional Hermes/HTTP/LLM forecast hook.
+        """
+        brain_decision = self.market_brain.evaluate_crypto_straddle_entry(
+            slug=slug,
+            up_price=up_price,
+            down_price=down_price,
+            pair_ask_sum=pair_ask_sum,
+            seconds_to_expiry=seconds_to_expiry,
+        )
+        features: dict = dict(brain_decision.features or {})
+        features["brain_reason"] = brain_decision.reason
+        features["brain_score"] = brain_decision.score
+        features["asset"] = asset
+        features["question_preview"] = (question or slug)[:120]
+
+        signal_sources: list = []
+
+        win_stats = WinRateStats(None, 0, 0, 0, None, None, "not_computed")
+        try:
+            win_stats = self.winrate_advisor.compute(
+                self.db_path,
+                market_type="crypto_5min_straddle",
+                hours=self.winrate_hours,
+            )
+        except Exception as exc:
+            logger.debug("meta_brain straddle: winrate failed: %s", exc)
+        features["winrate"] = win_stats.winrate
+        features["winrate_n"] = win_stats.total_with_outcome
+        features["winrate_source"] = win_stats.source
+
+        conviction = ConvictionSummary(None, 0.0, [], float("inf"))
+        try:
+            conviction = self.conviction_reader.query(slug, question)
+            if conviction.direction and conviction.direction != "skip":
+                signal_sources += conviction.sources
+        except Exception as exc:
+            logger.debug("meta_brain straddle: conviction failed: %s", exc)
+        features["conviction_direction"] = conviction.direction
+        features["conviction_confidence"] = conviction.confidence
+        features["conviction_sources"] = conviction.sources
+        features["conviction_age_sec"] = conviction.age_seconds
+
+        velocity = VelocitySignal(None, None, 30, 0)
+        try:
+            if token_id:
+                self.velocity_detector.record(token_id, up_price)
+            velocity = self.velocity_detector.detect(slug, token_id, self.db_path)
+        except Exception as exc:
+            logger.debug("meta_brain straddle: velocity failed: %s", exc)
+        features["velocity_direction"] = velocity.direction
+        features["velocity_pct_per_hour"] = velocity.pct_per_hour
+
+        tavily_component, tavily_features = self._crypto_tavily_component(asset)
+        tradingview_component, tradingview_features = self._tradingview_macro_component()
+        hermes_component, hermes_features = self._hermes_or_llm_component(
+            slug=slug,
+            question=question,
+            asset=asset,
+            up_price=up_price,
+            down_price=down_price,
+            pair_ask_sum=pair_ask_sum,
+            seconds_to_expiry=seconds_to_expiry,
+        )
+        features.update(tavily_features)
+        features.update(tradingview_features)
+        features.update(hermes_features)
+
+        winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.52)
+        min_winrate_samples = _env_int("META_BRAIN_MIN_WINRATE_SAMPLES", 5)
+        winrate_component = (
+            float(win_stats.winrate)
+            if win_stats.winrate is not None
+            and win_stats.total_with_outcome >= min_winrate_samples
+            else winrate_prior
+        )
+        conviction_component = (
+            float(conviction.confidence)
+            if conviction.direction in {"yes", "no"}
+            else 0.50
+        )
+        velocity_component = 0.5
+        if velocity.direction in ("rising", "falling"):
+            velocity_component = 0.70
+        elif velocity.direction == "stable":
+            velocity_component = 0.55
+        liquidity_component = 0.5
+        if liquidity_usdc is not None:
+            liquidity_component = min(1.0, max(0.0, float(liquidity_usdc) / 50_000.0))
+
+        weights = {
+            "brain": _env_float("META_BRAIN_STRADDLE_WEIGHT_BRAIN", 0.30),
+            "winrate": _env_float("META_BRAIN_STRADDLE_WEIGHT_WINRATE", 0.25),
+            "tavily": _env_float("META_BRAIN_STRADDLE_WEIGHT_TAVILY", 0.10),
+            "tradingview": _env_float("META_BRAIN_STRADDLE_WEIGHT_TRADINGVIEW", 0.10),
+            "hermes": _env_float("META_BRAIN_STRADDLE_WEIGHT_HERMES", 0.15),
+            "conviction": _env_float("META_BRAIN_STRADDLE_WEIGHT_CONVICTION", 0.05),
+            "velocity": _env_float("META_BRAIN_STRADDLE_WEIGHT_VELOCITY", 0.03),
+            "liquidity": _env_float("META_BRAIN_STRADDLE_WEIGHT_LIQUIDITY", 0.02),
+        }
+        components = {
+            "brain": float(brain_decision.score),
+            "winrate": winrate_component,
+            "tavily": tavily_component,
+            "tradingview": tradingview_component,
+            "hermes": hermes_component,
+            "conviction": conviction_component,
+            "velocity": velocity_component,
+            "liquidity": liquidity_component,
+        }
+        weight_sum = sum(max(0.0, v) for v in weights.values()) or 1.0
+        score = sum(max(0.0, weights[k]) * components[k] for k in weights) / weight_sum
+        score = round(max(0.0, min(1.0, score)), 4)
+        features["meta_score"] = score
+        features["weighted_components"] = {
+            **{k: round(v, 4) for k, v in components.items()},
+            "winrate_sample_size": win_stats.total_with_outcome,
+            "weights": weights,
+        }
+
+        if not brain_decision.approved:
+            approved = False
+            reason = brain_decision.reason
+            entry_timing = "skip"
+        else:
+            min_score = _env_float("META_BRAIN_CRYPTO_STRADDLE_MIN_SCORE", 0.52)
+            approved = score >= min_score
+            reason = (
+                brain_decision.reason
+                if approved
+                else f"weighted_score_too_low:{score:.3f}<{min_score:.3f}"
+            )
+            entry_timing = "now" if approved else "skip"
+
+        return MetaDecision(
+            approved=approved,
+            reason=reason,
+            score=score,
+            entry_timing=entry_timing,
+            winrate_estimate=win_stats.winrate,
+            winrate_sample_size=win_stats.total_with_outcome,
+            signal_sources=list(dict.fromkeys(signal_sources)),
+            cross_market_prob=None,
+            cross_market_divergence=None,
+            velocity_direction=velocity.direction,
+            velocity_pct_per_hour=velocity.pct_per_hour,
+            conviction_direction=conviction.direction,
+            conviction_confidence=conviction.confidence,
+            conviction_sources=conviction.sources,
+            features=features,
+        )
+
+    def _crypto_tavily_component(self, asset: str) -> tuple[float, dict]:
+        if os.getenv("META_BRAIN_STRADDLE_TAVILY_ENABLED", "true").lower() not in {
+            "1", "true", "yes", "on",
+        }:
+            return 0.50, {"tavily_status": "disabled"}
+        try:
+            from agents.application.tavily import tavily_headlines
+
+            query = f"{asset.upper()} crypto breaking news volatility liquidation ETF"
+            headlines = tavily_headlines(query, max_results=3, timeout=4)
+        except Exception as exc:
+            return 0.50, {"tavily_status": f"error:{exc}"}
+        if not headlines:
+            return 0.50, {"tavily_status": "empty"}
+        lower = headlines.lower()
+        volatility_terms = (
+            "volatility", "liquidation", "rally", "crash", "surge",
+            "plunge", "etf", "fed", "hack", "exploit",
+        )
+        hits = sum(1 for term in volatility_terms if term in lower)
+        component = min(0.75, 0.55 + hits * 0.04)
+        return component, {
+            "tavily_status": "ok",
+            "tavily_component": round(component, 4),
+            "tavily_hits": hits,
+            "tavily_headlines": headlines[:500],
+        }
+
+    def _tradingview_macro_component(self) -> tuple[float, dict]:
+        path = os.getenv(
+            "TRADINGVIEW_OPTIONS_SNAPSHOT_PATH",
+            "./data/tradingview_options_es1_snapshot.json",
+        )
+        try:
+            if not os.path.isfile(path):
+                return 0.50, {"tradingview_status": "missing_snapshot", "tradingview_path": path}
+            age_limit = _env_int("TRADINGVIEW_OPTIONS_MAX_AGE_SEC", 900)
+            age = max(0.0, time.time() - os.path.getmtime(path))
+            with open(path, "r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+            put_call = snapshot.get("put_call_ratio")
+            if put_call is None:
+                call_volume = float(snapshot.get("call_volume") or 0)
+                put_volume = float(snapshot.get("put_volume") or 0)
+                put_call = put_volume / max(call_volume, 1.0) if put_volume or call_volume else 0
+            put_call = float(put_call or 0)
+            if put_call <= 0:
+                return 0.50, {"tradingview_status": "missing_put_call", "tradingview_age_sec": age}
+            distance = abs(put_call - 1.0)
+            component = 0.50 if distance < 0.15 else min(0.72, 0.56 + distance * 0.18)
+            if age > age_limit:
+                component = min(component, 0.52)
+            return component, {
+                "tradingview_status": "ok",
+                "tradingview_put_call_ratio": round(put_call, 4),
+                "tradingview_age_sec": round(age, 1),
+                "tradingview_component": round(component, 4),
+            }
+        except Exception as exc:
+            return 0.50, {"tradingview_status": f"error:{exc}"}
+
+    def _hermes_or_llm_component(
+        self,
+        *,
+        slug: str,
+        question: str,
+        asset: str,
+        up_price: float,
+        down_price: float,
+        pair_ask_sum: float,
+        seconds_to_expiry: int,
+    ) -> tuple[float, dict]:
+        payload = {
+            "slug": slug,
+            "question": question,
+            "asset": asset,
+            "strategy": "crypto_5min_straddle",
+            "up_price": up_price,
+            "down_price": down_price,
+            "pair_ask_sum": pair_ask_sum,
+            "seconds_to_expiry": seconds_to_expiry,
+        }
+        url = (
+            os.getenv("HERMES_FORECAST_URL", "").strip()
+            or os.getenv("HERMES_API_URL", "").strip()
+        )
+        if url:
+            component, features = self._http_forecast_component(url, payload)
+            features["hermes_url_configured"] = True
+            return component, features
+        if os.getenv("META_BRAIN_STRADDLE_LLM_ENABLED", "false").lower() in {
+            "1", "true", "yes", "on",
+        }:
+            return self._llm_forecast_component(payload)
+        return 0.50, {"hermes_status": "not_configured", "llm_status": "disabled"}
+
+    def _http_forecast_component(self, url: str, payload: dict) -> tuple[float, dict]:
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            headers = {"Content-Type": "application/json", "User-Agent": "poly1-metabrain/1.0"}
+            key = os.getenv("HERMES_API_KEY", "").strip()
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            req = urllib.request.Request(url, data=data, headers=headers)
+            timeout = _env_int("HERMES_TIMEOUT_SEC", 4)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = json.loads(resp.read())
+            confidence = float(
+                body.get("winrate")
+                or body.get("confidence")
+                or body.get("score")
+                or 0.5
+            )
+            component = max(0.0, min(1.0, confidence))
+            return component, {
+                "hermes_status": "ok",
+                "hermes_component": round(component, 4),
+                "hermes_reason": str(body.get("reason") or body.get("reasoning") or "")[:300],
+            }
+        except Exception as exc:
+            return 0.50, {"hermes_status": f"error:{exc}"}
+
+    def _llm_forecast_component(self, payload: dict) -> tuple[float, dict]:
+        prompt = (
+            "Return JSON only: {\"winrate\":0-1,\"reason\":\"short\"}. "
+            "Estimate whether this crypto 5m Polymarket straddle has enough "
+            "short-term volatility edge after spread. Data: "
+            + json.dumps(payload, sort_keys=True)
+        )
+        try:
+            from langchain_core.messages import HumanMessage
+            from langchain_openai import ChatOpenAI
+            from agents.application.llm_config import openai_model
+
+            model = os.getenv("META_BRAIN_STRADDLE_LLM_MODEL", "").strip() or openai_model()
+            llm = ChatOpenAI(model=model, temperature=0, timeout=8)
+            response = llm.invoke([HumanMessage(content=prompt)])
+            text = getattr(response, "content", str(response))
+            start = text.find("{")
+            end = text.rfind("}")
+            body = json.loads(text[start:end + 1]) if start >= 0 and end > start else {}
+            component = max(0.0, min(1.0, float(body.get("winrate", 0.5))))
+            return component, {
+                "llm_status": "ok",
+                "llm_model": model,
+                "llm_component": round(component, 4),
+                "llm_reason": str(body.get("reason", ""))[:300],
+            }
+        except Exception as exc:
+            if os.getenv("ANTHROPIC_API_KEY", "").strip():
+                try:
+                    import anthropic
+                    from agents.application.llm_config import anthropic_model
+
+                    model = os.getenv(
+                        "META_BRAIN_STRADDLE_ANTHROPIC_MODEL", ""
+                    ).strip() or anthropic_model()
+                    client = anthropic.Anthropic(
+                        api_key=os.getenv("ANTHROPIC_API_KEY", "").strip()
+                    )
+                    response = client.messages.create(
+                        model=model,
+                        max_tokens=256,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    text = response.content[0].text if response.content else ""
+                    start = text.find("{")
+                    end = text.rfind("}")
+                    body = json.loads(text[start:end + 1]) if start >= 0 and end > start else {}
+                    component = max(0.0, min(1.0, float(body.get("winrate", 0.5))))
+                    return component, {
+                        "llm_status": "ok_anthropic_fallback",
+                        "llm_model": model,
+                        "llm_openai_error": str(exc)[:180],
+                        "llm_component": round(component, 4),
+                        "llm_reason": str(body.get("reason", ""))[:300],
+                    }
+                except Exception as anth_exc:
+                    return 0.50, {
+                        "llm_status": f"error:{exc}",
+                        "llm_anthropic_status": f"error:{anth_exc}",
+                    }
+            return 0.50, {"llm_status": f"error:{exc}"}
+
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
@@ -591,6 +1027,7 @@ class MetaBrain:
         external_context: str = "",
         vibe_signals: Optional[dict] = None,
         token_id: Optional[str] = None,
+        liquidity_usdc: Optional[float] = None,
     ) -> MetaDecision:
         """Full synthesis: gate → win-rate → conviction → velocity → timing."""
 
@@ -646,18 +1083,59 @@ class MetaBrain:
         except Exception as exc:
             logger.debug("meta_brain: velocity detector failed: %s", exc)
 
-        # 5. Composite score: blend brain score with external conviction.
-        score = brain_decision.score
-        if conviction.direction in ("yes", "no") and conviction.confidence > 0:
-            # Conviction from JSONL adds up to +0.10 if confident.
-            score = min(1.0, score + min(0.10, conviction.confidence * 0.15))
-        if velocity.direction == "rising" and (poly_prob or 0) < 0.85:
-            score = min(1.0, score + 0.05)
-        elif velocity.direction == "falling" and (poly_prob or 0) > 0.15:
-            score = min(1.0, score + 0.05)  # falling = shorting opportunity
+        # 5. Weighted score. Missing win-rate data gets a neutral prior, so new
+        # strategies can trade, but proven history improves the final score.
+        winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.52)
+        min_winrate_samples = _env_int("META_BRAIN_MIN_WINRATE_SAMPLES", 5)
+        winrate_component = (
+            float(win_stats.winrate)
+            if win_stats.winrate is not None
+            and win_stats.total_with_outcome >= min_winrate_samples
+            else winrate_prior
+        )
+        conviction_component = float(conviction.confidence or 0.0)
+        velocity_component = 0.5
+        if velocity.direction in ("rising", "falling"):
+            velocity_component = 0.72
+        elif velocity.direction == "stable":
+            velocity_component = 0.55
+        divergence = features.get("cross_market_divergence")
+        cross_market_component = 0.5
+        if divergence is not None:
+            cross_market_component = min(1.0, 0.5 + abs(float(divergence)))
+        liquidity_component = 0.5
+        if liquidity_usdc is not None:
+            liquidity_component = min(1.0, max(0.0, float(liquidity_usdc) / 50_000.0))
 
-        score = round(score, 4)
+        weights = {
+            "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.35),
+            "winrate": _env_float("META_BRAIN_WEIGHT_WINRATE", 0.25),
+            "conviction": _env_float("META_BRAIN_WEIGHT_CONVICTION", 0.15),
+            "velocity": _env_float("META_BRAIN_WEIGHT_VELOCITY", 0.10),
+            "cross_market": _env_float("META_BRAIN_WEIGHT_CROSS_MARKET", 0.10),
+            "liquidity": _env_float("META_BRAIN_WEIGHT_LIQUIDITY", 0.05),
+        }
+        weight_sum = sum(max(0.0, v) for v in weights.values()) or 1.0
+        score = (
+            max(0.0, weights["brain"]) * float(brain_decision.score)
+            + max(0.0, weights["winrate"]) * winrate_component
+            + max(0.0, weights["conviction"]) * conviction_component
+            + max(0.0, weights["velocity"]) * velocity_component
+            + max(0.0, weights["cross_market"]) * cross_market_component
+            + max(0.0, weights["liquidity"]) * liquidity_component
+        ) / weight_sum
+        score = round(max(0.0, min(1.0, score)), 4)
         features["meta_score"] = score
+        features["weighted_components"] = {
+            "brain": round(float(brain_decision.score), 4),
+            "winrate": round(winrate_component, 4),
+            "winrate_sample_size": win_stats.total_with_outcome,
+            "conviction": round(conviction_component, 4),
+            "velocity": round(velocity_component, 4),
+            "cross_market": round(cross_market_component, 4),
+            "liquidity": round(liquidity_component, 4),
+            "weights": weights,
+        }
 
         # 6. Entry timing: "now" if strong signals converge; "wait" if marginal.
         entry_timing = self._compute_timing(
@@ -688,6 +1166,54 @@ class MetaBrain:
                 conviction_sources=conviction.sources,
                 features=features,
             )
+
+        min_weighted_score = _env_float("META_BRAIN_MIN_WEIGHTED_SCORE", 0.50)
+        if score < min_weighted_score:
+            return MetaDecision(
+                approved=False,
+                reason=f"weighted_score_too_low:{score:.3f}<{min_weighted_score:.3f}",
+                score=score,
+                entry_timing="skip",
+                winrate_estimate=win_stats.winrate,
+                winrate_sample_size=win_stats.total_with_outcome,
+                signal_sources=signal_sources,
+                cross_market_prob=features.get("cross_market_prob"),
+                cross_market_divergence=features.get("cross_market_divergence"),
+                velocity_direction=velocity.direction,
+                velocity_pct_per_hour=velocity.pct_per_hour,
+                conviction_direction=conviction.direction,
+                conviction_confidence=conviction.confidence,
+                conviction_sources=conviction.sources,
+                features=features,
+            )
+
+        if poly_prob is not None:
+            min_edge = _env_float("META_BRAIN_MIN_EDGE_PCT", 0.02)
+            market_price = max(0.0, min(1.0, float(poly_prob)))
+            internal_probability = score
+            edge = internal_probability - market_price
+            features["internal_probability"] = round(internal_probability, 4)
+            features["market_entry_price"] = round(market_price, 4)
+            features["edge"] = round(edge, 4)
+            features["min_edge_pct"] = min_edge
+            if edge < min_edge:
+                return MetaDecision(
+                    approved=False,
+                    reason=f"internal_edge_too_low:{edge:.3f}<{min_edge:.3f}",
+                    score=score,
+                    entry_timing="skip",
+                    winrate_estimate=win_stats.winrate,
+                    winrate_sample_size=win_stats.total_with_outcome,
+                    signal_sources=signal_sources,
+                    cross_market_prob=features.get("cross_market_prob"),
+                    cross_market_divergence=features.get("cross_market_divergence"),
+                    velocity_direction=velocity.direction,
+                    velocity_pct_per_hour=velocity.pct_per_hour,
+                    conviction_direction=conviction.direction,
+                    conviction_confidence=conviction.confidence,
+                    conviction_sources=conviction.sources,
+                    features=features,
+                )
 
         return MetaDecision(
             approved=True,
