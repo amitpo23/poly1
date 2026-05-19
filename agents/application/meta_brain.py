@@ -1271,28 +1271,52 @@ class MetaBrain:
             "whale": _env_float("META_BRAIN_WEIGHT_WHALE", 0.10),
             "liquidity": _env_float("META_BRAIN_WEIGHT_LIQUIDITY", 0.05),
         }
-        weight_sum = sum(max(0.0, v) for v in weights.values()) or 1.0
-        score = (
-            max(0.0, weights["brain"]) * float(brain_decision.score)
-            + max(0.0, weights["winrate"]) * winrate_component
-            + max(0.0, weights["conviction"]) * conviction_component
-            + max(0.0, weights["velocity"]) * velocity_component
-            + max(0.0, weights["cross_market"]) * cross_market_component
-            + max(0.0, weights["whale"]) * whale_component
-            + max(0.0, weights["liquidity"]) * liquidity_component
-        ) / weight_sum
+        components = {
+            "brain": float(brain_decision.score),
+            "winrate": winrate_component,
+            "conviction": conviction_component,
+            "velocity": velocity_component,
+            "cross_market": cross_market_component,
+            "whale": whale_component,
+            "liquidity": liquidity_component,
+        }
+        # Informed-only weighting: neutral signals (exactly 0.5) carry no weight
+        # so they cannot dilute a single strong signal.  A component at 0.5 means
+        # "no data" — it should be invisible, not drag the score toward the median.
+        NEUTRAL = 0.5
+        active_weight_sum = sum(
+            max(0.0, weights[k])
+            for k, v in components.items()
+            if v != NEUTRAL
+        )
+        if active_weight_sum > 0:
+            score = sum(
+                max(0.0, weights[k]) * v
+                for k, v in components.items()
+                if v != NEUTRAL
+            ) / active_weight_sum
+        else:
+            # All signals neutral — fall back to full-weight blend (will ≈ 0.5).
+            active_weight_sum = sum(max(0.0, v) for v in weights.values()) or 1.0
+            score = sum(max(0.0, weights[k]) * v for k, v in components.items()) / active_weight_sum
         score = round(max(0.0, min(1.0, score)), 4)
+
+        # Identify the strongest individual signal and whether it clears the
+        # "anchor" bar.  A single signal ≥ META_BRAIN_ANCHOR_THRESHOLD is
+        # meaningful on its own and lowers the blended-score requirement.
+        anchor_threshold = _env_float("META_BRAIN_ANCHOR_THRESHOLD", 0.70)
+        best_signal_key = max(components, key=lambda k: components[k])
+        best_signal_val = components[best_signal_key]
+        has_anchor = best_signal_val >= anchor_threshold
+        features["best_signal"] = best_signal_key
+        features["best_signal_value"] = round(best_signal_val, 4)
+        features["has_anchor"] = has_anchor
         features["meta_score"] = score
         features["weighted_components"] = {
-            "brain": round(float(brain_decision.score), 4),
-            "winrate": round(winrate_component, 4),
+            **{k: round(v, 4) for k, v in components.items()},
             "winrate_sample_size": win_stats.total_with_outcome,
-            "conviction": round(conviction_component, 4),
-            "velocity": round(velocity_component, 4),
-            "cross_market": round(cross_market_component, 4),
-            "whale": round(whale_component, 4),
-            "liquidity": round(liquidity_component, 4),
             "weights": weights,
+            "active_weight_sum": round(active_weight_sum, 4),
         }
 
         # 7. Entry timing: "now" if strong signals converge; "wait" if marginal.
@@ -1304,9 +1328,10 @@ class MetaBrain:
             win_stats=win_stats,
             cross_market_divergence=features.get("cross_market_divergence"),
             whale=whale,
+            has_anchor=has_anchor,
         )
 
-        # 7. If brain gate rejected, propagate as skip.
+        # 8. If brain gate rejected, propagate as skip.
         if not brain_decision.approved:
             return MetaDecision(
                 approved=False,
@@ -1326,11 +1351,19 @@ class MetaBrain:
                 features=features,
             )
 
+        # Score threshold: if a single strong "anchor" signal exists (≥ anchor_threshold),
+        # the blended score requirement is relaxed — one strong signal should not be
+        # vetoed by neutral ones.  Without an anchor, the full threshold applies.
         min_weighted_score = _env_float("META_BRAIN_MIN_WEIGHTED_SCORE", 0.50)
-        if score < min_weighted_score:
+        min_weighted_score_with_anchor = _env_float("META_BRAIN_MIN_WEIGHTED_SCORE_ANCHOR", 0.40)
+        effective_min = min_weighted_score_with_anchor if has_anchor else min_weighted_score
+        if score < effective_min:
             return MetaDecision(
                 approved=False,
-                reason=f"weighted_score_too_low:{score:.3f}<{min_weighted_score:.3f}",
+                reason=(
+                    f"weighted_score_too_low:{score:.3f}<{effective_min:.3f}"
+                    + (f"[anchor:{best_signal_key}={best_signal_val:.2f}]" if has_anchor else "")
+                ),
                 score=score,
                 entry_timing="skip",
                 winrate_estimate=win_stats.winrate,
@@ -1437,9 +1470,15 @@ class MetaBrain:
         win_stats: WinRateStats,
         cross_market_divergence: Optional[float],
         whale: Optional[WhaleSentimentSignal] = None,
+        has_anchor: bool = False,
     ) -> str:
         if not brain_approved:
             return "skip"
+
+        # A single anchor signal (any component ≥ META_BRAIN_ANCHOR_THRESHOLD)
+        # is strong enough on its own to trigger immediate entry.
+        if has_anchor:
+            return "now"
 
         strong_signals = 0
 

@@ -423,6 +423,43 @@ class TestMetaBrain(unittest.TestCase):
         # High score without other signals → "wait" (conservative; needs 2+ for "now").
         self.assertIn(decision.entry_timing, ("now", "wait"))
 
+    @patch.dict(os.environ, {
+        "META_BRAIN_WEIGHT_BRAIN": "1.0",
+        "META_BRAIN_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_WEIGHT_CROSS_MARKET": "0.0",
+        "META_BRAIN_WEIGHT_WHALE": "0.0",
+        "META_BRAIN_WEIGHT_LIQUIDITY": "0.0",
+        "META_BRAIN_ANCHOR_THRESHOLD": "0.70",
+        "META_BRAIN_MIN_WEIGHTED_SCORE": "0.50",
+        "META_BRAIN_MIN_WEIGHTED_SCORE_ANCHOR": "0.40",
+        "META_BRAIN_MIN_EDGE_PCT": "0.0",
+        "META_BRAIN_MIN_RAW_EV": "0.0",
+    })
+    def test_single_anchor_signal_triggers_now(self):
+        """A single signal >= anchor_threshold should approve with timing='now'
+        even when no other corroborating signals exist (dilution problem fix)."""
+        mb = self._make_meta_brain(approved=True, score=0.85)
+        decision = mb.synthesize(
+            market_id="m1",
+            question="Strong anchor test?",
+        )
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.entry_timing, "now")
+        self.assertTrue(decision.features.get("has_anchor"))
+        self.assertEqual(decision.features.get("best_signal"), "brain")
+
+    @patch.dict(os.environ, {
+        "META_BRAIN_ANCHOR_THRESHOLD": "0.70",
+        "META_BRAIN_MIN_WEIGHTED_SCORE": "0.50",
+    })
+    def test_weak_signals_only_do_not_anchor(self):
+        """If no single signal clears the anchor bar, has_anchor must be False."""
+        mb = self._make_meta_brain(approved=True, score=0.60)
+        decision = mb.synthesize(market_id="m1", question="Weak?")
+        self.assertFalse(decision.features.get("has_anchor"))
+
     def test_summary_is_nonempty(self):
         mb = self._make_meta_brain(approved=True, score=0.65)
         decision = mb.synthesize(
