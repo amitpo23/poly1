@@ -59,7 +59,7 @@ class _TmpDB:
             sell_slippage=0.02,
             execute=False,
             partial_take_profit_enabled=False,
-            partial_take_profit_min_position_usdc=25.0,
+            partial_take_profit_min_position_usdc=500.0,
         )
         defaults.update(overrides)
         return PositionManagerConfig(**defaults)
@@ -320,7 +320,7 @@ class TestClosing(_TmpDB, unittest.TestCase):
                 partial_take_profit_enabled=True,
                 partial_take_profit_pct=0.10,
                 partial_take_profit_fraction=0.50,
-                partial_take_profit_min_position_usdc=25.0,
+                partial_take_profit_min_position_usdc=500.0,
             ),
         )
         result = mgr.check_and_close_positions()

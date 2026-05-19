@@ -111,7 +111,7 @@ class PositionManagerConfig:
     partial_take_profit_enabled: bool = True
     partial_take_profit_pct: float = 0.10
     partial_take_profit_fraction: float = 0.50
-    partial_take_profit_min_position_usdc: float = 25.0
+    partial_take_profit_min_position_usdc: float = 500.0
     # Heartbeat path for healthcheck.
     heartbeat_path: str = "/app/data/position_manager_heartbeat"
     # When False, log decisions but don't actually post SELL orders.
@@ -134,7 +134,7 @@ class PositionManagerConfig:
             partial_take_profit_pct=_env_float("MAINTAIN_PARTIAL_TAKE_PROFIT_PCT", 0.10),
             partial_take_profit_fraction=_env_float("MAINTAIN_PARTIAL_TAKE_PROFIT_FRACTION", 0.50),
             partial_take_profit_min_position_usdc=_env_float(
-                "MAINTAIN_PARTIAL_TAKE_PROFIT_MIN_POSITION_USDC", 25.0
+                "MAINTAIN_PARTIAL_TAKE_PROFIT_MIN_POSITION_USDC", 500.0
             ),
             heartbeat_path=os.getenv(
                 "MAINTAIN_HEARTBEAT_PATH",
