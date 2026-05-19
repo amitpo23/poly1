@@ -1,4 +1,4 @@
-# poly1 — Specification (v0.2.0-prod-prep)
+# poly1 — Specification (v0.8.0-meta-brain)
 
 ## 1. Purpose
 
@@ -69,6 +69,10 @@ Active operating goal:
 | `agents/application/prompts.py` `Prompter` | Versioned prompts; defines BUY/SELL semantics |
 | `agents/application/trade_recommendation.py` | Parses LLM JSON/legacy output → `TradeRecommendation` |
 | `agents/application/execution_safety.py` | Exitable-size gate; shared by all live entry agents |
+| `agents/application/meta_brain.py` `MetaBrain` | Single synthesizing layer: wraps MarketBrain + WinRateAdvisor + ConvictionJSONLReader + ProbVelocityDetector → unified `MetaDecision` with `entry_timing` (now/wait/skip) |
+| `agents/application/meta_brain.py` `WinRateAdvisor` | Rolling win-rate from `brain_decisions` → `trades` SQLite (7-day window, 5-min cache) |
+| `agents/application/meta_brain.py` `ConvictionJSONLReader` | Reads external_conviction JSONL output per market_id / question keywords; aggregates direction+confidence; 2-min cache |
+| `agents/application/meta_brain.py` `ProbVelocityDetector` | Probability velocity from in-memory samples + `position_marks` table; classifies rising/falling/stable |
 | `agents/application/market_brain.py` `MarketBrain` | Pre-LLM veto/scoring layer; spread, horizon, Tavily context, cross-market signal gates |
 | `agents/application/market_brain.py` `CrossMarketSignalFeed` | Queries Kalshi + Metaculus + Manifold in parallel for consensus probability; integrated into `evaluate_general_entry` score |
 | `agents/application/market_brain.py` `CoinGeckoFeed` | CoinGecko free-tier crypto price+24h-change feed (10-min cache) |
@@ -665,7 +669,7 @@ Backup:
 | 3 | $50, 24h | daemon | ≥4 attempted trades; PnL ≥ -5%; hit rate ≥ 50% on resolved |
 | 4 | $200 | daemon | Only after stage 3 passes |
 
-## 13. Out of scope (v0.2.0)
+## 13. Out of scope (v0.8.0)
 
 - Closing positions / `maintain_positions` (the bot only opens; positions
   resolve at market close).
