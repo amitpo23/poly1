@@ -73,6 +73,7 @@ class TestEntryTrigger(_TmpDB, unittest.TestCase):
         )
         log = TradeLog(self.db_path)
         polymarket = MagicMock()
+        polymarket.get_usdc_balance.return_value = 100.0
         polymarket.execute_market_order.return_value = {
             "status": "matched",
             "order_avg_price_estimate": 0.50,

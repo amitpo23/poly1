@@ -93,6 +93,9 @@ class PositionManagerConfig:
     # After this many consecutive close_failed rows for the same token,
     # escalate to resolved_loss (illiquid market, FAK never matches).
     max_close_failures: int = 3
+    # Pre-exit bid depth: defer non-stop-loss exits when bid-side depth
+    # is below this threshold. stop_loss always attempts regardless.
+    min_exit_bid_depth_usdc: float = 5.0
     # Heartbeat path for healthcheck.
     heartbeat_path: str = "/app/data/position_manager_heartbeat"
     # When False, log decisions but don't actually post SELL orders.
@@ -108,6 +111,7 @@ class PositionManagerConfig:
             sell_slippage=_env_float("MAINTAIN_SELL_SLIPPAGE", 0.02),
             min_exit_notional_usdc=_env_float("MAINTAIN_MIN_EXIT_NOTIONAL_USDC", 1.0),
             max_close_failures=_env_int("MAINTAIN_MAX_CLOSE_FAILURES", 3),
+            min_exit_bid_depth_usdc=_env_float("MIN_EXIT_BID_DEPTH_USDC", 5.0),
             heartbeat_path=os.getenv(
                 "MAINTAIN_HEARTBEAT_PATH",
                 "/app/data/position_manager_heartbeat",
@@ -639,6 +643,26 @@ class PositionManager:
         self, pos: AggregatedPosition, reason: str, mid: float
     ) -> bool:
         """Place a SELL order and record a closed row. Returns True on success."""
+        # Pre-exit bid depth check: defer non-stop-loss exits when the
+        # bid side is too thin.  stop_loss always attempts (capital
+        # preservation > execution quality).
+        if reason != "stop_loss" and self.cfg.min_exit_bid_depth_usdc > 0:
+            try:
+                depth = self.polymarket.bid_depth_usdc(pos.token_id)
+                if depth < self.cfg.min_exit_bid_depth_usdc:
+                    logger.info(
+                        "position_manager defer [%s]: token=%s bid_depth=$%.2f "
+                        "< min $%.2f — deferring to next cycle",
+                        reason, pos.token_id[:18], depth,
+                        self.cfg.min_exit_bid_depth_usdc,
+                    )
+                    return False
+            except Exception:
+                # Fail-open: if we can't read the book, proceed with the sell.
+                logger.warning(
+                    "position_manager bid_depth check failed for %s (proceeding)",
+                    pos.token_id[:18],
+                )
         sell_price = self.exit_executor.limit_price_from_mid(mid)
         # Clamp shares to actual on-chain balance — journal can over-count
         # by a few percent due to fees taken at fill time.

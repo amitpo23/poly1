@@ -367,6 +367,48 @@ class MarketBrain:
 
         return BrainDecision(True, "approved", score, profile, features)
 
+    def evaluate_crypto_entry(
+        self,
+        *,
+        slug: str,
+        candidate_price: float,
+        side: str,
+    ) -> BrainDecision:
+        """Lightweight pre-entry gate for crypto agents (btc_daily, btc_5min).
+
+        Checks:
+        - brain enabled?
+        - candidate price sanity (not penny, not >0.90)
+        - spread width if available via crypto feed
+
+        Returns BrainDecision. Intentionally simpler than the scalper
+        version — crypto agents already have their own signal consensus.
+        """
+        profile = self.classify(slug)
+        features: dict = {
+            "side": side,
+            "candidate_price": candidate_price,
+        }
+
+        if not self.cfg.enabled:
+            return BrainDecision(True, "brain_disabled", 1.0, profile, features)
+
+        # Price sanity: penny tokens and near-certain tokens are bad entries.
+        if candidate_price < 0.10:
+            return BrainDecision(False, "penny_token", 0.0, profile, features)
+        if candidate_price > 0.90:
+            return BrainDecision(False, "price_too_high", 0.0, profile, features)
+
+        # Base score from price distance to 0.50 (closer = more balanced market)
+        distance = abs(candidate_price - 0.50)
+        score = max(0.0, min(1.0, 0.70 - distance))
+        features["score"] = round(score, 4)
+
+        if score < self.cfg.general_min_score:
+            return BrainDecision(False, "crypto_score_too_low", score, profile, features)
+
+        return BrainDecision(True, "approved_crypto_entry", score, profile, features)
+
     def evaluate_exit(self, position: ExitPosition, now_ms: Optional[int] = None) -> BrainDecision:
         now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
         profile = self.classify(position.market_id)

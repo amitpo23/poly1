@@ -348,6 +348,9 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | `MAX_ENTRY_SPREAD_PCT` | `0.05` | Reject market entry when bid-ask spread exceeds this fraction (5%). |
 | `MARKET_BRAIN_TIMEOUT_FLAT_GRACE_PCT` | `0.01` | If position P&L is within ±1% at timeout, grant grace period instead of force-selling at spread cost. |
 | `MARKET_BRAIN_TIMEOUT_GRACE_SECONDS` | `3600` | Extra hold time (seconds) granted to flat positions at timeout. |
+| `REENTRY_COOLDOWN_HOURS` | `12` | Block re-entry on a market for N hours after a terminal close (timeout/SL/TP/dust). Prevents buy→close→re-buy spread drain. |
+| `MAX_FILLS_PER_MARKET_24H` | `3` | Max filled entries on one market in 24h across all agents. Prevents endless re-entry after dedupe window expires. |
+| `MIN_EXIT_BID_DEPTH_USDC` | `5.0` | Pre-exit bid depth check: defer non-stop-loss exits when bid-side depth is below this. stop_loss always attempts. |
 
 ### Trading supervisor
 

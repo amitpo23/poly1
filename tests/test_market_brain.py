@@ -246,6 +246,62 @@ class TestTimeoutGrace(unittest.TestCase):
         self.assertEqual(decision.reason, "stop_loss")
 
 
+class TestCryptoEntry(unittest.TestCase):
+    """Fix 4: evaluate_crypto_entry gate for btc_daily/btc_5min."""
+
+    def setUp(self):
+        self.brain = MarketBrain(BrainConfig(
+            enabled=True,
+            general_min_score=0.30,
+        ))
+
+    def test_approved_at_fair_price(self):
+        decision = self.brain.evaluate_crypto_entry(
+            slug="btc-updown-5m-1770000000",
+            candidate_price=0.50,
+            side="BUY",
+        )
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "approved_crypto_entry")
+
+    def test_rejected_penny_token(self):
+        decision = self.brain.evaluate_crypto_entry(
+            slug="btc-updown-5m-1770000000",
+            candidate_price=0.05,
+            side="BUY",
+        )
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "penny_token")
+
+    def test_rejected_price_too_high(self):
+        decision = self.brain.evaluate_crypto_entry(
+            slug="btc-updown-5m-1770000000",
+            candidate_price=0.95,
+            side="SELL",
+        )
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "price_too_high")
+
+    def test_disabled_brain_approves(self):
+        brain = MarketBrain(BrainConfig(enabled=False))
+        decision = brain.evaluate_crypto_entry(
+            slug="btc-updown-5m-1770000000",
+            candidate_price=0.05,
+            side="BUY",
+        )
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "brain_disabled")
+
+    def test_score_decreases_away_from_50(self):
+        d1 = self.brain.evaluate_crypto_entry(
+            slug="test", candidate_price=0.50, side="BUY",
+        )
+        d2 = self.brain.evaluate_crypto_entry(
+            slug="test", candidate_price=0.35, side="BUY",
+        )
+        self.assertGreater(d1.score, d2.score)
+
+
 class TestCryptoSignalFeed(unittest.TestCase):
     def test_percent_change_from_samples(self):
         feed = CryptoSignalFeed()

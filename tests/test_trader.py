@@ -1212,5 +1212,132 @@ class TestTraderTopN(TempDataMixin, unittest.TestCase):
         self.assertIn("ai_analysis_unavailable", recent["error"])
 
 
+class TestReentryCooldown(TempDataMixin, unittest.TestCase):
+    """Fix 1: has_recent_close_for_market blocks re-entry within window."""
+
+    def test_blocks_within_window(self):
+        tl = TradeLog(self.db_path)
+        tl.insert_terminal("c1", "M1", "closed_timeout", token_id="TOK1")
+        self.assertTrue(tl.has_recent_close_for_market("M1", hours=12))
+
+    def test_allows_after_window(self):
+        tl = TradeLog(self.db_path)
+        # Insert a close row far in the past by manipulating ts directly
+        with tl._connect() as conn:
+            conn.execute(
+                "INSERT INTO trades (ts, cycle_id, market_id, token_id, status) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("2025-01-01T00:00:00+00:00", "c1", "M1", "TOK1", "closed_timeout"),
+            )
+        self.assertFalse(tl.has_recent_close_for_market("M1", hours=12))
+
+    def test_cross_agent_token_id_match(self):
+        tl = TradeLog(self.db_path)
+        # Close on different market_id but same token_id
+        tl.insert_terminal("c1", "OTHER_MKT", "closed_stop_loss", token_id="TOK1")
+        self.assertTrue(tl.has_recent_close_for_market("M1", hours=12, token_id="TOK1"))
+
+    def test_filled_is_not_a_close(self):
+        tl = TradeLog(self.db_path)
+        tl.insert_terminal("c1", "M1", FILLED, token_id="TOK1")
+        self.assertFalse(tl.has_recent_close_for_market("M1", hours=12))
+
+
+class TestConcentrationLimit(TempDataMixin, unittest.TestCase):
+    """Fix 2: count_recent_fills_for_market blocks at limit."""
+
+    def test_counts_fills(self):
+        tl = TradeLog(self.db_path)
+        tl.insert_terminal("c1", "M1", FILLED, token_id="TOK1")
+        tl.insert_terminal("c2", "M1", FILLED, token_id="TOK1")
+        tl.insert_terminal("c3", "M1", FILLED, token_id="TOK1")
+        self.assertEqual(tl.count_recent_fills_for_market("M1", hours=24), 3)
+
+    def test_blocks_at_limit(self):
+        tl = TradeLog(self.db_path)
+        for i in range(3):
+            tl.insert_terminal(f"c{i}", "M1", FILLED, token_id="TOK1")
+        self.assertTrue(tl.count_recent_fills_for_market("M1", hours=24) >= 3)
+
+    def test_cross_agent_token_match(self):
+        tl = TradeLog(self.db_path)
+        tl.insert_terminal("c1", "OTHER", FILLED, token_id="TOK1")
+        self.assertEqual(
+            tl.count_recent_fills_for_market("M1", hours=24, token_id="TOK1"), 1,
+        )
+
+    def test_old_fills_excluded(self):
+        tl = TradeLog(self.db_path)
+        with tl._connect() as conn:
+            conn.execute(
+                "INSERT INTO trades (ts, cycle_id, market_id, token_id, status) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("2025-01-01T00:00:00+00:00", "c1", "M1", "TOK1", "filled"),
+            )
+        self.assertEqual(tl.count_recent_fills_for_market("M1", hours=24), 0)
+
+
+class TestPreExitBidDepth(TempDataMixin, unittest.TestCase):
+    """Fix 3: pre-exit bid depth check in position_manager."""
+
+    def _make_manager(self, bid_depth, execute=False, min_depth=5.0):
+        from agents.application.position_manager import (
+            PositionManager,
+            PositionManagerConfig,
+            AggregatedPosition,
+        )
+        import time as _time
+
+        class FakePolymarket:
+            def __init__(self, depth):
+                self._depth = depth
+            def bid_depth_usdc(self, token_id):
+                return self._depth
+
+        class FakeExitExecutor:
+            def limit_price_from_mid(self, mid):
+                return mid * 0.98
+            def sell_fak(self, token_id, shares, mid):
+                return None
+
+        poly = FakePolymarket(bid_depth)
+        tl = TradeLog(self.db_path)
+        cfg = PositionManagerConfig(
+            execute=execute,
+            min_exit_bid_depth_usdc=min_depth,
+        )
+        mgr = PositionManager(
+            polymarket=poly, trade_log=tl, cfg=cfg,
+            exit_executor=FakeExitExecutor(),
+        )
+        pos = AggregatedPosition(
+            token_id="TOK1",
+            market_id="M1",
+            side="BUY",
+            total_cost_usdc=5.0,
+            total_shares=10.0,
+            avg_entry_price=0.50,
+            earliest_ts=_time.time() - 7200,
+        )
+        return mgr, pos
+
+    def test_timeout_deferred_on_empty_bids(self):
+        mgr, pos = self._make_manager(bid_depth=0.0, execute=True)
+        result = mgr._close_position(pos, "timeout", 0.50)
+        self.assertFalse(result)
+
+    def test_stop_loss_not_deferred(self):
+        mgr, pos = self._make_manager(bid_depth=0.0, execute=False)
+        # stop_loss should NOT be deferred even with zero depth
+        # In shadow mode it will return True (logged shadow close)
+        result = mgr._close_position(pos, "stop_loss", 0.50)
+        self.assertTrue(result)
+
+    def test_tp_proceeds_when_bids_sufficient(self):
+        mgr, pos = self._make_manager(bid_depth=10.0, execute=False)
+        result = mgr._close_position(pos, "take_profit", 0.50)
+        self.assertTrue(result)
+
+
 if __name__ == "__main__":
     unittest.main()

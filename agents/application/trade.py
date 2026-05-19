@@ -366,6 +366,37 @@ class Trader:
             )
             return False
 
+        # Fix 1: Post-close re-entry cooldown.
+        reentry_cooldown_hours = int(os.getenv("REENTRY_COOLDOWN_HOURS", "12"))
+        if self.trade_log.has_recent_close_for_market(
+            market_id, hours=reentry_cooldown_hours, token_id=_dedupe_token_id,
+        ):
+            logger.info(
+                "cycle %s: market %s skipped (re-entry cooldown %dh)",
+                cycle_id, market_id, reentry_cooldown_hours,
+            )
+            self.trade_log.insert_terminal(
+                cycle_id, market_id, SKIPPED_GATE,
+                error=f"reentry_cooldown: closed within {reentry_cooldown_hours}h",
+            )
+            return False
+
+        # Fix 2: Per-market concentration limit.
+        max_fills_24h = int(os.getenv("MAX_FILLS_PER_MARKET_24H", "3"))
+        recent_fills = self.trade_log.count_recent_fills_for_market(
+            market_id, hours=24, token_id=_dedupe_token_id,
+        )
+        if recent_fills >= max_fills_24h:
+            logger.info(
+                "cycle %s: market %s skipped (concentration: %d fills >= max %d)",
+                cycle_id, market_id, recent_fills, max_fills_24h,
+            )
+            self.trade_log.insert_terminal(
+                cycle_id, market_id, SKIPPED_GATE,
+                error=f"concentration_limit: {recent_fills} fills in 24h >= {max_fills_24h}",
+            )
+            return False
+
         # External conviction gate: if recent signals from external_conviction
         # agent disapprove this market, skip the LLM call entirely.
         if self._conviction_blocks_entry(cycle_id, market_id):

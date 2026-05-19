@@ -1007,6 +1007,95 @@ class TestCrossMarketInjection(unittest.TestCase):
         self.assertTrue(len(cross.all_markets) > 0)
 
 
+class TestReentryCooldownLive(unittest.TestCase):
+    """Fix 1: external_conviction blocked by recent close."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_blocked_by_recent_close(self):
+        cfg = ExternalConvictionConfig(
+            min_volume_usdc=1000.0,
+            min_liquidity_usdc=100.0,
+            max_candidates=1,
+            output_path=str(self.root / "ec_cool.jsonl"),
+            heartbeat_path=str(self.root / "hb_cool"),
+            position_size_usdc=3.0,
+            execute=True,
+            min_confidence=0.58,
+        )
+        log = TradeLog(str(self.root / "trade_log.db"))
+        polymarket = FakePolymarket()
+        # Insert a recent close for the market
+        log.insert_terminal("c_old", "M1", "closed_timeout", token_id="TOK_YES")
+        agent = ExternalConvictionAgent(
+            cfg=cfg,
+            gamma=FakeGamma([_raw_market()]),
+            provider=FixedProvider(direction="yes", confidence=0.74),
+            trade_log=log,
+            polymarket=polymarket,
+            risk_gate=FakeRiskGate(),
+        )
+        agent.collect_once()
+        # Should be blocked — no orders placed
+        self.assertEqual(len(polymarket.orders), 0)
+
+
+class TestConcentrationLive(unittest.TestCase):
+    """Fix 2: external_conviction blocked at fill limit."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_blocked_at_concentration_limit(self):
+        import os
+        old_val = os.environ.get("MAX_FILLS_PER_MARKET_24H")
+        os.environ["MAX_FILLS_PER_MARKET_24H"] = "2"
+        try:
+            cfg = ExternalConvictionConfig(
+                min_volume_usdc=1000.0,
+                min_liquidity_usdc=100.0,
+                max_candidates=1,
+                output_path=str(self.root / "ec_conc.jsonl"),
+                heartbeat_path=str(self.root / "hb_conc"),
+                position_size_usdc=3.0,
+                execute=True,
+                min_confidence=0.58,
+            )
+            log = TradeLog(str(self.root / "trade_log.db"))
+            polymarket = FakePolymarket()
+            # Insert 2 existing fills (at the limit)
+            log.insert_terminal("c1", "M1", "filled", token_id="TOK_YES")
+            # Need a close row so has_filled_position_for_market returns False
+            log.insert_terminal("close1", "M1", "closed_take_profit", token_id="TOK_YES")
+            log.insert_terminal("c2", "M1", "filled", token_id="TOK_YES")
+            log.insert_terminal("close2", "M1", "closed_stop_loss", token_id="TOK_YES")
+            agent = ExternalConvictionAgent(
+                cfg=cfg,
+                gamma=FakeGamma([_raw_market()]),
+                provider=FixedProvider(direction="yes", confidence=0.74),
+                trade_log=log,
+                polymarket=polymarket,
+                risk_gate=FakeRiskGate(),
+            )
+            agent.collect_once()
+            # Should be blocked by concentration limit (2 fills >= max 2)
+            self.assertEqual(len(polymarket.orders), 0)
+        finally:
+            if old_val is not None:
+                os.environ["MAX_FILLS_PER_MARKET_24H"] = old_val
+            else:
+                os.environ.pop("MAX_FILLS_PER_MARKET_24H", None)
+
+
 class TestInMemoryDuplicateGuard(unittest.TestCase):
     """Fix 6: same market_id should only get one live entry per cycle."""
 

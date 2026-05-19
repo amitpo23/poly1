@@ -75,6 +75,7 @@ class _TmpDB:
         client.get_midpoint = MagicMock(side_effect=get_mid)
         pm.client = client
         pm.sell_shares = MagicMock(return_value={"status": "matched", "orderID": "0xabc"})
+        pm.get_usdc_balance = MagicMock(return_value=100.0)
         return pm
 
 

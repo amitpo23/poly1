@@ -1719,6 +1719,7 @@ class ExternalConvictionAgent:
         trade_log: Optional[TradeLog] = None,
         polymarket=None,
         risk_gate=None,
+        brain=None,
     ):
         self.cfg = cfg or ExternalConvictionConfig.from_env()
         self.gamma = gamma
@@ -1726,6 +1727,7 @@ class ExternalConvictionAgent:
         self.trade_log = trade_log or TradeLog()
         self.polymarket = polymarket
         self.risk_gate = risk_gate
+        self.brain = brain
         self.output_path = Path(self.cfg.output_path)
         self.heartbeat_path = Path(self.cfg.heartbeat_path)
         self._live_entries_this_cycle: set = set()
@@ -1889,6 +1891,51 @@ class ExternalConvictionAgent:
                 market.market_id,
             )
             return False
+        # Fix 1: Post-close re-entry cooldown — don't re-buy a market
+        # that was just closed (timeout/SL/TP/dust).
+        reentry_cooldown_hours = _env_int("REENTRY_COOLDOWN_HOURS", 12)
+        if self.trade_log.has_recent_close_for_market(
+            market.market_id, hours=reentry_cooldown_hours, token_id=plan.token_id,
+        ):
+            logger.info(
+                "external_conviction live skip %s: re-entry cooldown (%dh)",
+                market.market_id, reentry_cooldown_hours,
+            )
+            return False
+        # Fix 2: Per-market concentration limit.
+        max_fills_24h = _env_int("MAX_FILLS_PER_MARKET_24H", 3)
+        recent_fills = self.trade_log.count_recent_fills_for_market(
+            market.market_id, hours=24, token_id=plan.token_id,
+        )
+        if recent_fills >= max_fills_24h:
+            logger.info(
+                "external_conviction live skip %s: concentration limit "
+                "(%d fills in 24h >= max %d)",
+                market.market_id, recent_fills, max_fills_24h,
+            )
+            return False
+        # Fix 4d: Brain gate for general binary markets.
+        if self.brain is not None:
+            try:
+                decision = self.brain.evaluate_general_entry(
+                    question=market.question or "",
+                    spread_pct=(
+                        abs(market.yes_price - (1 - market.no_price))
+                        if market.no_price else None
+                    ),
+                    hours_to_close=getattr(market, "hours_to_close", None),
+                )
+                if not decision.approved:
+                    logger.info(
+                        "external_conviction brain rejected %s: %s",
+                        market.market_id, decision.reason,
+                    )
+                    return False
+            except Exception:
+                logger.warning(
+                    "external_conviction brain gate failed for %s (fail-open)",
+                    market.market_id,
+                )
         from agents.application.execution_safety import exitable_size_check
 
         entry_price = market.yes_price if plan.side == "YES" else market.no_price

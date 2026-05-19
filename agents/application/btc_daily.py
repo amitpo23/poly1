@@ -238,6 +238,7 @@ class BtcDailyEngine:
         feed: CoinbasePriceFeed,
         cfg: BtcDailyConfig,
         execute: bool = False,
+        brain=None,
     ):
         self.polymarket = polymarket
         self.trade_log = trade_log
@@ -245,6 +246,7 @@ class BtcDailyEngine:
         self.feed = feed
         self.cfg = cfg
         self.execute = execute
+        self.brain = brain
         self.shadow_ignore_risk_gate = (
             os.getenv("SHADOW_IGNORE_RISK_GATE", "false").lower() == "true"
         )
@@ -370,6 +372,24 @@ class BtcDailyEngine:
                     side, candidate_mid, self.cfg.max_entry_price,
                 )
                 return None
+
+        # Brain gate: centralized quality check for crypto entries.
+        if self.brain is not None:
+            try:
+                slug = format_btc_daily_slug()
+                decision = self.brain.evaluate_crypto_entry(
+                    slug=slug,
+                    candidate_price=candidate_mid,
+                    side=side,
+                )
+                if not decision.approved:
+                    logger.info(
+                        "btc_daily: brain rejected — %s (score=%.3f)",
+                        decision.reason, decision.score,
+                    )
+                    return None
+            except Exception:
+                logger.warning("btc_daily brain gate failed (fail-open)")
 
         # Tavily fundamental filter: if breaking BTC-specific news is
         # driving this move (ETF news, exchange hack, regulation), the
@@ -603,6 +623,7 @@ class BtcDailyDaemon:
             polymarket=self.polymarket,
             btc_daily_reserve_usdc=self.cfg.reserve_usdc,
         )
+        from agents.application.market_brain import MarketBrain
         self.engine = BtcDailyEngine(
             polymarket=self.polymarket,
             trade_log=self.tl,
@@ -610,6 +631,7 @@ class BtcDailyDaemon:
             feed=self.feed,
             cfg=self.cfg,
             execute=self.execute,
+            brain=MarketBrain(),
         )
         self.heartbeat = Path(self.cfg.heartbeat_path)
         self._stop = threading.Event()

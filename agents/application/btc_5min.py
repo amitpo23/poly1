@@ -176,6 +176,7 @@ class Btc5MinEngine:
         feed: CoinbasePriceFeed,
         cfg: Btc5MinConfig,
         execute: bool = False,
+        brain=None,
     ):
         self.polymarket = polymarket
         self.trade_log = trade_log
@@ -183,6 +184,7 @@ class Btc5MinEngine:
         self.feed = feed
         self.cfg = cfg
         self.execute = execute
+        self.brain = brain
         self.shadow_ignore_risk_gate = (
             os.getenv("SHADOW_IGNORE_RISK_GATE", "false").lower() == "true"
         )
@@ -344,6 +346,24 @@ class Btc5MinEngine:
 
         # Side mapping: bullish → BUY (Up), bearish → SELL (Down)
         side = "BUY" if direction == "bullish" else "SELL"
+
+        # Brain gate: centralized quality check for crypto entries.
+        if self.brain is not None:
+            try:
+                slug = _format_5min_slug(period_ts)
+                decision = self.brain.evaluate_crypto_entry(
+                    slug=slug,
+                    candidate_price=0.50,
+                    side=side,
+                )
+                if not decision.approved:
+                    logger.info(
+                        "btc_5min: brain rejected — %s (score=%.3f)",
+                        decision.reason, decision.score,
+                    )
+                    return False
+            except Exception:
+                logger.warning("btc_5min brain gate failed (fail-open)")
 
         # Resolve market
         market_doc = self._resolve_current_5min_market(period_ts)
@@ -528,6 +548,7 @@ class Btc5MinDaemon:
             polymarket=self.polymarket,
             btc_5min_reserve_usdc=self.cfg.reserve_usdc,
         )
+        from agents.application.market_brain import MarketBrain
         self.engine = Btc5MinEngine(
             polymarket=self.polymarket,
             trade_log=self.tl,
@@ -535,6 +556,7 @@ class Btc5MinDaemon:
             feed=self.feed,
             cfg=self.cfg,
             execute=self.execute,
+            brain=MarketBrain(),
         )
         self.heartbeat = Path(self.cfg.heartbeat_path)
         self._stop = threading.Event()

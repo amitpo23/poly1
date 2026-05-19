@@ -340,6 +340,73 @@ class TradeLog:
             ).fetchone()
             return row is not None
 
+    def has_recent_close_for_market(
+        self,
+        market_id: str,
+        hours: int = 12,
+        token_id: Optional[str] = None,
+    ) -> bool:
+        """Return True if a terminal close row exists within *hours*.
+
+        Terminal close statuses: closed_take_profit, closed_stop_loss,
+        closed_timeout, closed_dust.  These indicate a position was
+        actively exited — re-entering too soon loses the spread.
+
+        Cross-agent token_id matching follows the same pattern as
+        has_active_trade_for_market (market_id OR token_id).
+        """
+        _CLOSE_STATUSES = (
+            "closed_take_profit", "closed_stop_loss",
+            "closed_timeout", "closed_dust",
+        )
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        ph = ",".join("?" for _ in _CLOSE_STATUSES)
+        if token_id:
+            id_clause = "(market_id = ? OR (token_id = ? AND token_id IS NOT NULL))"
+            id_params = (str(market_id), str(token_id))
+        else:
+            id_clause = "market_id = ?"
+            id_params = (str(market_id),)
+        sql = (
+            f"SELECT 1 FROM trades WHERE {id_clause} "
+            f"AND status IN ({ph}) AND ts >= ? LIMIT 1"
+        )
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, (*id_params, *_CLOSE_STATUSES, cutoff)).fetchone()
+            return row is not None
+
+    def count_recent_fills_for_market(
+        self,
+        market_id: str,
+        hours: int = 24,
+        token_id: Optional[str] = None,
+    ) -> int:
+        """Count filled/agent-open rows for a market within *hours*.
+
+        Used to enforce per-market concentration limits — after the
+        dedupe window expires, agents can re-enter endlessly without
+        this guard.
+        """
+        _FILL_STATUSES = (
+            "filled", "btc_daily_open", "near_resolution_open",
+            "news_shock_open", "wallet_follow_open", "btc_5min_open",
+        )
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        ph = ",".join("?" for _ in _FILL_STATUSES)
+        if token_id:
+            id_clause = "(market_id = ? OR (token_id = ? AND token_id IS NOT NULL))"
+            id_params = (str(market_id), str(token_id))
+        else:
+            id_clause = "market_id = ?"
+            id_params = (str(market_id),)
+        sql = (
+            f"SELECT COUNT(*) AS n FROM trades WHERE {id_clause} "
+            f"AND status IN ({ph}) AND ts >= ?"
+        )
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, (*id_params, *_FILL_STATUSES, cutoff)).fetchone()
+            return int(row["n"])
+
     def count_recent_failures_for_market(
         self,
         market_id: str,

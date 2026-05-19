@@ -560,6 +560,25 @@ class Polymarket:
             return float(entry.price), float(entry.size)
         return float(entry["price"]), float(entry["size"])
 
+    def bid_depth_usdc(self, token_id: str) -> float:
+        """Return total bid-side depth in USDC for *token_id*.
+
+        Used by position_manager to check exit liquidity before selling.
+        Returns 0.0 on any error (fail-open: caller decides whether to
+        proceed or defer).
+        """
+        try:
+            book = self.client.get_order_book(token_id)
+            bids = self._book_entries(book, "bids")
+            total = 0.0
+            for b in bids:
+                p, s = self._entry_price_size(b)
+                total += p * s
+            return total
+        except Exception as exc:
+            logger.warning("bid_depth_usdc failed for %s: %s", token_id[:18], exc)
+            return 0.0
+
     def _fillable_market_buy(self, token_id: str, amount_usdc: float) -> tuple[float, float, float]:
         """Return (limit_price, fillable_usdc, avg_price) for a FOK market buy.
 
