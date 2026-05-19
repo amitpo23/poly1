@@ -147,6 +147,38 @@ class TestSettlementReconciler(unittest.TestCase):
         self.assertEqual(row["status"], ACTIVE_UNMANAGED)
         self.assertEqual(row["action"], "halt_and_restore_exit_manager")
 
+    def test_stale_active_row_cleared_after_position_closed(self):
+        self._insert_open(token_id="TOK_YES")
+        self.log.insert_terminal(
+            cycle_id="close",
+            market_id="M1",
+            token_id="TOK_YES",
+            side="SELL",
+            price=0.55,
+            size_usdc=5.5,
+            confidence=1.0,
+            status="closed_take_profit",
+        )
+        self.log.upsert_settlement_reconciliation(
+            token_id="TOK_YES",
+            market_id="M1",
+            status=ACTIVE_UNMANAGED,
+            action="halt_and_restore_exit_manager",
+            recoverable_usdc=5.5,
+        )
+        rec = _Reconciler(
+            self.log,
+            self._cfg(),
+            polymarket=_FakePoly(self._market(), bids=[(0.20, 100)]),
+            on_chain=10.0,
+        )
+        result = rec.run_once()
+        self.assertEqual(result["checked"], 0)
+        self.assertEqual(result["stale_cleared"], 1)
+        row = self.log.latest_settlement_reconciliations()[0]
+        self.assertEqual(row["status"], "inactive_no_open_position")
+        self.assertEqual(row["action"], "no_open_journal_position")
+
     def test_active_managed_with_fresh_exit_evidence(self):
         self._insert_open()
         self._insert_exit_evidence()

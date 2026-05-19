@@ -1303,6 +1303,35 @@ class TradeLog:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def clear_stale_active_settlement_rows(self, open_token_ids: set[str]) -> int:
+        """Clear active reconciliation rows for tokens no longer open in the journal."""
+        active_statuses = ("active_unmanaged", "active_managed", "active_recoverable")
+        details_json = json.dumps(
+            {"reason": "no_open_journal_position", "open_token_count": len(open_token_ids)}
+        )
+        params: list = [
+            "inactive_no_open_position",
+            "no_open_journal_position",
+            _now(),
+            details_json,
+            *active_statuses,
+        ]
+        where = f"status IN ({','.join('?' for _ in active_statuses)})"
+        if open_token_ids:
+            tokens = sorted(str(t) for t in open_token_ids if t)
+            where += f" AND token_id NOT IN ({','.join('?' for _ in tokens)})"
+            params.extend(tokens)
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                f"""
+                UPDATE settlement_reconciliation
+                SET status = ?, action = ?, updated_ts = ?, details_json = ?
+                WHERE {where}
+                """,
+                params,
+            )
+            return int(cur.rowcount or 0)
+
     def filled_positions(self) -> list:
         """Return one row per filled trade with token_id present.
 

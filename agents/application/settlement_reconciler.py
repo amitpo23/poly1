@@ -151,6 +151,9 @@ class SettlementReconciler:
         if not self.cfg.enabled:
             return {"status": "disabled", "checked": 0, "counts": {}}
         positions = self._aggregate_open_positions()
+        stale_cleared = self.trade_log.clear_stale_active_settlement_rows(
+            {p.token_id for p in positions}
+        )
         counts: dict[str, int] = {}
         rows: list[dict] = []
         for pos in positions:
@@ -171,11 +174,13 @@ class SettlementReconciler:
             "status": "ok",
             "checked": len(positions),
             "counts": counts,
+            "stale_cleared": stale_cleared,
             "rows": rows,
         }
         logger.info("settlement_reconciler: %s", {
             "checked": result["checked"],
             "counts": counts,
+            "stale_cleared": stale_cleared,
         })
         return result
 
