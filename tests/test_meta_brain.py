@@ -14,6 +14,8 @@ from agents.application.meta_brain import (
     VelocitySignal,
     WinRateAdvisor,
     WinRateStats,
+    BreakingNewsReader,
+    NewsSignal,
 )
 from agents.application.sizing import (
     binary_kelly_fraction,
@@ -271,6 +273,52 @@ class TestConvictionJSONLReader(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # ProbVelocityDetector
 # ---------------------------------------------------------------------------
+# BreakingNewsReader (unit — no network)
+# ---------------------------------------------------------------------------
+
+class TestBreakingNewsReader(unittest.TestCase):
+
+    def _reader(self) -> BreakingNewsReader:
+        return BreakingNewsReader(cache_ttl_sec=0)  # no caching in tests
+
+    def test_no_feeds_returns_neutral(self):
+        """With all feed URLs empty and no Twitter token, signal is neutral."""
+        env = {
+            "BREAKING_NEWS_YNET_URL": "",
+            "BREAKING_NEWS_TRUMP_URL": "",
+            "BREAKING_NEWS_EXTRA_URLS": "",
+            "TWITTER_BEARER_TOKEN": "",
+        }
+        with patch.dict(os.environ, env):
+            sig = self._reader().query("Will Trump win the election?")
+        self.assertIsNone(sig.direction)
+        self.assertEqual(sig.confidence, 0.0)
+        self.assertEqual(sig.n_items, 0)
+
+    def test_sentiment_bullish(self):
+        """_sentiment() detects bullish words correctly."""
+        r = self._reader()
+        self.assertEqual(r._sentiment("Trump wins the presidency"), "bullish")
+
+    def test_sentiment_bearish(self):
+        r = self._reader()
+        self.assertEqual(r._sentiment("market crash and defeat feared"), "bearish")
+
+    def test_sentiment_neutral(self):
+        r = self._reader()
+        self.assertIsNone(r._sentiment("the sky is blue"))
+
+    def test_news_component_wires_into_synthesize(self):
+        """NewsSignal bullish with confidence=1.0 should appear in features."""
+        from tests.test_meta_brain import _MockMarketBrain  # local import ok here
+        mock_brain = _MockMarketBrain(approved=True, score=0.65)
+        mb = MetaBrain(db_path="/nonexistent.db", conviction_paths=[], market_brain=mock_brain)
+        # Inject a strong bullish news signal (bypass real network).
+        mb.news_reader.query = lambda q: NewsSignal("bullish", 1.0, 5, ["ynet"], ["headline"])
+        decision = mb.synthesize(market_id="m1", question="Will Trump win?")
+        self.assertEqual(decision.features.get("news_direction"), "bullish")
+        self.assertEqual(decision.features.get("news_confidence"), 1.0)
+
 
 class TestProbVelocityDetector(unittest.TestCase):
 
@@ -373,11 +421,15 @@ class TestMetaBrain(unittest.TestCase):
 
     def _make_meta_brain(self, approved=True, score=0.65, conviction_paths=None):
         mock_brain = _MockMarketBrain(approved=approved, score=score)
-        return MetaBrain(
+        mb = MetaBrain(
             db_path="/nonexistent.db",
             conviction_paths=conviction_paths or [],
             market_brain=mock_brain,
         )
+        # Stub the news_reader so tests never make live HTTP requests.
+        from agents.application.meta_brain import NewsSignal
+        mb.news_reader.query = lambda question: NewsSignal(None, 0.0, 0, [], [])
+        return mb
 
     def test_blocked_by_brain_gate(self):
         mb = self._make_meta_brain(approved=False, score=0.0)

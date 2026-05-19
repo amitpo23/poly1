@@ -22,7 +22,9 @@ import logging
 import os
 import sqlite3
 import time
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as _ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -744,6 +746,198 @@ class WhaleSentimentReader:
 
 
 # ---------------------------------------------------------------------------
+# BreakingNewsReader
+# ---------------------------------------------------------------------------
+
+@dataclass
+class NewsSignal:
+    direction: Optional[str]  # "bullish" | "bearish" | None
+    confidence: float          # 0–1 (fraction of sentiment-bearing items on winning side)
+    n_items: int               # total relevant items found across all sources
+    sources: list              # which feed names contributed
+    headlines: list            # up to 5 matching headlines (for logging/audit)
+
+
+class BreakingNewsReader:
+    """Fetches breaking news from configurable RSS feeds and optionally from
+    the Twitter/X API v2 search endpoint, then scores relevance + sentiment
+    relative to the market question.
+
+    Sources (all fail-silent — a network error = neutral signal):
+    • Ynet RSS      — BREAKING_NEWS_YNET_URL  (default: ynet.co.il main feed)
+    • Trump Truth   — BREAKING_NEWS_TRUMP_URL (default: @realDonaldTrump RSS)
+    • Extra feeds   — BREAKING_NEWS_EXTRA_URLS (comma-separated URLs)
+    • Twitter/X     — only if TWITTER_BEARER_TOKEN is set in env
+
+    Relevance filter: a news item counts only if at least one content word
+    from the market question (len > 3) appears in the item text.
+
+    Sentiment: simple keyword matching — counts explicit positive / negative
+    words.  confidence = (winner_fraction − 0.5) × 2.0, clamped to [0, 1].
+
+    Results are cached per question for BREAKING_NEWS_CACHE_SEC (default 300s).
+    All network calls respect BREAKING_NEWS_TIMEOUT_SEC (default 4s).
+    """
+
+    _DEFAULT_YNET = "https://www.ynet.co.il/Integration/StoryRss2.xml"
+    _DEFAULT_TRUMP = "https://truthsocial.com/@realDonaldTrump.rss"
+
+    _BULLISH: frozenset = frozenset({
+        "win", "wins", "won", "victory", "approve", "approves", "approved",
+        "pass", "passes", "passed", "confirms", "confirmed", "deal",
+        "agreement", "rises", "surge", "surges", "rally", "gains", "higher",
+        "increase", "elected", "leads", "leading", "yes", "support",
+    })
+    _BEARISH: frozenset = frozenset({
+        "lose", "loses", "lost", "losing", "defeat", "defeated", "fail",
+        "fails", "failed", "reject", "rejects", "rejected", "crisis",
+        "crash", "falls", "drops", "lower", "decrease", "war", "attack",
+        "ban", "bans", "banned", "no", "against", "resign", "resigns",
+        "scandal", "indicted", "guilty",
+    })
+
+    def __init__(self, cache_ttl_sec: int = 300) -> None:
+        self.cache_ttl_sec = cache_ttl_sec
+        self._cache: dict = {}
+
+    # ------------------------------------------------------------------
+    # Public
+    # ------------------------------------------------------------------
+
+    def query(self, question: str) -> NewsSignal:
+        """Return a cached-or-fresh NewsSignal for *question*."""
+        key = question[:100].lower()
+        now = time.time()
+        if key in self._cache:
+            ts, sig = self._cache[key]
+            if now - ts < self.cache_ttl_sec:
+                return sig
+        try:
+            sig = self._compute(question)
+        except Exception as exc:
+            logger.debug("news_reader: unexpected error: %s", exc)
+            sig = NewsSignal(None, 0.0, 0, [], [])
+        self._cache[key] = (now, sig)
+        return sig
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _compute(self, question: str) -> NewsSignal:
+        timeout = _env_int("BREAKING_NEWS_TIMEOUT_SEC", 4)
+        # Keywords: content words longer than 3 chars from the question.
+        keywords = {w.lower() for w in question.split() if len(w) > 3}
+
+        # Build feed map: name → url
+        feeds: dict[str, str] = {}
+        ynet_url = os.getenv("BREAKING_NEWS_YNET_URL", self._DEFAULT_YNET).strip()
+        if ynet_url:
+            feeds["ynet"] = ynet_url
+        trump_url = os.getenv("BREAKING_NEWS_TRUMP_URL", self._DEFAULT_TRUMP).strip()
+        if trump_url:
+            feeds["trump_truth"] = trump_url
+        extra_raw = os.getenv("BREAKING_NEWS_EXTRA_URLS", "").strip()
+        for i, url in enumerate(extra_raw.split(",") if extra_raw else []):
+            url = url.strip()
+            if url:
+                feeds[f"extra_{i}"] = url
+
+        items: list[tuple[str, str]] = []  # (title_text, source_name)
+
+        for source, url in feeds.items():
+            try:
+                items += self._fetch_rss(url, source, keywords, timeout)
+            except Exception as exc:
+                logger.debug("news_reader: rss %s failed: %s", source, exc)
+
+        bearer = os.getenv("TWITTER_BEARER_TOKEN", "").strip()
+        if bearer and keywords:
+            try:
+                items += self._fetch_twitter(bearer, keywords, timeout)
+            except Exception as exc:
+                logger.debug("news_reader: twitter/x failed: %s", exc)
+
+        if not items:
+            return NewsSignal(None, 0.0, 0, [], [])
+
+        bull = sum(1 for t, _ in items if self._sentiment(t) == "bullish")
+        bear = sum(1 for t, _ in items if self._sentiment(t) == "bearish")
+        total_sentiment = bull + bear
+        sources = sorted({src for _, src in items})
+        headlines = [t for t, _ in items[:5]]
+
+        if total_sentiment == 0:
+            return NewsSignal(None, 0.0, len(items), sources, headlines)
+
+        if bull >= bear:
+            raw_frac = bull / total_sentiment
+            direction = "bullish"
+        else:
+            raw_frac = bear / total_sentiment
+            direction = "bearish"
+
+        confidence = round(min(1.0, max(0.0, (raw_frac - 0.5) * 2.0)), 3)
+        return NewsSignal(direction, confidence, len(items), sources, headlines)
+
+    def _fetch_rss(
+        self, url: str, source: str, keywords: set, timeout: int
+    ) -> list[tuple[str, str]]:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "poly1-newsreader/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+        root = _ET.fromstring(data)
+        results: list[tuple[str, str]] = []
+        for item in root.iter("item"):
+            title_el = item.find("title")
+            title = (title_el.text or "").strip() if title_el is not None else ""
+            desc_el = item.find("description")
+            desc = (desc_el.text or "").strip() if desc_el is not None else ""
+            combined = (title + " " + desc).lower()
+            # Include only items relevant to the market question.
+            if keywords and not any(kw in combined for kw in keywords):
+                continue
+            results.append((title, source))
+            if len(results) >= 10:
+                break
+        return results
+
+    def _fetch_twitter(
+        self, bearer: str, keywords: set, timeout: int
+    ) -> list[tuple[str, str]]:
+        query_str = " OR ".join(list(keywords)[:6])
+        url = (
+            "https://api.twitter.com/2/tweets/search/recent"
+            f"?query={urllib.parse.quote(query_str)}&max_results=10"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {bearer}",
+                "User-Agent": "poly1-newsreader/1.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+        return [
+            (tweet.get("text", "")[:150], "twitter_x")
+            for tweet in (body.get("data") or [])
+        ]
+
+    def _sentiment(self, text: str) -> Optional[str]:
+        t = text.lower()
+        bull = sum(1 for w in self._BULLISH if w in t)
+        bear = sum(1 for w in self._BEARISH if w in t)
+        if bull > bear:
+            return "bullish"
+        if bear > bull:
+            return "bearish"
+        return None
+
+
+# ---------------------------------------------------------------------------
 # MetaBrain
 # ---------------------------------------------------------------------------
 
@@ -788,6 +982,7 @@ class MetaBrain:
         self.conviction_reader = ConvictionJSONLReader(conviction_paths=conviction_paths)
         self.velocity_detector = ProbVelocityDetector(window_minutes=velocity_window_min)
         self.whale_reader = WhaleSentimentReader()
+        self.news_reader = BreakingNewsReader()
 
     def synthesize_crypto_straddle(
         self,
@@ -1227,7 +1422,22 @@ class MetaBrain:
         except Exception as exc:
             logger.debug("meta_brain: whale reader failed: %s", exc)
 
-        # 6. Weighted score. Missing win-rate data gets a neutral prior, so new
+        # 6. Breaking news — RSS (Ynet, Truth Social) + Twitter/X if Bearer token.
+        #    Fail-silent: a timeout or missing token produces a neutral signal.
+        news = NewsSignal(None, 0.0, 0, [], [])
+        try:
+            news = self.news_reader.query(question)
+            features["news_direction"] = news.direction
+            features["news_confidence"] = news.confidence
+            features["news_n_items"] = news.n_items
+            features["news_sources"] = news.sources
+            features["news_headlines"] = news.headlines
+            if news.direction:
+                signal_sources.append(f"news:{news.direction}")
+        except Exception as exc:
+            logger.debug("meta_brain: news reader failed: %s", exc)
+
+        # 7. Weighted score. Missing win-rate data gets a neutral prior, so new
         # strategies can trade, but proven history improves the final score.
         winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.52)
         min_winrate_samples = _env_int("META_BRAIN_MIN_WINRATE_SAMPLES", 5)
@@ -1261,14 +1471,22 @@ class MetaBrain:
             whale_component = 0.5 + whale.confidence * 0.5
         elif whale.direction == "bearish":
             whale_component = 0.5 - whale.confidence * 0.5
+        # News component (Ynet RSS, Truth Social, Twitter/X): same mapping as whale.
+        # 0.5 = no relevant news found (neutral, excluded from informed-only score).
+        news_component = 0.5
+        if news.direction == "bullish":
+            news_component = 0.5 + news.confidence * 0.5
+        elif news.direction == "bearish":
+            news_component = 0.5 - news.confidence * 0.5
 
         weights = {
-            "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.30),
-            "winrate": _env_float("META_BRAIN_WEIGHT_WINRATE", 0.20),
+            "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.25),
+            "winrate": _env_float("META_BRAIN_WEIGHT_WINRATE", 0.15),
             "conviction": _env_float("META_BRAIN_WEIGHT_CONVICTION", 0.15),
             "velocity": _env_float("META_BRAIN_WEIGHT_VELOCITY", 0.10),
             "cross_market": _env_float("META_BRAIN_WEIGHT_CROSS_MARKET", 0.10),
             "whale": _env_float("META_BRAIN_WEIGHT_WHALE", 0.10),
+            "news": _env_float("META_BRAIN_WEIGHT_NEWS", 0.10),
             "liquidity": _env_float("META_BRAIN_WEIGHT_LIQUIDITY", 0.05),
         }
         components = {
@@ -1278,6 +1496,7 @@ class MetaBrain:
             "velocity": velocity_component,
             "cross_market": cross_market_component,
             "whale": whale_component,
+            "news": news_component,
             "liquidity": liquidity_component,
         }
         # Informed-only weighting: neutral signals (exactly 0.5) carry no weight
@@ -1328,6 +1547,7 @@ class MetaBrain:
             win_stats=win_stats,
             cross_market_divergence=features.get("cross_market_divergence"),
             whale=whale,
+            news=news,
             has_anchor=has_anchor,
         )
 
@@ -1470,6 +1690,7 @@ class MetaBrain:
         win_stats: WinRateStats,
         cross_market_divergence: Optional[float],
         whale: Optional[WhaleSentimentSignal] = None,
+        news: Optional[NewsSignal] = None,
         has_anchor: bool = False,
     ) -> str:
         if not brain_approved:
@@ -1512,6 +1733,15 @@ class MetaBrain:
             and whale.direction is not None
             and whale.confidence >= 0.60
             and whale.n_whales >= 1
+        ):
+            strong_signals += 1
+
+        # Breaking news with clear directional consensus (>= 60% confidence).
+        if (
+            news is not None
+            and news.direction is not None
+            and news.confidence >= 0.60
+            and news.n_items >= 2
         ):
             strong_signals += 1
 
