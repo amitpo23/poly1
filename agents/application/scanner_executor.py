@@ -133,7 +133,11 @@ class ScannerExecutor:
         )
         if polymarket is None:
             from agents.polymarket.polymarket import Polymarket
-            polymarket = Polymarket(live=self.execute)
+            read_book_in_shadow = _env_bool(
+                "SCANNER_EXECUTOR_READ_ORDERBOOK_IN_SHADOW",
+                True,
+            )
+            polymarket = Polymarket(live=self.execute or read_book_in_shadow)
         self.polymarket = polymarket
         self.risk_gate = risk_gate or RiskGate(
             trade_log=self.trade_log,
