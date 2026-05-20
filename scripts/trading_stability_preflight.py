@@ -30,6 +30,7 @@ TERMINAL_STATUSES = (
     "closed_take_profit",
     "closed_stop_loss",
     "closed_timeout",
+    "closed_dust",
     "resolved_yes",
     "resolved_no",
     "resolved_loss",

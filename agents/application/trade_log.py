@@ -832,7 +832,7 @@ class TradeLog:
         """
         _TERMINAL = (
             "closed_take_profit", "closed_stop_loss", "closed_timeout",
-            "resolved_yes", "resolved_no", "resolved_loss",
+            "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
         )
         terminal_ph = ",".join("?" * len(_TERMINAL))
         if token_id:
@@ -899,16 +899,16 @@ class TradeLog:
         """Return True if a terminal close row exists within *hours*.
 
         Terminal close statuses: closed_take_profit, closed_stop_loss,
-        closed_timeout. These indicate a position was actively exited —
-        re-entering too soon loses the spread. closed_dust is deliberately
-        excluded because sub-minimum residual shares can still be live risk.
+        closed_timeout, closed_dust. These indicate a position was actively
+        exited or historically marked unrecoverable — re-entering too soon
+        loses the spread.
 
         Cross-agent token_id matching follows the same pattern as
         has_active_trade_for_market (market_id OR token_id).
         """
         _CLOSE_STATUSES = (
             "closed_take_profit", "closed_stop_loss",
-            "closed_timeout",
+            "closed_timeout", "closed_dust",
         )
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         ph = ",".join("?" for _ in _CLOSE_STATUSES)
@@ -1116,7 +1116,7 @@ class TradeLog:
         open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN, BTC_5MIN_OPEN)
         terminal_statuses = (
             "closed_take_profit", "closed_stop_loss", "closed_timeout",
-            "resolved_yes", "resolved_no", "resolved_loss",
+            "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
         )
         placeholders = ",".join("?" for _ in open_statuses)
         terminal_placeholders = ",".join("?" for _ in terminal_statuses)
@@ -1158,7 +1158,8 @@ class TradeLog:
         sql = (
             "SELECT 1 FROM trades WHERE token_id = ? "
             "AND status IN ('closed_take_profit','closed_stop_loss',"
-            "'closed_timeout','resolved_yes','resolved_no','resolved_loss') "
+            "'closed_timeout','closed_dust',"
+            "'resolved_yes','resolved_no','resolved_loss') "
             "AND (error IS NULL OR error NOT LIKE 'SHADOW%') "
         )
         params: list = [str(token_id)]
@@ -1555,7 +1556,7 @@ class TradeLog:
         """
         terminal_statuses = (
             "closed_take_profit", "closed_stop_loss", "closed_timeout",
-            "resolved_yes", "resolved_no", "resolved_loss",
+            "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
         )
         terminal_placeholders = ",".join("?" for _ in terminal_statuses)
         sql = (
