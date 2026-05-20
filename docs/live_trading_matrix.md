@@ -42,6 +42,7 @@ is currently open.
 | Entry | external_conviction_api | Frozen now | Disabled for live | External evidence collected; API entry held until signal quality is revalidated. |
 | Signal | external-conviction-* | No direct runtime entry except API variant | Signal only | Feeds conviction JSONL into MetaBrain. |
 | Signal | external-conviction-alpaca | No direct orders | Signal only | Alpaca market-data bars feed MetaBrain as external tape evidence. |
+| Signal | external-conviction-openbb | No direct orders | Shadow only | Optional OpenBB market-data provider for equities, macro proxies, commodities, and crypto. Fails closed if dependency/data is unavailable. |
 | Signal | external-conviction-crypto-tape | No direct orders | Signal only | Binance/OKX fast crypto tape feeds MetaBrain for crypto Up/Down timing. |
 | Signal | market_universe | No direct orders | Signal only | Maintains focused market list and scalper candidates. |
 | Signal | market_scanner | No direct orders | Signal only | Opportunity router. |

@@ -1,0 +1,233 @@
+"""OpenBB market-data signal adapter.
+
+OpenBB is used as a read-only research provider.  The dependency is optional:
+if the `openbb` package is not installed, this adapter fails closed with a
+skip-style signal instead of blocking the trading system.
+"""
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass
+class OpenBBMarketSignal:
+    direction: Optional[str]
+    probability: float
+    confidence: float
+    symbol: Optional[str]
+    asset_class: Optional[str]
+    reason: str
+    features: dict = field(default_factory=dict)
+
+
+class OpenBBMarketDataClient:
+    """Fetch recent OpenBB bars and produce a bounded directional signal."""
+
+    SYMBOLS = {
+        "nvidia": ("NVDA", "stock"),
+        "nvda": ("NVDA", "stock"),
+        "microsoft": ("MSFT", "stock"),
+        "msft": ("MSFT", "stock"),
+        "apple": ("AAPL", "stock"),
+        "aapl": ("AAPL", "stock"),
+        "google": ("GOOGL", "stock"),
+        "alphabet": ("GOOGL", "stock"),
+        "googl": ("GOOGL", "stock"),
+        "amazon": ("AMZN", "stock"),
+        "amzn": ("AMZN", "stock"),
+        "tesla": ("TSLA", "stock"),
+        "tsla": ("TSLA", "stock"),
+        "meta": ("META", "stock"),
+        "s&p": ("SPY", "etf"),
+        "spx": ("SPY", "etf"),
+        "spy": ("SPY", "etf"),
+        "nasdaq": ("QQQ", "etf"),
+        "qqq": ("QQQ", "etf"),
+        "oil": ("USO", "commodity_etf"),
+        "crude": ("USO", "commodity_etf"),
+        "gold": ("GLD", "commodity_etf"),
+        "silver": ("SLV", "commodity_etf"),
+        "bitcoin": ("BTC-USD", "crypto"),
+        "btc": ("BTC-USD", "crypto"),
+        "ethereum": ("ETH-USD", "crypto"),
+        "eth": ("ETH-USD", "crypto"),
+    }
+
+    def __init__(self, *, cache_ttl_sec: Optional[int] = None):
+        self.cache_ttl_sec = cache_ttl_sec if cache_ttl_sec is not None else _env_int("OPENBB_MARKET_DATA_CACHE_SEC", 300)
+        self.provider = os.getenv("OPENBB_PROVIDER", "yfinance")
+        self._cache: dict = {}
+
+    def analyze_question(self, question: str) -> OpenBBMarketSignal:
+        symbol, asset_class = self.infer_symbol(question)
+        if not symbol:
+            return OpenBBMarketSignal(None, 0.5, 0.0, None, None, "openbb: no supported symbol in question")
+        bars = self.fetch_bars(symbol)
+        return self.signal_from_bars(symbol, asset_class, bars)
+
+    def infer_symbol(self, question: str) -> tuple[Optional[str], Optional[str]]:
+        text = str(question or "").lower()
+        for key, value in self.SYMBOLS.items():
+            if key in text:
+                return value
+        return None, None
+
+    def fetch_bars(self, symbol: str) -> list[dict]:
+        now = time.time()
+        if symbol in self._cache:
+            ts, bars = self._cache[symbol]
+            if now - ts < self.cache_ttl_sec:
+                return bars
+        try:
+            from openbb import obb  # type: ignore
+        except Exception as exc:
+            raise RuntimeError("openbb package not installed") from exc
+
+        limit = _env_int("OPENBB_MARKET_DATA_BAR_LIMIT", 60)
+        try:
+            result = obb.equity.price.historical(symbol=symbol, provider=self.provider)
+            frame = result.to_df()
+        except Exception:
+            if symbol.endswith("-USD"):
+                result = obb.crypto.price.historical(symbol=symbol, provider=self.provider)
+                frame = result.to_df()
+            else:
+                raise
+        if frame is None or len(frame) == 0:
+            bars = []
+        else:
+            frame = frame.tail(limit)
+            bars = [
+                {
+                    "close": float(row.get("close", 0.0) or 0.0),
+                    "high": float(row.get("high", 0.0) or 0.0),
+                    "low": float(row.get("low", 0.0) or 0.0),
+                    "volume": float(row.get("volume", 0.0) or 0.0),
+                }
+                for _, row in frame.iterrows()
+            ]
+        self._cache[symbol] = (now, bars)
+        return bars
+
+    def signal_from_bars(
+        self,
+        symbol: str,
+        asset_class: str,
+        bars: list[dict],
+    ) -> OpenBBMarketSignal:
+        min_bars = _env_int("OPENBB_MARKET_DATA_MIN_BARS", 10)
+        if len(bars) < min_bars:
+            return OpenBBMarketSignal(
+                None,
+                0.5,
+                0.0,
+                symbol,
+                asset_class,
+                f"openbb: insufficient bars {len(bars)}<{min_bars}",
+                {"bar_count": len(bars)},
+            )
+        closes = [_bar_float(b, "close", "c") for b in bars]
+        highs = [_bar_float(b, "high", "h") for b in bars]
+        lows = [_bar_float(b, "low", "l") for b in bars]
+        volumes = [_bar_float(b, "volume", "v") for b in bars]
+        closes = [c for c in closes if c > 0]
+        if len(closes) < min_bars:
+            return OpenBBMarketSignal(None, 0.5, 0.0, symbol, asset_class, "openbb: invalid close bars")
+
+        short_window = min(5, len(closes))
+        long_window = min(20, len(closes))
+        short_ma = sum(closes[-short_window:]) / short_window
+        long_ma = sum(closes[-long_window:]) / long_window
+        start = closes[-long_window]
+        last = closes[-1]
+        momentum = (last - start) / start if start else 0.0
+        ma_edge = (short_ma - long_ma) / long_ma if long_ma else 0.0
+        low = min([x for x in lows if x > 0] or closes)
+        high = max([x for x in highs if x > 0] or closes)
+        range_pct = (high - low) / start if start else 0.0
+        recent_vol = sum(volumes[-short_window:]) / max(1, short_window)
+        prior = volumes[:-short_window] or volumes
+        prior_vol = sum(prior) / max(1, len(prior))
+        vol_ratio = recent_vol / prior_vol if prior_vol > 0 else 1.0
+
+        threshold = _env_float("OPENBB_MARKET_DATA_MOMENTUM_THRESHOLD", 0.01)
+        composite = 0.65 * momentum + 0.35 * ma_edge
+        if composite >= threshold:
+            direction = "bullish"
+        elif composite <= -threshold:
+            direction = "bearish"
+        else:
+            direction = None
+        strength = min(1.0, abs(composite) / max(threshold, 1e-6))
+        vol_boost = min(0.08, max(0.0, vol_ratio - 1.0) * 0.04)
+        range_boost = min(0.06, range_pct * 1.2)
+        confidence = min(0.76, 0.48 + 0.16 * strength + vol_boost + range_boost)
+        if direction is None:
+            confidence = min(confidence, 0.52)
+        probability = 0.5 if direction is None else min(0.76, 0.5 + (confidence - 0.5))
+        return OpenBBMarketSignal(
+            direction,
+            round(probability, 4),
+            round(confidence, 4),
+            symbol,
+            asset_class,
+            (
+                f"openbb {asset_class} bars: composite={composite:+.3%}, "
+                f"momentum={momentum:+.3%}, ma_edge={ma_edge:+.3%}, vol_ratio={vol_ratio:.2f}"
+            ),
+            {
+                "bar_count": len(bars),
+                "start_close": round(start, 6),
+                "last_close": round(last, 6),
+                "momentum_pct": round(momentum, 6),
+                "ma_edge_pct": round(ma_edge, 6),
+                "composite_pct": round(composite, 6),
+                "range_pct": round(range_pct, 6),
+                "volume_ratio": round(vol_ratio, 4),
+                "provider": self.provider,
+                "dependency": "openbb",
+            },
+        )
+
+
+def openbb_enabled_for_metabrain() -> bool:
+    return _env_bool("META_BRAIN_OPENBB_ENABLED", True)
+
+
+def _bar_float(bar: dict, *names: str) -> float:
+    for name in names:
+        try:
+            return float(bar.get(name) or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return 0.0

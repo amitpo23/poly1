@@ -46,6 +46,7 @@ Examples of valid anchor candidates:
 
 - whale wallet with proven 30-day win-rate and large realized profit,
 - Alpaca/TradingView/options fair-value signal with measurable dislocation,
+- OpenBB market-data signal with measured positive markouts,
 - crypto exchange tape on 5m markets when fair probability materially exceeds
   maker bid,
 - fast news shock with clear market mapping and low latency.

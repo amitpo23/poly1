@@ -55,6 +55,20 @@
       "promotion_criteria": {"positive_provider_scorecard_required": true}
     },
     {
+      "agent_id": "external_conviction_openbb",
+      "display_name": "OpenBB Market Data Signal",
+      "role": "external_market_signal",
+      "mode": "shadow",
+      "places_orders": false,
+      "markets": ["equity_linked", "macro", "commodities", "crypto"],
+      "owner_service": "external-conviction-openbb",
+      "required_inputs": ["openbb_market_data"],
+      "signal_schema": "signal_envelope_v1",
+      "anchor_rules": {"allowed": true, "min_confidence": 0.65, "requires_positive_ev": true, "requires_positive_markout": true},
+      "veto_rules": ["openbb_unavailable", "stale_external_data", "conflicts_with_market_price"],
+      "promotion_criteria": {"positive_provider_scorecard_required": true, "optional_dependency_required": "openbb"}
+    },
+    {
       "agent_id": "external_conviction_tradingview",
       "display_name": "TradingView Options Snapshot",
       "role": "external_market_signal",

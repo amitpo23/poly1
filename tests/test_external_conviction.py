@@ -18,6 +18,7 @@ from agents.application.external_conviction import (
     HeuristicProvider,
     AlpacaMarketDataProvider,
     CryptoExchangeTapeProvider,
+    OpenBBMarketDataProvider,
     KalshiDivergenceProvider,
     ManifoldDivergenceProvider,
     MetaculusDivergenceProvider,
@@ -34,6 +35,7 @@ from agents.application.external_conviction import (
 )
 from agents.application.alpaca_market_data import AlpacaMarketSignal
 from agents.application.crypto_exchange_tape import CryptoExchangeSignal
+from agents.application.openbb_market_data import OpenBBMarketSignal
 from agents.application.trade_log import TradeLog
 
 
@@ -222,6 +224,37 @@ class TestPlanning(unittest.TestCase):
         self.assertEqual(verdict.direction, "no")
         self.assertEqual(verdict.evidence["symbol"], "BTCUSDT")
         self.assertGreater(verdict.confidence, 0.60)
+
+    def test_openbb_provider_maps_bullish_nvda_to_yes_for_up_market(self):
+        class FakeOpenBB:
+            def analyze_question(self, question):
+                return OpenBBMarketSignal(
+                    direction="bullish",
+                    probability=0.67,
+                    confidence=0.67,
+                    symbol="NVDA",
+                    asset_class="stock",
+                    reason="fake openbb trend",
+                    features={"composite_pct": 0.03},
+                )
+
+        market = market_from_gamma(_raw_market(question="Will Nvidia close higher today?"))
+        verdict = OpenBBMarketDataProvider(client=FakeOpenBB()).analyze(market)
+        self.assertEqual(verdict.source, "openbb_market_data")
+        self.assertEqual(verdict.direction, "yes")
+        self.assertEqual(verdict.evidence["symbol"], "NVDA")
+        self.assertGreater(verdict.confidence, 0.60)
+
+    def test_openbb_provider_fails_closed_when_dependency_missing(self):
+        class BrokenOpenBB:
+            def analyze_question(self, question):
+                raise RuntimeError("openbb package not installed")
+
+        market = market_from_gamma(_raw_market(question="Will Nvidia close higher today?"))
+        verdict = OpenBBMarketDataProvider(client=BrokenOpenBB()).analyze(market)
+        self.assertEqual(verdict.source, "openbb_market_data")
+        self.assertEqual(verdict.direction, "skip")
+        self.assertIn("unavailable", verdict.reason)
 
 
 class TestAgent(unittest.TestCase):

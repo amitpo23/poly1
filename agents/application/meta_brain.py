@@ -42,6 +42,11 @@ from agents.application.crypto_exchange_tape import (
     CryptoExchangeTapeClient,
     crypto_tape_enabled_for_metabrain,
 )
+from agents.application.openbb_market_data import (
+    OpenBBMarketDataClient,
+    OpenBBMarketSignal,
+    openbb_enabled_for_metabrain,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -614,7 +619,7 @@ class EvidenceRouter:
         """
         source_types = _env_set(
             "EXPERT_EXTERNAL_SOLO_SOURCE_TYPES",
-            "cross_market,equity_fv,alpaca_market_data,crypto_exchange_tape",
+            "cross_market,equity_fv,alpaca_market_data,openbb_market_data,crypto_exchange_tape",
         )
         if claim.source_type not in source_types:
             return False
@@ -810,6 +815,31 @@ class CryptoExchangeTapeReader:
                 None,
                 None,
                 f"crypto_tape: error:{type(exc).__name__}",
+                {"error": str(exc)[:180]},
+            )
+
+
+class OpenBBMarketDataReader:
+    """Reads OpenBB as a direct MetaBrain research signal."""
+
+    def __init__(self, client: Optional[OpenBBMarketDataClient] = None) -> None:
+        self.client = client or OpenBBMarketDataClient()
+
+    def query(self, question: str) -> OpenBBMarketSignal:
+        if not openbb_enabled_for_metabrain():
+            return OpenBBMarketSignal(
+                None, 0.5, 0.0, None, None, "openbb: disabled for MetaBrain"
+            )
+        try:
+            return self.client.analyze_question(question)
+        except Exception as exc:
+            return OpenBBMarketSignal(
+                None,
+                0.5,
+                0.0,
+                None,
+                None,
+                f"openbb: error:{type(exc).__name__}",
                 {"error": str(exc)[:180]},
             )
 
@@ -1529,6 +1559,7 @@ class MetaBrain:
         self.news_reader = BreakingNewsReader()
         self.equity_fv_reader = EquityFairValueReader()
         self.alpaca_reader = AlpacaMarketDataReader()
+        self.openbb_reader = OpenBBMarketDataReader()
         self.crypto_tape_reader = CryptoExchangeTapeReader()
         self.execution_quality = ExecutionQualityAdvisor(db_path=self.db_path)
 
@@ -2047,7 +2078,26 @@ class MetaBrain:
         except Exception as exc:
             logger.debug("meta_brain: alpaca reader failed: %s", exc)
 
-        # 9. Fast crypto exchange tape — Binance spot bars/book plus OKX
+        # 9. OpenBB market data — broad research signal for equities, macro
+        #    proxies, commodities, and crypto. Optional dependency, fail-closed.
+        openbb = OpenBBMarketSignal(None, 0.5, 0.0, None, None, "not_computed")
+        openbb_direction = "skip"
+        try:
+            openbb = self.openbb_reader.query(question)
+            features["openbb_direction"] = openbb.direction
+            features["openbb_probability"] = openbb.probability
+            features["openbb_confidence"] = openbb.confidence
+            features["openbb_symbol"] = openbb.symbol
+            features["openbb_asset_class"] = openbb.asset_class
+            features["openbb_reason"] = openbb.reason
+            features["openbb_features"] = openbb.features
+            if openbb.direction:
+                signal_sources.append(f"openbb:{openbb.symbol}")
+                openbb_direction = question_aligned_direction(question, openbb.direction)
+        except Exception as exc:
+            logger.debug("meta_brain: openbb reader failed: %s", exc)
+
+        # 10. Fast crypto exchange tape — Binance spot bars/book plus OKX
         #    funding.  This is the fastest public external signal for BTC/ETH
         #    style Up/Down markets and remains read-only.
         crypto_tape = CryptoExchangeSignal(None, 0.5, 0.0, None, None, "not_computed")
@@ -2120,6 +2170,11 @@ class MetaBrain:
             alpaca_component = alpaca.probability
         elif alpaca_direction == "no":
             alpaca_component = 1.0 - alpaca.probability
+        openbb_component = 0.5
+        if openbb_direction == "yes":
+            openbb_component = openbb.probability
+        elif openbb_direction == "no":
+            openbb_component = 1.0 - openbb.probability
         crypto_tape_component = 0.5
         if crypto_tape_direction == "yes":
             crypto_tape_component = crypto_tape.probability
@@ -2134,6 +2189,7 @@ class MetaBrain:
             "cross_market": _env_float("META_BRAIN_WEIGHT_CROSS_MARKET", 0.10),
             "equity_fv": _env_float("META_BRAIN_WEIGHT_EQUITY_FV", 0.12),
             "alpaca": _env_float("META_BRAIN_WEIGHT_ALPACA", 0.08),
+            "openbb": _env_float("META_BRAIN_WEIGHT_OPENBB", 0.06),
             "crypto_tape": _env_float("META_BRAIN_WEIGHT_CRYPTO_TAPE", 0.12),
             "whale": _env_float("META_BRAIN_WEIGHT_WHALE", 0.10),
             "news": _env_float("META_BRAIN_WEIGHT_NEWS", 0.10),
@@ -2147,6 +2203,7 @@ class MetaBrain:
             "cross_market": cross_market_component,
             "equity_fv": equity_fv_component,
             "alpaca": alpaca_component,
+            "openbb": openbb_component,
             "crypto_tape": crypto_tape_component,
             "whale": whale_component,
             "news": news_component,
@@ -2310,6 +2367,32 @@ class MetaBrain:
                         "asset_class": alpaca.asset_class,
                         "market_direction": alpaca.direction,
                         **alpaca.features,
+                    },
+                )
+            )
+        if openbb_direction in ("yes", "no"):
+            openbb_rel = self.source_reliability.best(
+                self.db_path,
+                ["openbb_market_data", f"openbb:{openbb.symbol}"],
+                hours=reliability_hours,
+            )
+            claims.append(
+                EvidenceClaim(
+                    source_id=f"openbb:{openbb.symbol}",
+                    source_type="openbb_market_data",
+                    direction=openbb_direction,
+                    probability=(
+                        openbb.probability
+                        if openbb_direction == "yes"
+                        else 1.0 - openbb.probability
+                    ),
+                    confidence=float(openbb.confidence),
+                    reliability=openbb_rel if openbb_rel.sample_size else None,
+                    raw={
+                        "symbol": openbb.symbol,
+                        "asset_class": openbb.asset_class,
+                        "market_direction": openbb.direction,
+                        **openbb.features,
                     },
                 )
             )

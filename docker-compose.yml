@@ -817,6 +817,48 @@ services:
     stop_grace_period: 30s
     profiles: ["external_conviction"]
 
+  external-conviction-openbb:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-openbb
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_openbb
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_openbb
+      EXTERNAL_CONVICTION_STRATEGY_NAME: openbb_market_data_event_probability
+      EXTERNAL_CONVICTION_PROVIDER: openbb_market_data
+      EXTERNAL_CONVICTION_POLL_SEC: "900"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_openbb.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_openbb_heartbeat
+      OPENBB_PROVIDER: "yfinance"
+      OPENBB_MARKET_DATA_CACHE_SEC: "300"
+      OPENBB_MARKET_DATA_BAR_LIMIT: "60"
+      OPENBB_MARKET_DATA_MIN_BARS: "10"
+      OPENBB_MARKET_DATA_MOMENTUM_THRESHOLD: "0.01"
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_openbb_heartbeat') < 1800"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 512m
+    cpus: "0.40"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
   external-conviction-crypto-tape:
     build: .
     image: poly1:local

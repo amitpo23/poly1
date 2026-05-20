@@ -18,9 +18,10 @@ class AgentRegistryTests(unittest.TestCase):
         registry = load_agent_registry("config/agent_registry.json")
         summary = registry.summary()
 
-        self.assertGreaterEqual(summary["agent_count"], 10)
+        self.assertGreaterEqual(summary["agent_count"], 14)
         self.assertIn("scanner_executor", summary["live_capable_agents"])
         self.assertIn("crypto_5m_market_maker_shadow", summary["anchor_capable_agents"])
+        self.assertIn("external_conviction_openbb", summary["anchor_capable_agents"])
         self.assertEqual(registry.require("risk_gate").role, "risk_manager")
 
     def test_money_touching_agents_require_brain_approval(self):

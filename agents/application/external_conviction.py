@@ -35,6 +35,7 @@ from agents.application.alpaca_market_data import (
     question_aligned_direction,
 )
 from agents.application.crypto_exchange_tape import CryptoExchangeTapeClient
+from agents.application.openbb_market_data import OpenBBMarketDataClient
 
 
 logger = logging.getLogger(__name__)
@@ -545,6 +546,59 @@ class AlpacaMarketDataProvider(ExternalProvider):
         if direction not in {"yes", "no"}:
             return self._skip(
                 f"alpaca: could not align {signal.direction} to market wording",
+                {
+                    "symbol": signal.symbol,
+                    "asset_class": signal.asset_class,
+                    "market_direction": signal.direction,
+                    **signal.features,
+                },
+            )
+        return ExternalVerdict(
+            direction=direction,
+            confidence=signal.confidence,
+            source=self.source,
+            reason=signal.reason,
+            evidence={
+                "symbol": signal.symbol,
+                "asset_class": signal.asset_class,
+                "market_direction": signal.direction,
+                "probability": signal.probability,
+                **signal.features,
+            },
+        )
+
+
+class OpenBBMarketDataProvider(ExternalProvider):
+    """OpenBB market-data research provider.
+
+    OpenBB is optional and read-only. If the dependency is missing or the data
+    call fails, the provider records a skip verdict instead of creating a false
+    signal.
+    """
+
+    source = "openbb_market_data"
+
+    def __init__(self, client: Optional[OpenBBMarketDataClient] = None):
+        self.client = client or OpenBBMarketDataClient()
+
+    def analyze(self, market: MarketSnapshot) -> ExternalVerdict:
+        try:
+            signal = self.client.analyze_question(market.question)
+        except Exception as exc:
+            return self._skip(
+                f"openbb: unavailable:{type(exc).__name__}",
+                {"error": str(exc)[:240]},
+            )
+        if signal.direction not in {"bullish", "bearish"}:
+            return self._skip(signal.reason, {
+                "symbol": signal.symbol,
+                "asset_class": signal.asset_class,
+                **signal.features,
+            })
+        direction = question_aligned_direction(market.question, signal.direction)
+        if direction not in {"yes", "no"}:
+            return self._skip(
+                f"openbb: could not align {signal.direction} to market wording",
                 {
                     "symbol": signal.symbol,
                     "asset_class": signal.asset_class,
@@ -1977,6 +2031,8 @@ def provider_from_config(cfg: ExternalConvictionConfig) -> ExternalProvider:
         return TradingViewOptionsProvider()
     if provider in ("alpaca", "alpaca_market_data", "alpaca_data"):
         return AlpacaMarketDataProvider()
+    if provider in ("openbb", "openbb_market_data", "openbb_data"):
+        return OpenBBMarketDataProvider()
     if provider in ("crypto_exchange_tape", "crypto_tape", "binance_okx"):
         return CryptoExchangeTapeProvider()
     if provider in ("whale_consensus", "data_api_whale"):
@@ -2029,7 +2085,7 @@ def _build_aggregator(cfg: ExternalConvictionConfig) -> AggregatorProvider:
         # than heuristic/news density, so weak providers are opt-in only.
         names = [
             "manifold", "metaculus", "kalshi",
-            "tradingview_options", "alpaca_market_data", "crypto_exchange_tape",
+            "tradingview_options", "alpaca_market_data", "openbb_market_data", "crypto_exchange_tape",
             "technical_signal", "clob_whale",
         ]
     sub_providers: list[ExternalProvider] = []
