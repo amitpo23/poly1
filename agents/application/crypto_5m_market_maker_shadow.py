@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from agents.application.crypto_exchange_tape import CryptoExchangeTapeClient
 from agents.application.trade_log import TradeLog
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,10 @@ class MakerShadowConfig:
     min_mid_price: float = 0.35
     max_mid_price: float = 0.65
     max_pair_ask_sum: float = 1.08
+    external_tape_enabled: bool = True
+    external_tape_min_confidence: float = 0.58
+    min_directional_edge_pct: float = 0.015
+    quote_both_when_neutral: bool = True
     heartbeat_path: str = "/app/data/crypto_5m_market_maker_shadow_heartbeat"
 
     @classmethod
@@ -95,6 +100,10 @@ class MakerShadowConfig:
             min_mid_price=_env_float("CRYPTO_5M_MM_SHADOW_MIN_MID_PRICE", 0.35),
             max_mid_price=_env_float("CRYPTO_5M_MM_SHADOW_MAX_MID_PRICE", 0.65),
             max_pair_ask_sum=_env_float("CRYPTO_5M_MM_SHADOW_MAX_PAIR_ASK_SUM", 1.08),
+            external_tape_enabled=_env_bool("CRYPTO_5M_MM_SHADOW_EXTERNAL_TAPE_ENABLED", True),
+            external_tape_min_confidence=_env_float("CRYPTO_5M_MM_SHADOW_EXTERNAL_TAPE_MIN_CONFIDENCE", 0.58),
+            min_directional_edge_pct=_env_float("CRYPTO_5M_MM_SHADOW_MIN_DIRECTIONAL_EDGE_PCT", 0.015),
+            quote_both_when_neutral=_env_bool("CRYPTO_5M_MM_SHADOW_QUOTE_BOTH_WHEN_NEUTRAL", True),
             heartbeat_path=os.getenv(
                 "CRYPTO_5M_MM_SHADOW_HEARTBEAT_PATH",
                 "/app/data/crypto_5m_market_maker_shadow_heartbeat",
@@ -174,9 +183,11 @@ class Crypto5mMarketMakerShadow:
         cfg: Optional[MakerShadowConfig] = None,
         trade_log: Optional[TradeLog] = None,
         db_path: Optional[str] = None,
+        crypto_tape_client: Optional[CryptoExchangeTapeClient] = None,
     ):
         self.cfg = cfg or MakerShadowConfig.from_env()
         self.trade_log = trade_log or TradeLog(db_path=db_path)
+        self.crypto_tape = crypto_tape_client or CryptoExchangeTapeClient()
         self._processed: set[str] = set()
 
     def run_once(self) -> dict:
@@ -258,10 +269,13 @@ class Crypto5mMarketMakerShadow:
                 QuotePlan(str(row.get("up_token") or ""), "up", False, "pair_ask_sum_too_high", None, None, 0.0, 0.0, pair_features),
                 QuotePlan(str(row.get("down_token") or ""), "down", False, "pair_ask_sum_too_high", None, None, 0.0, 0.0, pair_features),
             ]
+        directional = self._directional_context(row)
+        pair_features.update(directional)
         plans = [
             evaluate_quote({**dict(up), **{"token_id": up_token}}, outcome="up", cfg=self.cfg),
             evaluate_quote({**dict(down), **{"token_id": down_token}}, outcome="down", cfg=self.cfg),
         ]
+        plans = [self._apply_directional_edge(plan, directional) for plan in plans]
         return [
             QuotePlan(
                 p.token_id,
@@ -276,6 +290,106 @@ class Crypto5mMarketMakerShadow:
             )
             for p in plans
         ]
+
+    def _directional_context(self, row: dict) -> dict:
+        if not self.cfg.external_tape_enabled:
+            return {"directional_status": "disabled"}
+        asset = str(row.get("asset") or "").lower()
+        question = str(row.get("question") or f"{asset} up or down").strip()
+        try:
+            signal = self.crypto_tape.analyze_question(question or asset)
+        except Exception as exc:
+            return {"directional_status": f"error:{type(exc).__name__}"}
+        context = {
+            "directional_status": "ok",
+            "external_source": "crypto_exchange_tape",
+            "external_direction": signal.direction,
+            "external_probability": signal.probability,
+            "external_confidence": signal.confidence,
+            "external_reason": signal.reason,
+            "external_features": signal.features,
+        }
+        if signal.direction == "bullish":
+            context["fair_up_probability"] = float(signal.probability)
+            context["fair_down_probability"] = 1.0 - float(signal.probability)
+        elif signal.direction == "bearish":
+            context["fair_up_probability"] = 1.0 - float(signal.probability)
+            context["fair_down_probability"] = float(signal.probability)
+        else:
+            context["fair_up_probability"] = 0.5
+            context["fair_down_probability"] = 0.5
+        context["external_signal_strong"] = (
+            signal.direction in {"bullish", "bearish"}
+            and float(signal.confidence) >= self.cfg.external_tape_min_confidence
+        )
+        return context
+
+    def _apply_directional_edge(self, plan: QuotePlan, directional: dict) -> QuotePlan:
+        if not plan.approved:
+            return plan
+        if directional.get("directional_status") != "ok":
+            return plan
+        fair_key = "fair_up_probability" if plan.outcome == "up" else "fair_down_probability"
+        fair_prob = _float(directional.get(fair_key))
+        maker_bid = _float(plan.maker_bid)
+        if fair_prob is None or maker_bid is None:
+            return plan
+        directional_edge = round(fair_prob - maker_bid, 4)
+        features = {
+            **plan.features,
+            "fair_probability": round(fair_prob, 4),
+            "directional_edge_pct": directional_edge,
+            "directional_edge_required_pct": self.cfg.min_directional_edge_pct,
+            "external_signal_strong": bool(directional.get("external_signal_strong")),
+        }
+        if directional.get("external_signal_strong"):
+            if directional_edge < self.cfg.min_directional_edge_pct:
+                return QuotePlan(
+                    plan.token_id,
+                    plan.outcome,
+                    False,
+                    "directional_edge_too_low",
+                    plan.maker_bid,
+                    plan.maker_ask,
+                    plan.profit_cents,
+                    min(plan.score, 0.49),
+                    features,
+                )
+            edge_boost = min(0.12, max(0.0, directional_edge) * 1.5)
+            return QuotePlan(
+                plan.token_id,
+                plan.outcome,
+                True,
+                "shadow_quote_candidate_with_directional_edge",
+                plan.maker_bid,
+                plan.maker_ask,
+                plan.profit_cents,
+                round(min(1.0, plan.score + edge_boost), 4),
+                features,
+            )
+        if not self.cfg.quote_both_when_neutral and directional_edge < self.cfg.min_directional_edge_pct:
+            return QuotePlan(
+                plan.token_id,
+                plan.outcome,
+                False,
+                "neutral_directional_edge_too_low",
+                plan.maker_bid,
+                plan.maker_ask,
+                plan.profit_cents,
+                min(plan.score, 0.49),
+                features,
+            )
+        return QuotePlan(
+            plan.token_id,
+            plan.outcome,
+            plan.approved,
+            plan.reason,
+            plan.maker_bid,
+            plan.maker_ask,
+            plan.profit_cents,
+            plan.score,
+            features,
+        )
 
     def _record(self, row: dict, plan: QuotePlan, *, seconds_to_expiry: int) -> None:
         key = f"{row.get('slug')}:{plan.token_id}:{plan.reason}:{plan.maker_bid}:{plan.maker_ask}:{seconds_to_expiry // 10}"
