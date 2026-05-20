@@ -272,6 +272,17 @@ class TestEvaluation(_TmpDB, unittest.TestCase):
 
 
 class TestClosing(_TmpDB, unittest.TestCase):
+    class _ExitPrompter:
+        def should_exit_position(self, **_kwargs):
+            return "exit?"
+
+    class _ExitLLM:
+        class _Response:
+            content = '{"action":"EXIT","confidence":0.82,"reason":"edge faded"}'
+
+        def invoke(self, _prompt):
+            return self._Response()
+
     def test_shadow_mode_logs_decision_no_sell_call(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)  # 10 shares
         pm = self._polymarket({"TOK": 0.55})  # +10%
@@ -421,6 +432,33 @@ class TestClosing(_TmpDB, unittest.TestCase):
         rows = self.tl.recent(limit=5)
         statuses = [r["status"] for r in rows]
         self.assertIn(CLOSE_FAILED, statuses)
+        self.assertNotIn(CLOSED_TP, statuses)
+
+    def test_llm_exit_with_midpoint_profit_but_executable_loss_is_not_take_profit(self):
+        self._insert_filled("M1", "TOK", "BUY", 0.32, 1.0)
+        pm = self._polymarket({"TOK": 0.325})  # midpoint +1.56%, sell @ 0.3185
+        mgr = PositionManager(
+            polymarket=pm,
+            trade_log=self.tl,
+            cfg=self._config(
+                execute=True,
+                sell_slippage=0.02,
+                min_exit_notional_usdc=0.50,
+                min_take_profit_net_pct=0.015,
+                min_take_profit_usdc=0.01,
+            ),
+        )
+        mgr._get_prompter = MagicMock(return_value=self._ExitPrompter())
+        mgr._get_llm = MagicMock(return_value=self._ExitLLM())
+
+        result = mgr.check_and_close_positions()
+
+        self.assertEqual(result["closed_tp"], 0)
+        self.assertEqual(result["closed_sl"], 1)
+        pm.sell_shares.assert_called_once()
+        rows = self.tl.recent(limit=5)
+        statuses = [r["status"] for r in rows]
+        self.assertIn(CLOSED_SL, statuses)
         self.assertNotIn(CLOSED_TP, statuses)
 
 

@@ -128,6 +128,10 @@ class PositionManagerConfig:
     partial_take_profit_pct: float = 0.10
     partial_take_profit_fraction: float = 0.50
     partial_take_profit_min_position_usdc: float = 500.0
+    # A take-profit label is only valid when the executable sell price, not
+    # just midpoint MTM, is truly profitable after the configured sell slippage.
+    min_take_profit_net_pct: float = PROFIT_TAKE_ALLOWED_PCT
+    min_take_profit_usdc: float = 0.01
     # Heartbeat path for healthcheck.
     heartbeat_path: str = "/app/data/position_manager_heartbeat"
     # When False, log decisions but don't actually post SELL orders.
@@ -168,6 +172,10 @@ class PositionManagerConfig:
             partial_take_profit_min_position_usdc=_env_float(
                 "MAINTAIN_PARTIAL_TAKE_PROFIT_MIN_POSITION_USDC", 500.0
             ),
+            min_take_profit_net_pct=_env_float(
+                "MAINTAIN_MIN_TAKE_PROFIT_NET_PCT", PROFIT_TAKE_ALLOWED_PCT
+            ),
+            min_take_profit_usdc=_env_float("MAINTAIN_MIN_TAKE_PROFIT_USDC", 0.01),
             heartbeat_path=os.getenv(
                 "MAINTAIN_HEARTBEAT_PATH",
                 "/app/data/position_manager_heartbeat",
@@ -454,6 +462,11 @@ class PositionManager:
         if pos.tp_pct_override is not None:
             gain_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
             if gain_pct >= pos.tp_pct_override:
+                if not self._is_executable_take_profit(pos, mid):
+                    self._record_unexecutable_take_profit(
+                        pos, "tp_pct_override", mid
+                    )
+                    return (None, mid)
                 return ("take_profit", mid)
             if not pos.no_sl and gain_pct <= -self.cfg.stop_loss_pct:
                 return ("stop_loss", mid)
@@ -487,7 +500,11 @@ class PositionManager:
             "stop_loss": "stop_loss",
             "timeout": "timeout",
         }
-        return (reason_map.get(decision.reason), mid)
+        reason = reason_map.get(decision.reason)
+        if reason == "take_profit" and not self._is_executable_take_profit(pos, mid):
+            self._record_unexecutable_take_profit(pos, decision.reason, mid)
+            return (None, mid)
+        return (reason, mid)
 
     # --------------------------------------------------------- LLM exit check
 
@@ -653,7 +670,9 @@ class PositionManager:
 
             if action == "EXIT":
                 pnl_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
-                return "take_profit" if pnl_pct >= 0 else "stop_loss"
+                if pnl_pct >= 0 and self._is_executable_take_profit(pos, mid):
+                    return "take_profit"
+                return "stop_loss"
 
         except Exception:
             logger.exception(
@@ -675,6 +694,51 @@ class PositionManager:
             "If internal EV is no longer positive, exit even for a small profit "
             "or small loss."
         )
+
+    def _executable_exit_price(self, mid: float) -> float:
+        return self.exit_executor.limit_price_from_mid(mid)
+
+    def _executable_pnl(self, pos: AggregatedPosition, mid: float) -> tuple[float, float, float]:
+        sell_price = self._executable_exit_price(mid)
+        pnl_pct = (sell_price - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
+        pnl_usdc = pos.total_shares * (sell_price - pos.avg_entry_price)
+        return sell_price, pnl_pct, pnl_usdc
+
+    def _is_executable_take_profit(self, pos: AggregatedPosition, mid: float) -> bool:
+        _sell_price, pnl_pct, pnl_usdc = self._executable_pnl(pos, mid)
+        return (
+            pnl_pct >= self.cfg.min_take_profit_net_pct
+            or pnl_usdc >= self.cfg.min_take_profit_usdc
+        )
+
+    def _record_unexecutable_take_profit(
+        self, pos: AggregatedPosition, reason: str, mid: float
+    ) -> None:
+        try:
+            sell_price, pnl_pct, pnl_usdc = self._executable_pnl(pos, mid)
+            self.trade_log.insert_brain_decision(
+                agent="position_manager",
+                strategy="execution_quality",
+                decision_type="exit",
+                market_id=pos.market_id,
+                token_id=pos.token_id,
+                approved=False,
+                reason="take_profit_not_executable",
+                score=pnl_pct,
+                features={
+                    "source_reason": reason,
+                    "mid": mid,
+                    "entry_price": pos.avg_entry_price,
+                    "executable_sell_price": sell_price,
+                    "executable_pnl_pct": pnl_pct,
+                    "executable_pnl_usdc": pnl_usdc,
+                    "min_take_profit_net_pct": self.cfg.min_take_profit_net_pct,
+                    "min_take_profit_usdc": self.cfg.min_take_profit_usdc,
+                },
+                action="HOLD",
+            )
+        except Exception:
+            logger.exception("position_manager executable TP journal write failed")
 
     def _record_exit_brain_decision(self, pos: AggregatedPosition, decision) -> None:
         try:

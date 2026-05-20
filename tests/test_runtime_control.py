@@ -74,6 +74,8 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertIn('SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE="0.79"', env_text)
             self.assertIn('SCANNER_EXECUTOR_MIN_SCORE="0.79"', env_text)
             self.assertIn('MAINTAIN_MIN_EXIT_NOTIONAL_USDC="0.50"', env_text)
+            self.assertIn('MAINTAIN_MIN_TAKE_PROFIT_NET_PCT="0.015"', env_text)
+            self.assertIn('MAINTAIN_MIN_TAKE_PROFIT_USDC="0.01"', env_text)
             self.assertEqual(control["budget_usdc"], 15.0)
             self.assertEqual(control["wallet_balance_at_start_usdc"], 34.2452)
             self.assertEqual(control["equity_at_start_usdc"], 35.125)

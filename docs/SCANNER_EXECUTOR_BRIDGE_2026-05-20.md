@@ -72,4 +72,7 @@ executor score gate.
 - Controlled `$1` probes use `MAINTAIN_MIN_EXIT_NOTIONAL_USDC=0.50`, so smart
   exits are not blocked by a `$1.00` dust threshold when the brain decides to
   leave quickly.
+- Take-profit exits are labeled as profit only when the executable sell price
+  clears `MAINTAIN_MIN_TAKE_PROFIT_NET_PCT` or `MAINTAIN_MIN_TAKE_PROFIT_USDC`.
+  Midpoint-only profit is not enough.
 - Telegram fill notifications use the existing `notify_trade` path.
