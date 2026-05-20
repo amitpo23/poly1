@@ -75,6 +75,21 @@ class ProviderStats:
         total = self.wins + self.losses
         return (self.wins / total) if total else None
 
+    @property
+    def wilson_lower(self) -> Optional[float]:
+        total = self.wins + self.losses
+        return _wilson_lower_bound(self.wins, total)
+
+
+def _wilson_lower_bound(wins: int, total: int, z: float = 1.96) -> Optional[float]:
+    if total <= 0:
+        return None
+    phat = wins / total
+    denom = 1.0 + z * z / total
+    centre = phat + z * z / (2.0 * total)
+    margin = z * ((phat * (1.0 - phat) + z * z / (4.0 * total)) / total) ** 0.5
+    return max(0.0, (centre - margin) / denom)
+
 
 def parse_ts(raw: object) -> Optional[datetime]:
     if raw in (None, ""):
@@ -268,6 +283,7 @@ def _stats_dict(stats: ProviderStats) -> dict:
         "wins": stats.wins,
         "losses": stats.losses,
         "winrate": None if stats.winrate is None else round(stats.winrate, 4),
+        "wilson_lower": None if stats.wilson_lower is None else round(stats.wilson_lower, 4),
         "pnl_usdc": round(stats.pnl_usdc, 6),
     }
 
@@ -294,6 +310,7 @@ def main() -> int:
     parser.add_argument("--glob", default="data/external_convictions*.jsonl")
     parser.add_argument("--max-age-hours", type=float, default=24.0)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--output", default="", help="optional JSON scorecard path to write")
     parser.add_argument("--include-skips", action="store_true")
     args = parser.parse_args()
 
@@ -301,15 +318,23 @@ def main() -> int:
     signals = iter_signals(paths, actionable_only=not args.include_skips)
     outcomes = load_outcomes(Path(args.db))
     provider_stats, bucket_stats = build_stats(signals, outcomes, args.max_age_hours)
-    if args.json:
-        print(json.dumps({
+    payload = {
             "paths": [str(p) for p in paths],
             "signals": len(signals),
             "outcomes": len(outcomes),
             "max_age_hours": args.max_age_hours,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "providers": [_stats_dict(s) for s in provider_stats],
             "confidence_buckets": [_stats_dict(s) for s in bucket_stats],
-        }, indent=2, sort_keys=True))
+    }
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(out.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(out)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print_markdown(provider_stats, bucket_stats)
     return 0

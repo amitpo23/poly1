@@ -357,6 +357,17 @@ class HeuristicProvider(ExternalProvider):
         )
 
 
+class DisabledProvider(ExternalProvider):
+    source = "disabled"
+
+    def __init__(self, source: str, reason: str):
+        self.source = source
+        self.reason = reason
+
+    def analyze(self, market: MarketSnapshot) -> ExternalVerdict:
+        return self._skip(self.reason, {"disabled": True})
+
+
 class TradingViewOptionsProvider(ExternalProvider):
     """TradingView ES options-chain research hook.
 
@@ -1833,6 +1844,20 @@ class AggregatorProvider(ExternalProvider):
 
 def provider_from_config(cfg: ExternalConvictionConfig) -> ExternalProvider:
     provider = cfg.provider.lower().strip()
+    weak_providers = {"heuristic", "local", "public_news", "news", "rss", "gdelt", "gdelt_news"}
+    allow_weak = os.getenv("EXTERNAL_CONVICTION_ALLOW_WEAK_PROVIDERS", "false").lower() in {
+        "1", "true", "yes", "on",
+    }
+    if provider in weak_providers and not allow_weak:
+        source = "heuristic" if provider in {"heuristic", "local"} else provider
+        if provider in {"news", "rss"}:
+            source = "public_news"
+        if provider == "gdelt_news":
+            source = "gdelt"
+        return DisabledProvider(
+            source,
+            f"{source}: disabled until provider scorecard proves positive edge",
+        )
     if provider in ("polifly", "polifly_browser", "browser"):
         return PoliflyBrowserProvider(
             cfg.polifly_bridge_url,
@@ -1903,11 +1928,10 @@ def _build_aggregator(cfg: ExternalConvictionConfig) -> AggregatorProvider:
     names = [n.strip() for n in raw.split(",") if n.strip()]
     if not names:
         # Default: all free providers — divergence signals have higher quality
-        # than heuristic-only, so include Manifold/Metaculus/Kalshi when possible.
+        # than heuristic/news density, so weak providers are opt-in only.
         names = [
             "manifold", "metaculus", "kalshi",
             "tradingview_options", "technical_signal", "clob_whale",
-            "public_news", "gdelt", "heuristic",
         ]
     sub_providers: list[ExternalProvider] = []
     for name in names:

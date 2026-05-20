@@ -101,7 +101,7 @@ class Btc5MinConfig:
     min_confidence: float = 0.55
     min_live_entry_price: float = 0.0
     max_live_entry_price: float = 0.90
-    min_edge_pct: float = 0.02
+    min_edge_pct: float = 0.04
     require_universe_top: bool = False
     min_universe_winrate: float = 0.52
     straddle_enabled: bool = False
@@ -136,7 +136,7 @@ class Btc5MinConfig:
             min_confidence=_env_float("BTC_5MIN_MIN_CONFIDENCE", 0.55),
             min_live_entry_price=_env_float("BTC_5MIN_MIN_LIVE_ENTRY_PRICE", 0.0),
             max_live_entry_price=_env_float("BTC_5MIN_MAX_LIVE_ENTRY_PRICE", 0.90),
-            min_edge_pct=_env_float("BTC_5MIN_MIN_EDGE_PCT", 0.02),
+            min_edge_pct=_env_float("BTC_5MIN_MIN_EDGE_PCT", 0.04),
             require_universe_top=os.getenv(
                 "BTC_5MIN_REQUIRE_UNIVERSE_TOP", "false"
             ).lower() == "true",

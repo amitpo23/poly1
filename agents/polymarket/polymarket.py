@@ -45,9 +45,54 @@ from tenacity import (
     retry_if_exception_type,
 )
 
+from agents.application.execution_lock import live_order_lock
 from agents.utils.objects import SimpleMarket, SimpleEvent, TradeRecommendation
 
 load_dotenv()
+
+
+def _response_value(resp, *names):
+    if isinstance(resp, dict):
+        for name in names:
+            if name in resp and resp.get(name) not in (None, ""):
+                return resp.get(name)
+        return None
+    for name in names:
+        if hasattr(resp, name):
+            value = getattr(resp, name)
+            if value not in (None, ""):
+                return value
+    if hasattr(resp, "dict"):
+        try:
+            data = resp.dict()
+            if isinstance(data, dict):
+                return _response_value(data, *names)
+        except Exception:
+            pass
+    if hasattr(resp, "model_dump"):
+        try:
+            data = resp.model_dump()
+            if isinstance(data, dict):
+                return _response_value(data, *names)
+        except Exception:
+            pass
+    return None
+
+
+def _normalize_order_response(resp) -> dict:
+    order_id = _response_value(
+        resp,
+        "orderID",
+        "order_id",
+        "id",
+        "taker_order_id",
+        "takerOrderId",
+    )
+    status = _response_value(resp, "status", "orderStatus", "state")
+    return {
+        "order_id": None if order_id is None else str(order_id),
+        "status": str(status or "unknown").lower(),
+    }
 
 
 class Polymarket:
@@ -540,15 +585,16 @@ class Polymarket:
         """
         if order_type is None:
             order_type = OrderType.GTC
-        return self.client.create_and_post_order(
-            OrderArgs(
-                price=limit_price,
-                size=shares,
-                side="SELL",
-                token_id=token_id,
-            ),
-            order_type=order_type,
-        )
+        with live_order_lock():
+            return self.client.create_and_post_order(
+                OrderArgs(
+                    price=limit_price,
+                    size=shares,
+                    side="SELL",
+                    token_id=token_id,
+                ),
+                order_type=order_type,
+            )
 
     def _book_entries(self, book, side: str) -> list:
         entries = getattr(book, side, None)
@@ -784,13 +830,10 @@ class Polymarket:
                 order_type=order_type,
             )
 
-        resp = _post()
+        with live_order_lock():
+            resp = _post()
 
-        order_id = None
-        status = "unknown"
-        if isinstance(resp, dict):
-            order_id = resp.get("orderID") or resp.get("order_id")
-            status = resp.get("status", "unknown")
+        normalized = _normalize_order_response(resp)
 
         return {
             "token_id": token_id,
@@ -801,8 +844,8 @@ class Polymarket:
             "order_price_model": order_price,
             "order_avg_price_estimate": avg_price,
             "side_recommended": side,
-            "order_id": order_id,
-            "status": status,
+            "order_id": normalized["order_id"],
+            "status": normalized["status"],
             "raw": resp,
         }
 

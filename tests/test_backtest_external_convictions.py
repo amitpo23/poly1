@@ -10,6 +10,7 @@ from scripts.python.backtest_external_convictions import (
     build_stats,
     iter_signals,
     load_outcomes,
+    main as backtest_main,
 )
 
 
@@ -171,6 +172,67 @@ class TestBacktestExternalConvictions(unittest.TestCase):
             )
             self.assertEqual(providers[0].wins, 1)
             self.assertEqual(providers[0].losses, 0)
+
+    def test_cli_writes_scorecard_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jsonl = root / "external_convictions_test.jsonl"
+            jsonl.write_text(
+                json.dumps({
+                    "plan": {
+                        "ts": "2026-05-19T10:00:00+00:00",
+                        "market_id": "M1",
+                        "token_id": "TOK1",
+                        "action": "BUY",
+                        "source": "provider_a",
+                    }
+                }) + "\n",
+                encoding="utf-8",
+            )
+            db_path = root / "trade_log.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE trades (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts TEXT NOT NULL,
+                        cycle_id TEXT NOT NULL,
+                        market_id TEXT NOT NULL,
+                        token_id TEXT,
+                        side TEXT,
+                        price REAL,
+                        size_usdc REAL,
+                        confidence REAL,
+                        status TEXT NOT NULL,
+                        response_json TEXT,
+                        error TEXT
+                    )"""
+                )
+                conn.execute(
+                    "INSERT INTO trades (ts, cycle_id, market_id, token_id, side, "
+                    "price, size_usdc, confidence, status) VALUES (?,?,?,?,?,?,?,?,?)",
+                    ("2026-05-19T10:01:00+00:00", "c1", "M1", "TOK1",
+                     "BUY", 0.5, 3.0, 0.6, "closed_take_profit"),
+                )
+            out = root / "provider_scorecard.json"
+            import os
+            import sys
+            cwd = os.getcwd()
+            argv = sys.argv
+            try:
+                os.chdir(root)
+                sys.argv = [
+                    "backtest_external_convictions.py",
+                    "--db", str(db_path),
+                    "--glob", "external_convictions*.jsonl",
+                    "--output", str(out),
+                ]
+                self.assertEqual(backtest_main(), 0)
+            finally:
+                os.chdir(cwd)
+                sys.argv = argv
+            payload = json.loads(out.read_text())
+            self.assertEqual(payload["providers"][0]["source"], "provider_a")
+            self.assertIn("wilson_lower", payload["providers"][0])
 
 
 if __name__ == "__main__":

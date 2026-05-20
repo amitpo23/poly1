@@ -436,8 +436,48 @@ class SourceReliabilityAdvisor:
             wilson_lower=_wilson_lower_bound(wins, total),
             source="brain_decisions.signal_source",
         )
+        if total == 0:
+            scorecard_stats = self._from_provider_scorecard(source_id)
+            if scorecard_stats.sample_size:
+                stats = scorecard_stats
         self._cache[key] = (now, stats)
         return stats
+
+    def _from_provider_scorecard(self, source_id: str) -> ReliabilityStats:
+        path = os.getenv("PROVIDER_SCORECARD_PATH", "./data/provider_scorecard.json")
+        if not path or not os.path.isfile(path):
+            return ReliabilityStats(source_id, None, 0, 0, 0, None, "no_scorecard")
+        min_matched = _env_int("PROVIDER_SCORECARD_MIN_MATCHED", 10)
+        min_winrate = _env_float("PROVIDER_SCORECARD_MIN_WINRATE", 0.55)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            logger.debug("provider_scorecard: failed to read %s: %s", path, exc)
+            return ReliabilityStats(source_id, None, 0, 0, 0, None, "scorecard_error")
+        providers = payload.get("providers") if isinstance(payload, dict) else []
+        if not isinstance(providers, list):
+            return ReliabilityStats(source_id, None, 0, 0, 0, None, "scorecard_empty")
+        wanted = {source_id, source_id.replace("news:", ""), source_id.replace("wallet:", "")}
+        for row in providers:
+            if not isinstance(row, dict) or str(row.get("source")) not in wanted:
+                continue
+            matched = int(row.get("matched") or 0)
+            winrate = row.get("winrate")
+            if matched < min_matched or winrate is None or float(winrate) < min_winrate:
+                return ReliabilityStats(source_id, None, int(row.get("wins") or 0), int(row.get("losses") or 0), matched, row.get("wilson_lower"), "provider_scorecard_rejected")
+            wins = int(row.get("wins") or 0)
+            losses = int(row.get("losses") or 0)
+            return ReliabilityStats(
+                source_id=source_id,
+                winrate=float(winrate),
+                wins=wins,
+                losses=losses,
+                sample_size=matched,
+                wilson_lower=row.get("wilson_lower"),
+                source="provider_scorecard",
+            )
+        return ReliabilityStats(source_id, None, 0, 0, 0, None, "scorecard_no_source")
 
 
 @dataclass
@@ -1442,6 +1482,8 @@ class MetaBrain:
                 execution_quality = self.execution_quality.evaluate(
                     token_id=token_id,
                     intended_usdc=_env_float("META_BRAIN_EXECUTION_QUALITY_USDC", 3.0),
+                    internal_probability=score,
+                    entry_price=up_price,
                 )
                 features.update(execution_quality.features)
                 if not execution_quality.ok:
@@ -2153,6 +2195,8 @@ class MetaBrain:
                 execution_quality = self.execution_quality.evaluate(
                     token_id=token_id,
                     intended_usdc=_env_float("META_BRAIN_EXECUTION_QUALITY_USDC", 3.0),
+                    internal_probability=features.get("internal_probability"),
+                    entry_price=features.get("market_entry_price") or poly_prob,
                 )
                 features.update(execution_quality.features)
                 if not execution_quality.ok:

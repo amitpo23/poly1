@@ -51,6 +51,7 @@ class OrderbookMonitorConfig:
     prune_minutes: int = 180
     heartbeat_path: str = "/app/data/orderbook_monitor_heartbeat"
     clob_url: str = "https://clob.polymarket.com"
+    stale_market_grace_sec: int = 300
 
     @classmethod
     def from_env(cls) -> "OrderbookMonitorConfig":
@@ -63,6 +64,7 @@ class OrderbookMonitorConfig:
                 "/app/data/orderbook_monitor_heartbeat",
             ),
             clob_url=os.getenv("ORDERBOOK_MONITOR_CLOB_URL", "https://clob.polymarket.com"),
+            stale_market_grace_sec=_env_int("ORDERBOOK_MONITOR_STALE_MARKET_GRACE_SEC", 300),
         )
 
 
@@ -224,7 +226,11 @@ class OrderbookMonitorDaemon:
     def _tokens(self) -> list[dict]:
         seen: set[str] = set()
         result: list[dict] = []
-        for item in self.trade_log.market_universe_tokens(limit=self.cfg.token_limit):
+        min_period_ts = int(time.time()) - int(self.cfg.stale_market_grace_sec)
+        for item in self.trade_log.market_universe_tokens(
+            limit=self.cfg.token_limit,
+            min_period_ts=min_period_ts,
+        ):
             token_id = str(item.get("token_id") or "")
             if token_id and token_id not in seen:
                 seen.add(token_id)

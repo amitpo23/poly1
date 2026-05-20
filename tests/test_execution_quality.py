@@ -58,10 +58,13 @@ class TestOrderbookExecutionQuality(unittest.TestCase):
         quality = ExecutionQualityAdvisor(trade_log=self.log).evaluate(
             token_id="TOK",
             intended_usdc=3.0,
+            internal_probability=0.62,
+            entry_price=0.51,
         )
         self.assertTrue(quality.ok)
         self.assertGreaterEqual(quality.score, 0.5)
         self.assertEqual(quality.reason, "execution_quality_ok")
+        self.assertGreater(quality.features["execution_net_ev"], 0.02)
 
     @patch.dict(os.environ, {
         "EXECUTION_QUALITY_REQUIRE_FRESH": "true",
@@ -85,6 +88,28 @@ class TestOrderbookExecutionQuality(unittest.TestCase):
         )
         self.assertFalse(quality.ok)
         self.assertIn("execution_quality_blocked", quality.reason)
+
+    def test_execution_quality_blocks_negative_net_ev_after_friction(self):
+        row = metrics_from_book(
+            token_id="TOK",
+            market_id="M1",
+            source="test",
+            book={
+                "bids": [{"price": "0.49", "size": "100"}],
+                "asks": [{"price": "0.51", "size": "100"}],
+            },
+        )
+        self.log.upsert_orderbook_snapshot(row)
+        quality = ExecutionQualityAdvisor(trade_log=self.log).evaluate(
+            token_id="TOK",
+            intended_usdc=3.0,
+            internal_probability=0.52,
+            entry_price=0.51,
+            min_score=0.0,
+            min_net_ev=0.02,
+        )
+        self.assertFalse(quality.ok)
+        self.assertIn("net_ev", quality.reason)
 
     def test_execution_quality_blocks_missing_fresh_book(self):
         quality = ExecutionQualityAdvisor(trade_log=self.log).evaluate(
@@ -139,7 +164,7 @@ class TestOrderbookExecutionQuality(unittest.TestCase):
             "top_rank": 1,
         })
 
-        tokens = self.log.market_universe_tokens(limit=4)
+        tokens = self.log.market_universe_tokens(limit=4, min_period_ts=now - 300)
         token_ids = [row["token_id"] for row in tokens]
         self.assertEqual(token_ids[:2], ["FUTURE_UP", "FUTURE_DOWN"])
         self.assertNotIn("BLOCKED_UP", token_ids)

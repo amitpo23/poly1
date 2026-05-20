@@ -114,6 +114,24 @@ class TestExecuteMarketOrderFAK(unittest.TestCase):
         call_kwargs = p.client.create_and_post_market_order.call_args.kwargs
         self.assertEqual(call_kwargs.get("order_type"), OrderType.FOK)
 
+    @patch.object(Polymarket, "__init__", lambda self, **kw: None)
+    def test_execute_market_order_normalizes_object_response(self):
+        class Resp:
+            taker_order_id = "obj-order"
+            status = "matched"
+
+        p = Polymarket()
+        p.client = MagicMock()
+        p._fillable_market_buy = MagicMock(return_value=(0.51, 5.0, 0.50))
+        p.client.create_and_post_market_order = MagicMock(return_value=Resp())
+        rec = TradeRecommendation(price=0.50, size_fraction=0.05, side="BUY",
+                                   confidence=0.7, amount_usdc=5.0)
+
+        result = p.execute_market_order(self._make_market(), rec)
+
+        self.assertEqual(result["order_id"], "obj-order")
+        self.assertEqual(result["status"], "matched")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,11 +55,15 @@ class ExecutionQualityAdvisor:
         *,
         token_id: Optional[str],
         intended_usdc: Optional[float] = None,
+        internal_probability: Optional[float] = None,
+        entry_price: Optional[float] = None,
         max_age_seconds: Optional[float] = None,
         max_spread_pct: Optional[float] = None,
         min_bid_depth_usdc: Optional[float] = None,
         max_avg_slippage_pct: Optional[float] = None,
         min_score: Optional[float] = None,
+        min_net_ev: Optional[float] = None,
+        fee_buffer_pct: Optional[float] = None,
         require_fresh: Optional[bool] = None,
     ) -> ExecutionQuality:
         if not token_id:
@@ -84,6 +88,14 @@ class ExecutionQualityAdvisor:
         min_score = (
             _env_float("EXECUTION_QUALITY_MIN_SCORE", 0.65)
             if min_score is None else float(min_score)
+        )
+        min_net_ev = (
+            _env_float("EXECUTION_QUALITY_MIN_NET_EV", 0.02)
+            if min_net_ev is None else float(min_net_ev)
+        )
+        fee_buffer_pct = (
+            _env_float("EXECUTION_QUALITY_FEE_BUFFER_PCT", 0.01)
+            if fee_buffer_pct is None else float(fee_buffer_pct)
         )
         require_fresh = (
             _env_bool("EXECUTION_QUALITY_REQUIRE_FRESH", True)
@@ -125,6 +137,12 @@ class ExecutionQualityAdvisor:
         intended_usdc = intended_usdc or 3.0
         slippage_key = _slippage_key(float(intended_usdc))
         avg_slippage = _float(snapshot.get(slippage_key))
+        entry_price = _float(entry_price) or _float(snapshot.get("best_ask"))
+        net_ev = None
+        friction_pct = None
+        if internal_probability is not None and entry_price and entry_price > 0:
+            friction_pct = (spread or 0.0) + (avg_slippage or 0.0) + fee_buffer_pct
+            net_ev = ((float(internal_probability) - float(entry_price)) / float(entry_price)) - friction_pct
 
         spread_score = _inverse_score(spread, max_spread_pct)
         bid_depth_score = _floor_score(bid_depth, min_bid_depth_usdc)
@@ -157,6 +175,10 @@ class ExecutionQualityAdvisor:
             "avg_slippage_pct": avg_slippage,
             "avg_slippage_key": slippage_key,
             "min_execution_quality_score": min_score,
+            "execution_fee_buffer_pct": fee_buffer_pct,
+            "execution_friction_pct": friction_pct,
+            "execution_net_ev": None if net_ev is None else round(net_ev, 4),
+            "execution_min_net_ev": min_net_ev,
         }
         blockers: list[str] = []
         if spread is None or spread > max_spread_pct:
@@ -167,6 +189,8 @@ class ExecutionQualityAdvisor:
             blockers.append(f"slippage:{avg_slippage}>{max_avg_slippage_pct}")
         if score < min_score:
             blockers.append(f"score:{score}<{min_score}")
+        if net_ev is not None and net_ev < min_net_ev:
+            blockers.append(f"net_ev:{net_ev:.4f}<{min_net_ev:.4f}")
         if blockers:
             reason = "execution_quality_blocked:" + ",".join(blockers)
             features["execution_quality_reason"] = reason

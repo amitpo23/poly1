@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sqlite3
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -286,6 +287,41 @@ def check_settlement(conn: sqlite3.Connection) -> list[CheckResult]:
     ]
 
 
+def check_disk_space(root: Path) -> list[CheckResult]:
+    threshold = _as_float(os.getenv("PREFLIGHT_MAX_DISK_USED_PCT", "85"))
+    try:
+        usage = shutil.disk_usage(root)
+    except Exception as exc:
+        return [CheckResult("disk_space", False, f"disk usage check failed: {exc}")]
+    used_pct = (usage.used / usage.total) * 100 if usage.total else 100.0
+    return [
+        CheckResult(
+            "disk_space",
+            used_pct < threshold,
+            f"used={used_pct:.1f}% threshold={threshold:.1f}% free_gb={usage.free / (1024**3):.2f}",
+        )
+    ]
+
+
+def check_trade_log_backup(root: Path, db_path: Path) -> list[CheckResult]:
+    if os.getenv("PREFLIGHT_REQUIRE_DB_BACKUP", "true").lower() not in {"1", "true", "yes", "on"}:
+        return [CheckResult("trade_log_backup", True, "backup requirement disabled")]
+    max_age_hours = _as_float(os.getenv("PREFLIGHT_MAX_BACKUP_AGE_HOURS", "30"))
+    backup_dir = root / "data" / "backups"
+    candidates = sorted(backup_dir.glob("trade_log-*.db")) if backup_dir.exists() else []
+    if not candidates:
+        return [CheckResult("trade_log_backup", False, f"no backups in {backup_dir}")]
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    age_hours = (datetime.now(timezone.utc).timestamp() - newest.stat().st_mtime) / 3600.0
+    return [
+        CheckResult(
+            "trade_log_backup",
+            age_hours <= max_age_hours,
+            f"newest={newest.name} age_hours={age_hours:.2f} max={max_age_hours:.1f}",
+        )
+    ]
+
+
 def check_halt_state(env: dict[str, str], root: Path, *, mode: str) -> list[CheckResult]:
     raw = env.get("KILL_SWITCH_FILE", "./data/HALT")
     path = Path(raw)
@@ -396,12 +432,14 @@ def main() -> int:
     results.extend(check_freeze_config(env, mode=args.mode))
     results.extend(check_runtime_control(env, root, mode=args.mode))
     results.extend(check_halt_state(env, root, mode=args.mode))
+    results.extend(check_disk_space(root))
 
     if not db_path.exists():
         results.append(CheckResult("trade_log_db_exists", False, f"missing {db_path}"))
     else:
         with _connect(db_path) as conn:
             results.append(CheckResult("trade_log_db_exists", True, str(db_path)))
+            results.extend(check_trade_log_backup(root, db_path))
             results.extend(check_open_positions(conn))
             results.extend(check_settlement(conn))
 

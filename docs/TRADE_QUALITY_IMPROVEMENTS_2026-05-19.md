@@ -79,12 +79,24 @@ python scripts/python/backtest_external_convictions.py \
   --db data/trade_log.db \
   --glob 'data/external_convictions*.jsonl' \
   --max-age-hours 24 \
+  --output data/provider_scorecard.json \
   --json
 ```
 
 The tool reads `external_convictions*.jsonl`, including `SHADOW_BUY_*` plans,
 and matches them to terminal outcomes in `trades` by `token_id` or `market_id`.
 It reports win-rate by provider/source and confidence bucket.
+
+`MetaBrain` can now read `PROVIDER_SCORECARD_PATH` as a fallback reliability
+source when local `brain_decisions.signal_source` history is still sparse.  A
+provider only earns scorecard trust after the configured sample and win-rate
+minimums:
+
+```text
+PROVIDER_SCORECARD_PATH="/app/data/provider_scorecard.json"
+PROVIDER_SCORECARD_MIN_MATCHED="10"
+PROVIDER_SCORECARD_MIN_WINRATE="0.55"
+```
 
 Initial local result:
 
@@ -109,6 +121,8 @@ Default gate:
 
 ```text
 META_BRAIN_MIN_RAW_EV="0.04"
+EXECUTION_QUALITY_FEE_BUFFER_PCT="0.01"
+EXECUTION_QUALITY_MIN_NET_EV="0.02"
 ```
 
 This rejects trades where the price/spread makes expected value too weak even
@@ -143,6 +157,8 @@ EXECUTION_QUALITY_MAX_SPREAD_PCT="0.05"
 EXECUTION_QUALITY_MIN_BID_DEPTH_USDC="20"
 EXECUTION_QUALITY_MAX_AVG_SLIPPAGE_PCT="0.025"
 EXECUTION_QUALITY_MIN_SCORE="0.65"
+EXECUTION_QUALITY_FEE_BUFFER_PCT="0.01"
+EXECUTION_QUALITY_MIN_NET_EV="0.02"
 ```
 
 Measured features written into `brain_decisions.features_json`:
@@ -155,6 +171,39 @@ Measured features written into `brain_decisions.features_json`:
 
 Purpose: avoid entering markets where the signal may be right but the spread,
 depth, or expected exit friction already destroys the edge.
+
+The orderbook monitor also ignores stale market-universe periods by default:
+
+```text
+ORDERBOOK_MONITOR_STALE_MARKET_GRACE_SEC="300"
+```
+
+This prevents wasted CLOB calls against expired/closed token IDs.
+
+### Weak Provider Defaults
+
+Weak/noisy external-conviction providers are now opt-in:
+
+```text
+EXTERNAL_CONVICTION_ALLOW_WEAK_PROVIDERS="false"
+EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS="manifold,metaculus,kalshi,technical_signal,clob_whale"
+```
+
+`heuristic`, `public_news`, and `gdelt` return `skip` unless explicitly
+enabled. They can be reintroduced only after the provider scorecard proves
+positive edge.
+
+### Order Safety And Ops Guards
+
+- `agents.polymarket.polymarket` now normalizes CLOB responses from dict-like
+  and object-like client responses so `order_id` and `status` do not silently
+  become `unknown`.
+- Live entry/exit order submission is protected by a shared file lock
+  (`LIVE_ORDER_LOCK_PATH`, default `/app/data/live_order.lock`) so parallel
+  agents cannot submit overlapping CLOB orders in the same instant.
+- `scripts/python/backup_trade_log.py` creates recoverable SQLite backups.
+- `scripts/trading_stability_preflight.py` now blocks when disk usage is above
+  `PREFLIGHT_MAX_DISK_USED_PCT` or when no fresh `trade_log.db` backup exists.
 
 ### Kelly Sizing
 
@@ -220,7 +269,7 @@ Worth revisiting after provider quality data accumulates:
 Current test suite after implementation:
 
 ```text
-516 tests OK
+519 tests OK
 ```
 
 Relevant commits:

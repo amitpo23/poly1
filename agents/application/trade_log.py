@@ -536,8 +536,15 @@ class TradeLog:
             value = 0.0
         return bool(row.get("eligible")) and value >= float(min_winrate)
 
-    def market_universe_tokens(self, limit: int = 100) -> list[dict]:
+    def market_universe_tokens(
+        self,
+        limit: int = 100,
+        *,
+        min_period_ts: Optional[int] = None,
+    ) -> list[dict]:
         """Return distinct token ids from the current market universe."""
+        if min_period_ts is None:
+            min_period_ts = int(datetime.now(timezone.utc).timestamp()) - 300
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
@@ -555,7 +562,7 @@ class TradeLog:
                     FROM market_universe
                     WHERE down_token IS NOT NULL AND down_token != ''
                 )
-                WHERE eligible = 1 AND accepting_orders = 1
+                WHERE eligible = 1 AND accepting_orders = 1 AND period_ts >= ?
                 ORDER BY
                     CASE WHEN period_ts >= strftime('%s', 'now') THEN 0 ELSE 1 END,
                     CASE WHEN period_ts >= strftime('%s', 'now') THEN period_ts ELSE -period_ts END,
@@ -563,7 +570,7 @@ class TradeLog:
                     score DESC
                 LIMIT ?
                 """,
-                (int(limit),),
+                (int(min_period_ts), int(limit)),
             ).fetchall()
             return [dict(r) for r in rows]
 
