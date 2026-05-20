@@ -59,4 +59,78 @@ if awk '$1 ~ /[<>].c/ || $1 ~ /^\*deleting/ { print }' "$tmp" | grep .; then
 fi
 
 echo "OK: no content drift in managed runtime code/config"
+
+echo
+echo "== server git hygiene check =="
+ssh "$SERVER" "cd '$REMOTE' && python3 - <<'PY'
+import subprocess
+import sys
+
+allowed_tracked = {'deploy/.env.runtime'}
+allowed_untracked_prefixes = set()
+
+out = subprocess.check_output(['git', 'status', '--porcelain'], text=True)
+bad = []
+for raw in out.splitlines():
+    if not raw:
+        continue
+    status = raw[:2]
+    path = raw[3:]
+    if status == '??':
+        if not any(path.startswith(prefix) for prefix in allowed_untracked_prefixes):
+            bad.append(raw)
+        continue
+    if path not in allowed_tracked:
+        bad.append(raw)
+
+if bad:
+    print('FAIL: server worktree has unapproved drift/untracked files')
+    for row in bad:
+        print(row)
+    sys.exit(1)
+print('OK: server worktree drift limited to approved runtime files')
+PY"
+
+echo
+echo "== server docker image parity check =="
+ssh "$SERVER" "cd '$REMOTE' && python3 - <<'PY'
+import subprocess
+import sys
+
+expected = subprocess.check_output(
+    ['docker', 'image', 'inspect', 'poly1:local', '--format', '{{.Id}}'],
+    text=True,
+).strip()
+rows = subprocess.check_output(
+    ['docker', 'ps', '--format', '{{.Names}}|{{.Image}}|{{.ID}}'],
+    text=True,
+).splitlines()
+
+external = {
+    'poly1-grafana',
+    'poly1-polifly-bridge',
+    'codeloom-upstream',
+}
+bad = []
+for row in rows:
+    name, image, cid = row.split('|', 2)
+    if name in external:
+        continue
+    if not (name == 'poly1' or name.startswith('poly1-')):
+        continue
+    actual = subprocess.check_output(
+        ['docker', 'inspect', cid, '--format', '{{.Image}}'],
+        text=True,
+    ).strip()
+    if actual != expected:
+        bad.append((name, image, actual[:19], expected[:19]))
+
+if bad:
+    print('FAIL: running poly1 containers are not all on current poly1:local image')
+    for name, image, actual, wanted in bad:
+        print(f'{name}: image={image} actual={actual} expected={wanted}')
+    sys.exit(1)
+print('OK: all running managed poly1 containers use current poly1:local image')
+PY"
+
 echo "OK: server remains the source of truth for data, wallet env, runtime env, and Telegram"

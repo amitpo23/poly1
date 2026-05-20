@@ -890,10 +890,13 @@ services:
 
   market_scanner:
     build: .
+    image: poly1:local
     container_name: poly1-market-scanner
     depends_on:
       - trader
-    env_file: .env
+    env_file:
+      - .env
+      - deploy/.env.runtime
     environment:
       RUNTIME_AGENT: market_scanner
       SCANNER_POLL_SEC: "60"
