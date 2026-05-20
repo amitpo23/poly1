@@ -5,11 +5,14 @@ from pathlib import Path
 from agents.application.trading_policy import (
     AGENT_MANIFEST,
     FAST_TAKE_PROFIT_PCT,
+    PROFIT_TAKE_ALLOWED_PCT,
     MARKET_SCAN_SECONDS,
     MAX_AGENT_ALLOCATION_FRACTION,
     MAX_TRADES_PER_HOUR,
+    PREFERRED_TAKE_PROFIT_HIGH_PCT,
     POSITION_POLL_SECONDS,
     REQUIRE_BRAIN_APPROVAL,
+    SOFT_STOP_LOSS_PCT,
     STOP_LOSS_PCT,
     TAKE_PROFIT_CAP_PCT,
     TELEGRAM_REPORT_SECONDS,
@@ -23,8 +26,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class TestTradingPolicyContract(unittest.TestCase):
     def test_canonical_defaults_match_commander_policy(self):
         policy = TradingPolicy()
-        self.assertEqual(policy.stop_loss_pct, 0.03)
-        self.assertEqual(policy.fast_take_profit_pct, 0.05)
+        self.assertEqual(policy.soft_stop_loss_pct, 0.03)
+        self.assertEqual(policy.stop_loss_pct, 0.06)
+        self.assertEqual(policy.profit_take_allowed_pct, 0.015)
+        self.assertEqual(policy.fast_take_profit_pct, 0.04)
+        self.assertEqual(policy.preferred_take_profit_high_pct, 0.08)
         self.assertEqual(policy.take_profit_cap_pct, 0.25)
         self.assertEqual(policy.max_hold_seconds, 21600)
         self.assertEqual(policy.position_poll_seconds, 60)
@@ -34,8 +40,11 @@ class TestTradingPolicyContract(unittest.TestCase):
         self.assertEqual(policy.max_agent_allocation_fraction, 0.50)
         self.assertTrue(policy.require_brain_approval)
 
-        self.assertEqual(STOP_LOSS_PCT, 0.03)
-        self.assertEqual(FAST_TAKE_PROFIT_PCT, 0.05)
+        self.assertEqual(SOFT_STOP_LOSS_PCT, 0.03)
+        self.assertEqual(STOP_LOSS_PCT, 0.06)
+        self.assertEqual(PROFIT_TAKE_ALLOWED_PCT, 0.015)
+        self.assertEqual(FAST_TAKE_PROFIT_PCT, 0.04)
+        self.assertEqual(PREFERRED_TAKE_PROFIT_HIGH_PCT, 0.08)
         self.assertEqual(TAKE_PROFIT_CAP_PCT, 0.25)
         self.assertEqual(POSITION_POLL_SECONDS, 60)
         self.assertEqual(MARKET_SCAN_SECONDS, 60)
@@ -81,11 +90,18 @@ class TestTradingPolicyContract(unittest.TestCase):
         env_text = (ROOT / ".env.example").read_text()
         self.assertIn('CYCLE_SECONDS="60"', env_text)
         self.assertIn('MARKET_BRAIN_EXIT_TAKE_PROFIT_PCT="0.25"', env_text)
-        self.assertIn('MARKET_BRAIN_SMART_EXIT_MIN_PROFIT_PCT="0.05"', env_text)
-        self.assertIn('MARKET_BRAIN_EXIT_STOP_LOSS_PCT="0.03"', env_text)
+        self.assertIn('MARKET_BRAIN_SMART_EXIT_MIN_PROFIT_PCT="0.015"', env_text)
+        self.assertIn('MARKET_BRAIN_PREFERRED_TAKE_PROFIT_PCT="0.04"', env_text)
+        self.assertIn('MARKET_BRAIN_EXIT_SOFT_STOP_LOSS_PCT="0.03"', env_text)
+        self.assertIn('MARKET_BRAIN_EXIT_STOP_LOSS_PCT="0.06"', env_text)
         self.assertIn('MARKET_BRAIN_EXIT_MAX_HOLD_SECONDS="21600"', env_text)
         self.assertIn('MAINTAIN_TAKE_PROFIT_PCT="0.25"', env_text)
-        self.assertIn('MAINTAIN_STOP_LOSS_PCT="0.03"', env_text)
+        self.assertIn('MAINTAIN_SOFT_STOP_LOSS_PCT="0.03"', env_text)
+        self.assertIn('MAINTAIN_STOP_LOSS_PCT="0.06"', env_text)
+        self.assertIn('MAINTAIN_PROFIT_TAKE_ALLOWED_PCT="0.015"', env_text)
+        self.assertIn('MAINTAIN_PREFERRED_TAKE_PROFIT_PCT="0.04"', env_text)
+        self.assertIn('MAINTAIN_PREFERRED_TAKE_PROFIT_HIGH_PCT="0.08"', env_text)
+        self.assertIn('MAINTAIN_IMMEDIATE_REVIEW_MOVE_PCT="0.02"', env_text)
         self.assertIn('MAINTAIN_MAX_HOLD_HOURS="6"', env_text)
         self.assertIn('MAINTAIN_POLL_SEC="60"', env_text)
         self.assertIn('MAINTAIN_LLM_EXIT_INTERVAL_SEC="60"', env_text)

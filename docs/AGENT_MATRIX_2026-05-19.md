@@ -9,9 +9,17 @@ the next opportunity.
 
 Hard policy:
 
-- Stop loss: 3% (`POLY1_STOP_LOSS_PCT`, default `0.03`).
-- Fast profit-taking: brain may exit from 5% profit when momentum does not
-  justify holding (`POLY1_FAST_TAKE_PROFIT_PCT`, default `0.05`).
+- Fixed percentages are guardrails, not the strategy. The brain exits when EV
+  no longer justifies holding.
+- Soft stop: 3% loss forces immediate brain review
+  (`POLY1_SOFT_STOP_LOSS_PCT`, default `0.03`).
+- Hard stop: 6% loss exits unless technically unexitable
+  (`POLY1_STOP_LOSS_PCT`, default `0.06`).
+- Profit may be taken from 1.5% when the brain says the edge has faded
+  (`POLY1_PROFIT_TAKE_ALLOWED_PCT`, default `0.015`).
+- Preferred profit exit zone: 4%-8%; hold through it only if the brain would
+  re-enter at the current price (`POLY1_FAST_TAKE_PROFIT_PCT=0.04`,
+  `POLY1_PREFERRED_TAKE_PROFIT_HIGH_PCT=0.08`).
 - Profit cap: never hold past 25% profit (`POLY1_TAKE_PROFIT_CAP_PCT`,
   default `0.25`).
 - Entry probability threshold: 52% minimum weighted probability/score across

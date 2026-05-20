@@ -4,8 +4,9 @@ This is the implementation of the long-stubbed `Trader.maintain_positions`.
 It periodically scans open journal positions (`filled` and `btc_daily_open`),
 computes their MTM via Polymarket midpoint, and closes them on three triggers:
 
-- **take_profit:** fast exit can start at +5%; hard cap at +25%
-- **stop_loss:**   mid <= entry × (1 - stop_loss_pct)    (default 3%)
+- **profit_review:** profit may be taken from +1.5%; preferred exit zone +4%-8%
+- **soft_stop:**     -3% forces immediate brain review, not blind selling
+- **hard_stop:**     -6% exits unless technically unexitable
 - **timeout:**     position age >= max_hold_hours        (default 6h hard cap)
 
 The 6h value is not a target hold. Each cycle revalidates whether to exit now;
@@ -45,8 +46,12 @@ from agents.application.trade_log import TradeLog, RESOLVED_LOSS
 from agents.application.trading_policy import (
     MAX_HOLD_SECONDS,
     POSITION_POLL_SECONDS,
+    PROFIT_TAKE_ALLOWED_PCT,
+    SOFT_STOP_LOSS_PCT,
     STOP_LOSS_PCT,
     TAKE_PROFIT_CAP_PCT,
+    FAST_TAKE_PROFIT_PCT,
+    PREFERRED_TAKE_PROFIT_HIGH_PCT,
 )
 from agents.utils.notify import notify_trade, _safe_balance
 
@@ -88,8 +93,17 @@ class PositionManagerConfig:
     """Env-driven config for exit thresholds."""
     # Hard profit cap: the brain may exit earlier, but never holds past this.
     take_profit_pct: float = TAKE_PROFIT_CAP_PCT
+    # Guardrail only: at this drawdown the brain must re-check immediately.
+    soft_stop_loss_pct: float = SOFT_STOP_LOSS_PCT
     # Hard loss guard: no position is allowed to drift into "hope mode".
     stop_loss_pct: float = STOP_LOSS_PCT
+    # Profit is available to take from here if the brain says edge has faded.
+    profit_take_allowed_pct: float = PROFIT_TAKE_ALLOWED_PCT
+    # Preferred profit zone: exit unless the brain would re-enter now.
+    preferred_take_profit_pct: float = FAST_TAKE_PROFIT_PCT
+    preferred_take_profit_high_pct: float = PREFERRED_TAKE_PROFIT_HIGH_PCT
+    # Re-check immediately when price moves this much since last LLM exit check.
+    immediate_review_move_pct: float = 0.02
     # Hard close after this many hours regardless of price (long-tail
     # positions on multi-week markets shouldn't sit indefinitely).
     max_hold_hours: int = int(MAX_HOLD_SECONDS / 3600)
@@ -121,7 +135,23 @@ class PositionManagerConfig:
     def from_env(cls) -> "PositionManagerConfig":
         return cls(
             take_profit_pct=_env_float("MAINTAIN_TAKE_PROFIT_PCT", TAKE_PROFIT_CAP_PCT),
+            soft_stop_loss_pct=_env_float(
+                "MAINTAIN_SOFT_STOP_LOSS_PCT", SOFT_STOP_LOSS_PCT
+            ),
             stop_loss_pct=_env_float("MAINTAIN_STOP_LOSS_PCT", STOP_LOSS_PCT),
+            profit_take_allowed_pct=_env_float(
+                "MAINTAIN_PROFIT_TAKE_ALLOWED_PCT", PROFIT_TAKE_ALLOWED_PCT
+            ),
+            preferred_take_profit_pct=_env_float(
+                "MAINTAIN_PREFERRED_TAKE_PROFIT_PCT", FAST_TAKE_PROFIT_PCT
+            ),
+            preferred_take_profit_high_pct=_env_float(
+                "MAINTAIN_PREFERRED_TAKE_PROFIT_HIGH_PCT",
+                PREFERRED_TAKE_PROFIT_HIGH_PCT,
+            ),
+            immediate_review_move_pct=_env_float(
+                "MAINTAIN_IMMEDIATE_REVIEW_MOVE_PCT", 0.02
+            ),
             max_hold_hours=_env_int("MAINTAIN_MAX_HOLD_HOURS", int(MAX_HOLD_SECONDS / 3600)),
             poll_seconds=_env_int("MAINTAIN_POLL_SEC", POSITION_POLL_SECONDS),
             sell_slippage=_env_float("MAINTAIN_SELL_SLIPPAGE", 0.02),
@@ -192,8 +222,11 @@ class PositionManager:
             exit_trailing_stop_pct=_env_float(
                 "MAINTAIN_TRAILING_STOP_PCT", 0.02
             ),
+            exit_soft_stop_loss_pct=self.cfg.soft_stop_loss_pct,
             exit_stop_loss_pct=self.cfg.stop_loss_pct,
             exit_max_hold_seconds=self.cfg.max_hold_hours * 3600,
+            smart_exit_min_profit_pct=self.cfg.profit_take_allowed_pct,
+            preferred_take_profit_pct=self.cfg.preferred_take_profit_pct,
         ))
         self.exit_executor = exit_executor or ExitExecutor(
             polymarket=self.polymarket,
@@ -210,6 +243,7 @@ class PositionManager:
         self._max_price_by_token: dict[str, float] = {}
         # Tracks when we last ran the LLM exit check per token (unix timestamp).
         self._last_llm_exit_check: dict[str, float] = {}
+        self._last_llm_exit_price: dict[str, float] = {}
         self._llm_exit_interval: int = _env_int("MAINTAIN_LLM_EXIT_INTERVAL_SEC", 300)
         # Lazy-init: LLM client for exit evaluation (only built on first use).
         self._llm = None
@@ -249,7 +283,11 @@ class PositionManager:
                 continue
             if reason is None:
                 # Rule-based logic says hold — check LLM reasoning every N minutes.
-                reason = self._llm_exit_check(pos, mid)
+                reason = self._llm_exit_check(
+                    pos,
+                    mid,
+                    force=self._needs_immediate_brain_review(pos, mid),
+                )
                 if reason is None:
                     continue
             close_result = self._close_position(pos, reason, mid)
@@ -451,6 +489,19 @@ class PositionManager:
 
     # --------------------------------------------------------- LLM exit check
 
+    def _needs_immediate_brain_review(self, pos: AggregatedPosition, mid: float) -> bool:
+        pnl_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
+        if pnl_pct <= -self.cfg.soft_stop_loss_pct:
+            return True
+        if pnl_pct >= self.cfg.profit_take_allowed_pct:
+            return True
+        last_price = self._last_llm_exit_price.get(pos.token_id)
+        if last_price is not None and last_price > 0:
+            move_pct = abs(mid - last_price) / last_price
+            if move_pct >= self.cfg.immediate_review_move_pct:
+                return True
+        return False
+
     def _get_llm(self):
         """Lazy-init the LLM client (same model as executor)."""
         if self._llm is None:
@@ -466,7 +517,13 @@ class PositionManager:
             self._prompter = Prompter()
         return self._prompter
 
-    def _llm_exit_check(self, pos: AggregatedPosition, mid: float) -> Optional[str]:
+    def _llm_exit_check(
+        self,
+        pos: AggregatedPosition,
+        mid: float,
+        *,
+        force: bool = False,
+    ) -> Optional[str]:
         """Ask the LLM every N minutes whether to exit a position.
 
         Returns a close reason string ("stop_loss" / "take_profit") if the
@@ -475,9 +532,10 @@ class PositionManager:
         """
         now = time.time()
         last = self._last_llm_exit_check.get(pos.token_id, 0.0)
-        if now - last < self._llm_exit_interval:
+        if not force and now - last < self._llm_exit_interval:
             return None
         self._last_llm_exit_check[pos.token_id] = now
+        self._last_llm_exit_price[pos.token_id] = mid
 
         try:
             hold_hours = (now - pos.earliest_ts) / 3600.0
@@ -524,6 +582,7 @@ class PositionManager:
                 news_context=news_context,
                 conviction_context=conviction_context,
                 tavily_context=tavily_ctx,
+                exit_policy_context=self._exit_policy_context(),
             )
 
             llm = self._get_llm()
@@ -600,6 +659,20 @@ class PositionManager:
                 pos.token_id[:18],
             )
         return None
+
+    def _exit_policy_context(self) -> str:
+        return (
+            "Exit by brain/EV, not by blind fixed targets. "
+            f"Profit may be taken from +{self.cfg.profit_take_allowed_pct:.1%}; "
+            f"preferred profit exit zone is +{self.cfg.preferred_take_profit_pct:.1%}"
+            f" to +{self.cfg.preferred_take_profit_high_pct:.1%} unless you would "
+            "re-enter this exact position at the current price. "
+            f"Soft stop -{self.cfg.soft_stop_loss_pct:.1%} means forced review, "
+            f"hard stop -{self.cfg.stop_loss_pct:.1%} means exit. "
+            f"Hard profit cap +{self.cfg.take_profit_pct:.1%} means exit. "
+            "If internal EV is no longer positive, exit even for a small profit "
+            "or small loss."
+        )
 
     def _record_exit_brain_decision(self, pos: AggregatedPosition, decision) -> None:
         try:

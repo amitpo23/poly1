@@ -30,8 +30,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-STOP_LOSS_PCT = 0.03
-FAST_TAKE_PROFIT_PCT = 0.05
+SOFT_STOP_LOSS_PCT = 0.03
+HARD_STOP_LOSS_PCT = 0.06
+PROFIT_TAKE_ALLOWED_PCT = 0.015
+PREFERRED_TAKE_PROFIT_PCT = 0.04
+PREFERRED_TAKE_PROFIT_HIGH_PCT = 0.08
+FAST_TAKE_PROFIT_PCT = PREFERRED_TAKE_PROFIT_PCT
+STOP_LOSS_PCT = HARD_STOP_LOSS_PCT
 TAKE_PROFIT_CAP_PCT = 0.25
 # Hard safety ceiling only. The strategy preference is to exit as quickly as
 # the brain can justify, not to wait for this timeout.
@@ -48,8 +53,11 @@ REQUIRE_BRAIN_APPROVAL = True
 class TradingPolicy:
     """Resolved policy values after environment overrides."""
 
+    soft_stop_loss_pct: float = SOFT_STOP_LOSS_PCT
     stop_loss_pct: float = STOP_LOSS_PCT
+    profit_take_allowed_pct: float = PROFIT_TAKE_ALLOWED_PCT
     fast_take_profit_pct: float = FAST_TAKE_PROFIT_PCT
+    preferred_take_profit_high_pct: float = PREFERRED_TAKE_PROFIT_HIGH_PCT
     take_profit_cap_pct: float = TAKE_PROFIT_CAP_PCT
     max_hold_seconds: int = MAX_HOLD_SECONDS
     position_poll_seconds: int = POSITION_POLL_SECONDS
@@ -62,9 +70,19 @@ class TradingPolicy:
     @classmethod
     def from_env(cls) -> "TradingPolicy":
         return cls(
+            soft_stop_loss_pct=_env_float(
+                "POLY1_SOFT_STOP_LOSS_PCT", SOFT_STOP_LOSS_PCT
+            ),
             stop_loss_pct=_env_float("POLY1_STOP_LOSS_PCT", STOP_LOSS_PCT),
+            profit_take_allowed_pct=_env_float(
+                "POLY1_PROFIT_TAKE_ALLOWED_PCT", PROFIT_TAKE_ALLOWED_PCT
+            ),
             fast_take_profit_pct=_env_float(
                 "POLY1_FAST_TAKE_PROFIT_PCT", FAST_TAKE_PROFIT_PCT
+            ),
+            preferred_take_profit_high_pct=_env_float(
+                "POLY1_PREFERRED_TAKE_PROFIT_HIGH_PCT",
+                PREFERRED_TAKE_PROFIT_HIGH_PCT,
             ),
             take_profit_cap_pct=_env_float(
                 "POLY1_TAKE_PROFIT_CAP_PCT", TAKE_PROFIT_CAP_PCT
@@ -114,7 +132,7 @@ AGENT_MANIFEST: dict[str, dict[str, str]] = {
     },
     "position_manager": {
         "role": "exit brain",
-        "strategy": "Re-evaluate exits every minute; exit fast by default, hold only on strong brain/forecast evidence, enforce 3% stop and 25% hard cap.",
+        "strategy": "Re-evaluate exits every minute; use fixed percentages as guardrails only: soft review at -3%, hard stop at -6%, profit review from +1.5%, preferred profit exit +4%-8%, hard cap +25%. Hold only when the brain would re-enter at the current price.",
         "places_orders": "sell only",
     },
     "risk_gate": {

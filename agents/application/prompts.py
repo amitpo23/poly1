@@ -283,6 +283,7 @@ class Prompter:
         news_context: str = "",
         conviction_context: str = "",
         tavily_context: str = "",
+        exit_policy_context: str = "",
     ) -> str:
         pnl_pct = (current_price - entry_price) / max(entry_price, 1e-9) * 100
         direction = "UP" if current_price > entry_price else "DOWN"
@@ -298,10 +299,12 @@ Time held: {hold_hours:.1f} hours
 {f"Recent news (DB): {news_context}" if news_context else "Recent news: none available"}
 {f"Live external news (Tavily): {tavily_context}" if tavily_context else ""}
 {f"External signals: {conviction_context}" if conviction_context else "External signals: none available"}
+{f"Exit policy: {exit_policy_context}" if exit_policy_context else ""}
 
 Assess whether this position should be held or exited NOW.
 Consider:
 - Is the price moving against your thesis?
+- Would you enter this same position again at the current price?
 - Has any new information invalidated your original reasoning?
 - Is the remaining upside worth the current downside risk?
 - Is the market approaching resolution with the wrong outcome?

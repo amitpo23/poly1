@@ -115,8 +115,10 @@ Old ad-hoc monitors are disabled and must not be restarted.
 Every live entry must pass through the brain/risk gate before execution. The canonical
 policy is in `agents/application/trading_policy.py`:
 
-- stop loss: `3%`
-- fast take-profit starts from `5%`
+- soft stop: `3%` forces immediate brain review
+- hard stop: `6%`
+- profit may be taken from `1.5%`
+- preferred profit exit zone: `4%`-`8%` unless the brain would re-enter now
 - hard take-profit cap: `25%`
 - max trades per hour: `100`
 - max allocation per agent: `50%` of wallet capital

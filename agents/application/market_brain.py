@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 from agents.application.trading_policy import (
     FAST_TAKE_PROFIT_PCT,
+    PROFIT_TAKE_ALLOWED_PCT,
     MAX_HOLD_SECONDS,
+    SOFT_STOP_LOSS_PCT,
     STOP_LOSS_PCT,
     TAKE_PROFIT_CAP_PCT,
 )
@@ -64,10 +66,12 @@ class BrainConfig:
     scalper_min_edge_score: float = 0.35
     exit_take_profit_pct: float = TAKE_PROFIT_CAP_PCT
     exit_trailing_stop_pct: float = 0.02
+    exit_soft_stop_loss_pct: float = SOFT_STOP_LOSS_PCT
     exit_stop_loss_pct: float = STOP_LOSS_PCT
     exit_max_hold_seconds: int = MAX_HOLD_SECONDS
     smart_exit_enabled: bool = True
-    smart_exit_min_profit_pct: float = FAST_TAKE_PROFIT_PCT
+    smart_exit_min_profit_pct: float = PROFIT_TAKE_ALLOWED_PCT
+    preferred_take_profit_pct: float = FAST_TAKE_PROFIT_PCT
     smart_exit_momentum_window: str = "60s"
     smart_exit_min_momentum_pct: float = 0.001
     smart_exit_peak_drawdown_hold_pct: float = 0.006
@@ -105,6 +109,9 @@ class BrainConfig:
                 "MARKET_BRAIN_EXIT_TAKE_PROFIT_PCT", TAKE_PROFIT_CAP_PCT
             ),
             exit_trailing_stop_pct=_env_float("MARKET_BRAIN_EXIT_TRAILING_STOP_PCT", 0.02),
+            exit_soft_stop_loss_pct=_env_float(
+                "MARKET_BRAIN_EXIT_SOFT_STOP_LOSS_PCT", SOFT_STOP_LOSS_PCT
+            ),
             exit_stop_loss_pct=_env_float(
                 "MARKET_BRAIN_EXIT_STOP_LOSS_PCT", STOP_LOSS_PCT
             ),
@@ -119,7 +126,10 @@ class BrainConfig:
             ),
             smart_exit_enabled=_env_bool("MARKET_BRAIN_SMART_EXIT_ENABLED", True),
             smart_exit_min_profit_pct=_env_float(
-                "MARKET_BRAIN_SMART_EXIT_MIN_PROFIT_PCT", FAST_TAKE_PROFIT_PCT
+                "MARKET_BRAIN_SMART_EXIT_MIN_PROFIT_PCT", PROFIT_TAKE_ALLOWED_PCT
+            ),
+            preferred_take_profit_pct=_env_float(
+                "MARKET_BRAIN_PREFERRED_TAKE_PROFIT_PCT", FAST_TAKE_PROFIT_PCT
             ),
             smart_exit_momentum_window=os.getenv(
                 "MARKET_BRAIN_SMART_EXIT_MOMENTUM_WINDOW", "60s"
@@ -754,6 +764,9 @@ class MarketBrain:
         if pnl_pct <= -self.cfg.exit_stop_loss_pct:
             return BrainDecision(True, "stop_loss", abs(pnl_pct), profile, features)
 
+        if pnl_pct <= -self.cfg.exit_soft_stop_loss_pct:
+            return BrainDecision(False, "soft_stop_review", abs(pnl_pct), profile, features)
+
         if pnl_pct >= self.cfg.exit_take_profit_pct:
             return BrainDecision(True, "take_profit_cap", pnl_pct, profile, features)
 
@@ -763,7 +776,7 @@ class MarketBrain:
         ):
             return BrainDecision(True, "trailing_stop_after_profit", mfe_pct, profile, features)
 
-        if pnl_pct >= self.cfg.smart_exit_min_profit_pct:
+        if pnl_pct >= self.cfg.preferred_take_profit_pct:
             if self._smart_exit_should_hold(
                 position=position,
                 profile=profile,
@@ -780,6 +793,9 @@ class MarketBrain:
                     features,
                 )
             return BrainDecision(True, "take_profit", pnl_pct, profile, features)
+
+        if pnl_pct >= self.cfg.smart_exit_min_profit_pct:
+            return BrainDecision(False, "profit_review", pnl_pct, profile, features)
 
         if age_seconds >= self.cfg.exit_max_hold_seconds:
             # Grace period: if position is nearly flat, give it extra time

@@ -53,7 +53,12 @@ class _TmpDB:
     def _config(self, **overrides):
         defaults = dict(
             take_profit_pct=0.25,
-            stop_loss_pct=0.03,
+            soft_stop_loss_pct=0.03,
+            stop_loss_pct=0.06,
+            profit_take_allowed_pct=0.015,
+            preferred_take_profit_pct=0.04,
+            preferred_take_profit_high_pct=0.08,
+            immediate_review_move_pct=0.02,
             max_hold_hours=6,
             poll_seconds=15,
             sell_slippage=0.02,
@@ -207,15 +212,23 @@ class TestEvaluation(_TmpDB, unittest.TestCase):
         self.assertEqual(reason, "take_profit")
         self.assertAlmostEqual(mid, 0.525)
 
-    def test_stop_loss_fires_at_3_pct_below_entry(self):
+    def test_soft_stop_forces_brain_review_but_does_not_blind_sell(self):
         pm = self._polymarket({"TOK_X": 0.484})  # below 3% threshold of 0.50
         mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
         pos = self._make_position("TOK_X", entry_price=0.50)
         reason, mid = mgr._evaluate_position(pos)
+        self.assertIsNone(reason)
+        self.assertTrue(mgr._needs_immediate_brain_review(pos, mid))
+
+    def test_hard_stop_loss_fires_at_6_pct_below_entry(self):
+        pm = self._polymarket({"TOK_X": 0.469})  # below hard 6% threshold of 0.50
+        mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
+        pos = self._make_position("TOK_X", entry_price=0.50)
+        reason, _ = mgr._evaluate_position(pos)
         self.assertEqual(reason, "stop_loss")
 
     def test_within_band_holds(self):
-        pm = self._polymarket({"TOK_X": 0.52})  # 4% above, less than fast TP
+        pm = self._polymarket({"TOK_X": 0.505})  # 1% above, below review band
         mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
         pos = self._make_position("TOK_X", entry_price=0.50)
         reason, mid = mgr._evaluate_position(pos)
