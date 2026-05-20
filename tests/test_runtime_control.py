@@ -48,6 +48,7 @@ class RuntimeControlTests(unittest.TestCase):
                 minutes=60,
                 budget=15.0,
                 wallet_balance=34.2452,
+                equity_balance=35.125,
                 max_open=100,
                 max_position_fraction="0.03",
                 max_daily_token_usd="10.0",
@@ -68,6 +69,8 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertIn('BTC_DAILY_POSITION_SIZE_USDC="1.50"', env_text)
             self.assertIn('BTC_5MIN_POSITION_SIZE_USDC="1.50"', env_text)
             self.assertEqual(control["budget_usdc"], 15.0)
+            self.assertEqual(control["wallet_balance_at_start_usdc"], 34.2452)
+            self.assertEqual(control["equity_at_start_usdc"], 35.125)
             self.assertFalse(halt.exists())
 
 

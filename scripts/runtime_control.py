@@ -360,6 +360,13 @@ def live_hour(args: argparse.Namespace) -> int:
     wallet_balance = float(args.wallet_balance)
     if wallet_balance <= 0:
         raise SystemExit("--wallet-balance must be positive")
+    equity_balance = (
+        float(args.equity_balance)
+        if args.equity_balance is not None
+        else wallet_balance
+    )
+    if equity_balance <= 0:
+        raise SystemExit("--equity-balance must be positive")
 
     env = dict(BASE_ENV)
     env["RUNTIME_MODE"] = "live"
@@ -399,6 +406,7 @@ def live_hour(args: argparse.Namespace) -> int:
         "allowed_live_agents": requested,
         "budget_usdc": budget,
         "wallet_balance_at_start_usdc": wallet_balance,
+        "equity_at_start_usdc": equity_balance,
         "max_open_positions": int(args.max_open),
         "expires_at": expires_at.isoformat(),
         "requires_halt": False,
@@ -459,6 +467,7 @@ def main() -> int:
     p_live_hour = sub.add_parser("live-hour")
     p_live_hour.add_argument("--budget", type=float, required=True)
     p_live_hour.add_argument("--wallet-balance", type=float, required=True)
+    p_live_hour.add_argument("--equity-balance", type=float, default=None)
     p_live_hour.add_argument("--minutes", type=int, default=60)
     p_live_hour.add_argument("--max-open", type=int, default=100)
     p_live_hour.add_argument("--agents", default="")
