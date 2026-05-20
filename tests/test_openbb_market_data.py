@@ -13,6 +13,7 @@ class OpenBBMarketDataTests(unittest.TestCase):
         self.assertEqual(client.infer_symbol("Will Nvidia close higher?"), ("NVDA", "stock"))
         self.assertEqual(client.infer_symbol("Will the S&P 500 go up?"), ("SPY", "etf"))
         self.assertEqual(client.infer_symbol("Will crude oil rise?"), ("USO", "commodity_etf"))
+        self.assertEqual(client.infer_symbol("Will the Vegas Golden Knights win?"), (None, None))
 
     def test_signal_from_bars_detects_bullish_trend(self):
         client = OpenBBMarketDataClient()

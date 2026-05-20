@@ -7,6 +7,7 @@ skip-style signal instead of blocking the trading system.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -100,7 +101,7 @@ class OpenBBMarketDataClient:
     def infer_symbol(self, question: str) -> tuple[Optional[str], Optional[str]]:
         text = str(question or "").lower()
         for key, value in self.SYMBOLS.items():
-            if key in text:
+            if _keyword_matches(text, key):
                 return value
         return None, None
 
@@ -288,3 +289,12 @@ def _seq_float(values: list, idx: int) -> float:
         return float(raw or 0.0)
     except (IndexError, TypeError, ValueError):
         return 0.0
+
+
+def _keyword_matches(text: str, keyword: str) -> bool:
+    key = keyword.lower()
+    if key == "s&p":
+        return "s&p" in text or "s & p" in text
+    if re.search(r"[a-z0-9]", key):
+        return re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", text) is not None
+    return key in text
