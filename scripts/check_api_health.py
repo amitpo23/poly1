@@ -21,6 +21,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 @dataclass
@@ -74,8 +76,8 @@ def _request_json(
 
 def _http_error_detail(exc: Exception) -> str:
     def redact(text: str) -> str:
-        text = re.sub(r"sk-[A-Za-z0-9_\\-*]+", "sk-[REDACTED]", text)
-        text = re.sub(r"sk-ant-[A-Za-z0-9_\\-*]+", "sk-ant-[REDACTED]", text)
+        text = re.sub(r"sk-ant-[-A-Za-z0-9_\\*]+", "sk-ant-[REDACTED]", text)
+        text = re.sub(r"sk-[-A-Za-z0-9_\\*]+", "sk-[REDACTED]", text)
         return text[:220]
 
     if isinstance(exc, urllib.error.HTTPError):
@@ -198,6 +200,42 @@ def check_anthropic(model: str) -> Check:
         return Check("anthropic_messages", "PASS" if ok else "FAIL", f"model={model}", latency_ms)
     except Exception as exc:
         return Check("anthropic_messages", "FAIL", f"model={model}; {_http_error_detail(exc)}")
+
+
+def check_llm_decision_path(openai: Check, anthropic: Check) -> Check:
+    if openai.status == "PASS":
+        return Check("llm_decision_path", "PASS", "OpenAI primary is available")
+    if anthropic.status == "PASS":
+        return Check(
+            "llm_decision_path",
+            "PASS",
+            "OpenAI unavailable; Anthropic/Hermes fallback is available",
+        )
+    return Check("llm_decision_path", "FAIL", "no LLM provider available for brain decisions")
+
+
+def check_hermes_forecast() -> Check:
+    url = (
+        os.getenv("HERMES_FORECAST_URL", "").strip()
+        or os.getenv("HERMES_API_URL", "").strip()
+    )
+    if not url:
+        return Check("hermes_forecast", "WARN", "not configured")
+    health_url = urllib.parse.urljoin(url.rstrip("/") + "/", "healthz")
+    return check_url("hermes_forecast", health_url, timeout=10)
+
+
+def check_alpaca_market_data() -> Check:
+    try:
+        from agents.application.alpaca_market_data import AlpacaMarketDataClient
+
+        client = AlpacaMarketDataClient(timeout_sec=8, cache_ttl_sec=0)
+        bars = client.fetch_bars("BTC/USD", "crypto")
+        if bars:
+            return Check("alpaca_market_data", "PASS", f"crypto bars={len(bars)}")
+        return Check("alpaca_market_data", "WARN", "reachable but returned no BTC/USD bars")
+    except Exception as exc:
+        return Check("alpaca_market_data", "FAIL", _http_error_detail(exc))
 
 
 def check_tavily() -> Check:
@@ -332,10 +370,15 @@ def main() -> int:
     checks = []
     checks.extend(check_env())
     checks.append(check_tavily())
-    checks.append(check_openai(openai_model))
-    checks.append(check_anthropic(anthropic_model))
+    openai_check = check_openai(openai_model)
+    anthropic_check = check_anthropic(anthropic_model)
+    checks.append(openai_check)
+    checks.append(anthropic_check)
+    checks.append(check_llm_decision_path(openai_check, anthropic_check))
     checks.append(check_url("polymarket_gamma", "https://gamma-api.polymarket.com/markets?limit=1"))
     checks.append(check_url("polymarket_clob", "https://clob.polymarket.com/markets?next_cursor=MA=="))
+    checks.append(check_alpaca_market_data())
+    checks.append(check_hermes_forecast())
     checks.append(check_polifly_bridge())
     checks.append(check_tradingview_options())
 
