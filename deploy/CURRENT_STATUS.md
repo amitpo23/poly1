@@ -11,8 +11,8 @@ CLOB reconciliation fix, and follow-up negative micro proof:
 
 - Server is in `freeze`; `data/HALT` is present.
 - No open positions remain.
-- Latest deployed commit before the scanner-quality upgrade:
-  `a5c8eb2 docs: update live proof handoff after delayed order fix`.
+- Latest deployed commit:
+  `f916f3c feat: harden scanner signal execution quality`.
 - Full local test suite after scanner-quality upgrade: `538 tests OK`.
 - Server `trading_stability_preflight --mode freeze` passed after deployment.
 - Current cash/equity after the final negative micro proof: `27.403582 USDC`.

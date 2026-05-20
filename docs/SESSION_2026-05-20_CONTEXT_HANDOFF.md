@@ -11,8 +11,8 @@ before touching live trading.
 - Runtime mode: `freeze`
 - HALT: present
 - Open positions from today's scanner proofs: none
-- Latest deployed commit before scanner-quality upgrade:
-  `a5c8eb2 docs: update live proof handoff after delayed order fix`
+- Latest deployed commit:
+  `f916f3c feat: harden scanner signal execution quality`
 - Tests after scanner-quality upgrade:
   `python3 -m unittest discover -s tests` → `538 tests OK`
 - Server freeze preflight after deployment: OK
