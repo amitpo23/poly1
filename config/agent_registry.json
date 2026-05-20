@@ -195,6 +195,20 @@
       "promotion_criteria": {"must_run_with_any_entry_agent": true}
     },
     {
+      "agent_id": "rl_reward_lab",
+      "display_name": "RL Reward Lab",
+      "role": "offline_policy_research",
+      "mode": "shadow",
+      "places_orders": false,
+      "markets": ["polymarket:any"],
+      "owner_service": "rl-reward-dataset",
+      "required_inputs": ["decision_journal", "brain_decisions", "shadow_markouts"],
+      "signal_schema": "rl_reward_dataset_v1",
+      "anchor_rules": {"allowed": false},
+      "veto_rules": ["insufficient_markouts", "negative_walk_forward_reward", "overfit"],
+      "promotion_criteria": {"offline_only": true, "min_labeled_rows": 500, "walk_forward_required": true, "no_live_until_advisor_validated": true}
+    },
+    {
       "agent_id": "telegram_reporter",
       "display_name": "Telegram Reporter",
       "role": "operator_dashboard",
