@@ -69,4 +69,7 @@ executor score gate.
 - `scanner_executor` inserts a pending journal row before any live order.
 - Live fills are written with status `filled`, so `position_manager` manages
   them with the standard stop-loss/take-profit/timeout logic.
+- Controlled `$1` probes use `MAINTAIN_MIN_EXIT_NOTIONAL_USDC=0.50`, so smart
+  exits are not blocked by a `$1.00` dust threshold when the brain decides to
+  leave quickly.
 - Telegram fill notifications use the existing `notify_trade` path.
