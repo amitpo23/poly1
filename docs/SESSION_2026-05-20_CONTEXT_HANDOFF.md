@@ -72,6 +72,8 @@ Implemented after the negative micro proof:
 - Runtime live probes set `EXECUTION_QUALITY_MAX_SPREAD_PCT=0.08` instead of
   `0.05`. This is a proof-mode loosened spread ceiling only; scanner-executor
   still requires net EV and max entry drift before an order can fire.
+- Runtime also sets `MAX_ENTRY_SPREAD_PCT=0.08`, the direct Polymarket
+  `_fillable_market_buy` spread guard used by scanner-executor.
 - Recent `closed_stop_loss` / `resolved_loss` rows apply a soft score penalty
   before a market is routed again.
 - `scanner_executor` revalidates live executable price against the scanner

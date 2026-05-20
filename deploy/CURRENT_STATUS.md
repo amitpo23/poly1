@@ -76,6 +76,8 @@ Scanner-quality upgrade now implemented locally:
 - Runtime live probes now allow `EXECUTION_QUALITY_MAX_SPREAD_PCT=0.08`.
   This is intentionally a proof-mode loosened spread ceiling; scanner-executor
   still requires net EV, max entry drift, and live orderbook fillability.
+- `MAX_ENTRY_SPREAD_PCT` is also set to `0.08`; this is the direct
+  Polymarket `_fillable_market_buy` guard used by scanner-executor.
 - Recent stop-losses/resolved losses apply a soft score penalty before routing.
 - `scanner_executor` rejects live fills if the executable entry price drifted
   too far from the scanner-approved price.
