@@ -57,6 +57,12 @@ SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS=12
 `scripts/runtime_control.py live-probe --agent scanner_executor ...` can enable
 it through the same control plane as the other entry agents.
 
+For controlled wait-probe runs, `scripts/runtime_control.py live-hour
+--scanner-allow-wait --scanner-wait-min-score 0.79` also aligns
+`SCANNER_EXECUTOR_MIN_SCORE` to the wait threshold. Otherwise a 0.79+ wait
+candidate can pass the timing override and still be blocked by the default 0.80
+executor score gate.
+
 ## Safety Notes
 
 - `market_scanner` still never places orders.

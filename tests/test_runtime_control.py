@@ -72,6 +72,7 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertIn('BTC_5MIN_POSITION_SIZE_USDC="1.50"', env_text)
             self.assertIn('SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE="true"', env_text)
             self.assertIn('SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE="0.79"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_MIN_SCORE="0.79"', env_text)
             self.assertEqual(control["budget_usdc"], 15.0)
             self.assertEqual(control["wallet_balance_at_start_usdc"], 34.2452)
             self.assertEqual(control["equity_at_start_usdc"], 35.125)

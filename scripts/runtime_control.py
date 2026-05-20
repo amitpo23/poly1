@@ -384,6 +384,9 @@ def live_hour(args: argparse.Namespace) -> int:
     if args.scanner_allow_wait:
         env["SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE"] = "true"
         env["SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE"] = args.scanner_wait_min_score
+        # The executor applies the general score gate before the timing override
+        # can help. Keep both thresholds aligned for controlled wait probes.
+        env["SCANNER_EXECUTOR_MIN_SCORE"] = args.scanner_wait_min_score
     env["BTC_DAILY_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["BTC_5MIN_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["BTC_5MIN_STRADDLE_LEG_USDC"] = args.position_size_usdc
