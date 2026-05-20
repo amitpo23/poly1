@@ -219,6 +219,7 @@ class ScannerConfig:
     max_near_res_hours: float = 24.0
     near_res_confidence: float = 0.60
     news_shock_materiality: float = 0.40  # Tavily confidence to write news_signal
+    recent_close_skip_hours: int = 12
     recent_stop_penalty_hours: int = 12
     recent_stop_penalty_score: float = 0.12
     # Manifold divergence gate: only worth calling if spread exists.
@@ -250,6 +251,7 @@ class ScannerConfig:
             max_near_res_hours=_env_float("SCANNER_MAX_NEAR_RES_HOURS", 24.0),
             near_res_confidence=_env_float("SCANNER_NEAR_RES_CONFIDENCE", 0.60),
             news_shock_materiality=_env_float("SCANNER_NEWS_SHOCK_MATERIALITY", 0.40),
+            recent_close_skip_hours=_env_int("SCANNER_RECENT_CLOSE_SKIP_HOURS", 12),
             recent_stop_penalty_hours=_env_int("SCANNER_RECENT_STOP_PENALTY_HOURS", 12),
             recent_stop_penalty_score=_env_float("SCANNER_RECENT_STOP_PENALTY_SCORE", 0.12),
             manifold_min_divergence=_env_float("SCANNER_MANIFOLD_MIN_DIVERGENCE", 0.07),
@@ -304,6 +306,7 @@ class MarketScanner:
             "dispatched_trade": 0,
             "dispatched_near_resolution": 0,
             "dispatched_news_shock": 0,
+            "skipped_recent_close": 0,
         }
 
         # 1. Fetch liquid markets from Gamma.
@@ -511,6 +514,20 @@ class MarketScanner:
             no_price=no_price,
         )
         selected_token_id = str(execution_meta.get("selected_token_id") or "")
+        if self.cfg.recent_close_skip_hours > 0 and self.trade_log.has_recent_close_for_market(
+            market_id,
+            hours=self.cfg.recent_close_skip_hours,
+            token_id=selected_token_id or None,
+        ):
+            result["skipped_recent_close"] += 1
+            logger.info(
+                "scanner skip recent close: market=%s token=%s hours=%s %s",
+                market_id[:20],
+                selected_token_id[:12],
+                self.cfg.recent_close_skip_hours,
+                question[:60],
+            )
+            return
         recent_stop_losses = self.trade_log.count_recent_closes_for_market(
             market_id,
             hours=self.cfg.recent_stop_penalty_hours,
