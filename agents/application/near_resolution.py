@@ -34,13 +34,14 @@ import os
 import signal
 import threading
 import time
-import urllib.request
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from agents.application.sizing import kelly_size_usdc
+from agents.application.tavily import tavily_headlines
 from agents.application.trade_log import NEAR_RESOLUTION_OPEN, TradeLog
 
 logger = logging.getLogger(__name__)
@@ -321,40 +322,8 @@ class NearResolutionEngine:
     # ---------------------------------------------------------- LLM direction
 
     def _get_news_context(self, question: str) -> str:
-        """Fetch Tavily news for the market question. Returns formatted string or ""."""
-        api_key = os.getenv("TAVILY_API_KEY", "").strip()
-        if not api_key:
-            return ""
-        payload = json.dumps({
-            "api_key": api_key,
-            "query": question,
-            "max_results": 4,
-            "search_depth": "basic",
-            "topic": "news",
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            TAVILY_SEARCH_URL,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "poly1-near-resolution/1.0",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                body = json.loads(resp.read())
-            results = body.get("results") or []
-            if not results:
-                return ""
-            lines = []
-            for r in results[:4]:
-                title = (r.get("title") or "").strip()
-                if title:
-                    lines.append(f"- {title}")
-            return "\n".join(lines)
-        except Exception as exc:
-            logger.debug("near_resolution: Tavily failed: %s", exc)
-            return ""
+        """Fetch budgeted Tavily news for the market question."""
+        return tavily_headlines(question, max_results=4, timeout=10)
 
     def _init_llm(self):
         """Lazy-init LangChain LLM (same pattern as position_manager)."""

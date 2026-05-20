@@ -268,29 +268,19 @@ STRATEGY_FILTERS = {
 
 
 def _tavily_news(query: str, max_results: int = 5) -> list[dict]:
-    """Fetch Tavily search results. Returns [] silently on error."""
-    api_key = os.getenv("TAVILY_API_KEY", "").strip()
-    if not api_key:
-        return []
-    payload = json.dumps({
-        "api_key": api_key,
-        "query": query,
-        "max_results": max_results,
-        "search_depth": "basic",
-        "topic": "news",
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.tavily.com/search",
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "poly1-scout"},
-    )
+    """Fetch budgeted Tavily headlines. Returns [] silently on error."""
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read())
+        from agents.application.tavily import tavily_headlines
+
+        headlines = tavily_headlines(query, max_results=max_results, timeout=15)
     except Exception as exc:
         logger.debug("tavily failed for %s: %s", query[:30], exc)
         return []
-    return body.get("results") or []
+    return [
+        {"title": line.lstrip("- ").strip()}
+        for line in headlines.splitlines()
+        if line.strip()
+    ]
 
 
 def _slug_to_query(slug: str) -> str:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -31,16 +32,64 @@ def _enabled() -> bool:
 
 def _cache_ttl_sec() -> int:
     try:
-        return int(os.getenv("TAVILY_CACHE_TTL_SEC", "3600"))
+        return int(os.getenv("TAVILY_CACHE_TTL_SEC", "21600"))
     except ValueError:
-        return 3600
+        return 21600
 
 
 def _daily_limit() -> int:
     try:
-        return int(os.getenv("TAVILY_DAILY_LIMIT", "50"))
+        return int(os.getenv("TAVILY_DAILY_LIMIT", "5"))
     except ValueError:
-        return 50
+        return 5
+
+
+def _max_results_cap() -> int:
+    try:
+        return max(1, int(os.getenv("TAVILY_MAX_RESULTS", "2")))
+    except ValueError:
+        return 2
+
+
+def _min_interval_sec() -> int:
+    try:
+        return max(0, int(os.getenv("TAVILY_MIN_QUERY_INTERVAL_SEC", "900")))
+    except ValueError:
+        return 900
+
+
+def _critical_only() -> bool:
+    return os.getenv("TAVILY_CRITICAL_ONLY", "true").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _critical_keywords() -> list[str]:
+    raw = os.getenv(
+        "TAVILY_CRITICAL_KEYWORDS",
+        ",".join([
+            "breaking", "urgent", "confirmed", "attack", "missile", "war",
+            "iran", "israel", "fed", "fomc", "rate", "cpi", "inflation",
+            "oil", "crude", "gas", "hack", "exploit", "sec", "etf",
+            "earnings", "merger", "lawsuit", "election", "bitcoin", "btc",
+            "ethereum", "crypto",
+        ]),
+    )
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def _query_is_critical(query: str) -> bool:
+    if not _critical_only():
+        return True
+    words = set(re.findall(r"[a-z0-9]+", query.lower()))
+    text = query.lower()
+    for keyword in _critical_keywords():
+        if " " in keyword:
+            if keyword in text:
+                return True
+        elif keyword in words:
+            return True
+    return False
 
 
 def _cache_key(query: str, max_results: int) -> str:
@@ -89,11 +138,21 @@ def _usage_allowed() -> bool:
     today = time.strftime("%Y-%m-%d", time.gmtime())
     usage = _read_json(_USAGE_PATH)
     if usage.get("date") != today:
-        usage = {"date": today, "count": 0}
+        usage = {"date": today, "count": 0, "last_call_ts": 0.0}
     if int(usage.get("count") or 0) >= _daily_limit():
         logger.info("tavily: daily limit reached (%s)", _daily_limit())
         return False
+    last_call_ts = float(usage.get("last_call_ts") or 0.0)
+    elapsed = time.time() - last_call_ts
+    min_interval = _min_interval_sec()
+    if min_interval and last_call_ts and elapsed < min_interval:
+        logger.info(
+            "tavily: throttled by min interval (%ss remaining)",
+            int(min_interval - elapsed),
+        )
+        return False
     usage["count"] = int(usage.get("count") or 0) + 1
+    usage["last_call_ts"] = time.time()
     _write_json(_USAGE_PATH, usage)
     return True
 
@@ -110,6 +169,7 @@ def tavily_headlines(
     Never raises — any failure returns empty string so callers can treat
     missing Tavily context as "no enrichment available".
     """
+    max_results = min(max(1, int(max_results)), _max_results_cap())
     key = api_key or os.getenv("TAVILY_API_KEY", "").strip()
     cached = _cached(query, max_results)
     if cached is not None:
@@ -117,6 +177,9 @@ def tavily_headlines(
     if not _enabled():
         return ""
     if not key or not query:
+        return ""
+    if not _query_is_critical(query):
+        logger.info("tavily: skipped non-critical query under critical-only mode")
         return ""
     if not _usage_allowed():
         return ""

@@ -332,7 +332,10 @@ def fetch_news_items(query: str, limit: int = 10) -> list[NewsItem]:
             if len(out) >= limit:
                 break
 
-    if os.getenv("TAVILY_API_KEY", "").strip():
+    tavily_enabled = os.getenv("TAVILY_ENABLED", "true").lower() in {
+        "1", "true", "yes", "on",
+    }
+    if tavily_enabled and os.getenv("TAVILY_API_KEY", "").strip():
         try:
             _add(fetch_tavily_items(query=query, limit=limit))
         except Exception as exc:
@@ -380,38 +383,21 @@ def fetch_tavily_items(query: str, limit: int = 10) -> list[NewsItem]:
     [] silently on missing key (caller checks first) or on any
     network/parse failure with a warning logged.
     """
-    api_key = os.getenv("TAVILY_API_KEY", "").strip()
-    if not api_key:
-        return []
-    payload = json.dumps({
-        "api_key": api_key,
-        "query": query,
-        "max_results": min(max(1, limit), 20),
-        "search_depth": "basic",
-        "topic": "news",
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        TAVILY_SEARCH_URL,
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "poly1-news-signal"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read())
+        from agents.application.tavily import tavily_headlines
+
+        headlines = tavily_headlines(query, max_results=limit, timeout=15)
     except Exception as exc:
         logger.warning("tavily fetch failed: %s", exc)
         return []
-    raw_results = body.get("results") or []
     out: list[NewsItem] = []
-    for r in raw_results[:limit]:
-        title = (r.get("title") or "").strip()
+    for line in headlines.splitlines()[:limit]:
+        title = line.lstrip("- ").strip()
         if not title:
             continue
         out.append(NewsItem(
             headline=title,
             source="tavily",
-            url=(r.get("url") or "").strip(),
-            published_at=(r.get("published_date") or "").strip(),
         ))
     return out
 

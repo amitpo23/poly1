@@ -787,6 +787,14 @@ class TavilyProvider(ExternalProvider):
         self.api_key = api_key
 
     def analyze(self, market: MarketSnapshot) -> ExternalVerdict:
+        if os.getenv("TAVILY_ENABLED", "true").lower() not in {"1", "true", "yes", "on"}:
+            return ExternalVerdict(
+                direction="skip",
+                confidence=0.0,
+                source=self.source,
+                reason="TAVILY_ENABLED=false",
+                evidence={"disabled": True},
+            )
         if not self.api_key:
             return ExternalVerdict(
                 direction="skip",
@@ -795,29 +803,21 @@ class TavilyProvider(ExternalProvider):
                 reason="missing TAVILY_API_KEY",
                 evidence={},
             )
+        from agents.application.tavily import tavily_headlines
+
         query = f"{market.question} latest news odds prediction market"
-        payload = json.dumps({
-            "api_key": self.api_key,
-            "query": query,
-            "max_results": 5,
-            "search_depth": "basic",
-            "topic": "news",
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            self.url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "poly1-external-conviction-tavily",
-            },
+        headlines = tavily_headlines(
+            query,
+            api_key=self.api_key,
+            max_results=5,
+            timeout=20,
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            body = json.loads(resp.read())
-        results = body.get("results") if isinstance(body, dict) else []
-        if not isinstance(results, list):
-            results = []
-        titles = [str(r.get("title") or "") for r in results if isinstance(r, dict)]
-        snippets = [str(r.get("content") or "") for r in results if isinstance(r, dict)]
+        titles = [
+            line.lstrip("- ").strip()
+            for line in headlines.splitlines()
+            if line.strip()
+        ]
+        snippets: list[str] = []
         joined = " ".join(titles + snippets).lower()
         event_terms = (
             "breaking", "latest", "confirmed", "injury", "goal", "wins",
@@ -825,7 +825,7 @@ class TavilyProvider(ExternalProvider):
             "crypto", "fed", "inflation", "earnings",
         )
         hits = sum(1 for term in event_terms if term in joined)
-        confidence = min(0.76, 0.44 + 0.04 * len(results) + 0.025 * hits)
+        confidence = min(0.76, 0.44 + 0.04 * len(titles) + 0.025 * hits)
         if confidence < 0.58:
             direction = "skip"
         elif market.yes_price <= 0.45:
@@ -840,12 +840,12 @@ class TavilyProvider(ExternalProvider):
             confidence=round(confidence, 3),
             source=self.source,
             reason=(
-                f"tavily search density: results={len(results)}, "
+                f"tavily search density: results={len(titles)}, "
                 f"event_terms={hits}, yes_price={market.yes_price:.3f}"
             ),
             evidence={
                 "query": query,
-                "result_count": len(results),
+                "result_count": len(titles),
                 "event_term_hits": hits,
                 "titles": titles[:5],
             },

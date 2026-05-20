@@ -93,10 +93,13 @@ def _http_error_detail(exc: Exception) -> str:
 
 def check_env() -> list[Check]:
     checks: list[Check] = []
+    tavily_enabled = os.getenv("TAVILY_ENABLED", "true").lower() in {
+        "1", "true", "yes", "on",
+    }
     for key, required in (
         ("OPENAI_API_KEY", True),
         ("ANTHROPIC_API_KEY", False),
-        ("TAVILY_API_KEY", True),
+        ("TAVILY_API_KEY", tavily_enabled),
         ("BUILDER_API_KEY", False),
         ("BUILDER_SECRET", False),
         ("BUILDER_PASS_PHRASE", False),
@@ -198,9 +201,21 @@ def check_anthropic(model: str) -> Check:
 
 
 def check_tavily() -> Check:
+    if os.getenv("TAVILY_ENABLED", "true").lower() not in {"1", "true", "yes", "on"}:
+        limit = os.getenv("TAVILY_DAILY_LIMIT", "5")
+        ttl = os.getenv("TAVILY_CACHE_TTL_SEC", "21600")
+        return Check("tavily_search", "WARN", f"disabled by TAVILY_ENABLED=false; limit={limit}; cache_ttl={ttl}s")
     key = os.getenv("TAVILY_API_KEY", "").strip()
     if not key:
         return Check("tavily_search", "FAIL", "TAVILY_API_KEY missing")
+    if os.getenv("TAVILY_HEALTH_REAL_CALL", "false").lower() not in {"1", "true", "yes", "on"}:
+        limit = os.getenv("TAVILY_DAILY_LIMIT", "5")
+        interval = os.getenv("TAVILY_MIN_QUERY_INTERVAL_SEC", "900")
+        return Check(
+            "tavily_search",
+            "WARN",
+            f"key set; real health call skipped; limit={limit}; min_interval={interval}s",
+        )
     payload = {
         "api_key": key,
         "query": "Polymarket Bitcoin market news",
@@ -274,9 +289,30 @@ def check_tradingview_options() -> Check:
         return Check(
             result.name,
             "WARN",
-            f"page reachable; snapshot missing at {snapshot}",
+            (
+                f"page reachable; snapshot missing at {snapshot}; "
+                "write with scripts/write_tradingview_options_snapshot.py"
+            ),
             result.latency_ms,
         )
+    if result.status == "PASS":
+        try:
+            body = json.loads(snapshot.read_text())
+            put_call = body.get("put_call_ratio")
+            if put_call is None:
+                call_volume = float(body.get("call_volume") or 0)
+                put_volume = float(body.get("put_volume") or 0)
+                put_call = put_volume / max(call_volume, 1.0) if put_volume or call_volume else 0
+            put_call = float(put_call or 0)
+            age = max(0.0, time.time() - snapshot.stat().st_mtime)
+            max_age = int(os.getenv("TRADINGVIEW_OPTIONS_MAX_AGE_SEC", "900"))
+            if put_call <= 0:
+                return Check(result.name, "WARN", f"snapshot missing put/call signal at {snapshot}", result.latency_ms)
+            if age > max_age:
+                return Check(result.name, "WARN", f"snapshot stale {int(age)}s>{max_age}s; put_call={put_call:.3f}", result.latency_ms)
+            return Check(result.name, "PASS", f"page reachable; snapshot fresh; put_call={put_call:.3f}", result.latency_ms)
+        except Exception as exc:
+            return Check(result.name, "WARN", f"snapshot parse error at {snapshot}: {type(exc).__name__}", result.latency_ms)
     return result
 
 
