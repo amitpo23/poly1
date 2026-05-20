@@ -38,6 +38,7 @@ Updated: 2026-05-19
 | Entry | external_conviction_api | Yes | Disabled for this run | External evidence still collected, but API entry is held back while Tavily/OpenAI are degraded. |
 | Signal | external-conviction-* | No direct runtime entry except API variant | Signal only | Feeds conviction JSONL into MetaBrain. |
 | Signal | external-conviction-alpaca | No direct orders | Signal only | Alpaca market-data bars feed MetaBrain as external tape evidence. |
+| Signal | external-conviction-crypto-tape | No direct orders | Signal only | Binance/OKX fast crypto tape feeds MetaBrain for crypto Up/Down timing. |
 | Signal | market_universe | No direct orders | Signal only | Maintains focused market list and scalper candidates. |
 | Signal | market_scanner | No direct orders | Signal only | Opportunity router. |
 | Signal | news_signal | No direct orders | Signal only | Anthropic fallback available; news entry remains disabled until Tavily restored. |

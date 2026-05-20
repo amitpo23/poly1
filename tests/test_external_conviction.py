@@ -17,6 +17,7 @@ from agents.application.external_conviction import (
     ExternalVerdict,
     HeuristicProvider,
     AlpacaMarketDataProvider,
+    CryptoExchangeTapeProvider,
     KalshiDivergenceProvider,
     ManifoldDivergenceProvider,
     MetaculusDivergenceProvider,
@@ -32,6 +33,7 @@ from agents.application.external_conviction import (
     provider_from_config,
 )
 from agents.application.alpaca_market_data import AlpacaMarketSignal
+from agents.application.crypto_exchange_tape import CryptoExchangeSignal
 from agents.application.trade_log import TradeLog
 
 
@@ -199,6 +201,26 @@ class TestPlanning(unittest.TestCase):
         self.assertEqual(verdict.source, "alpaca_market_data")
         self.assertEqual(verdict.direction, "yes")
         self.assertEqual(verdict.evidence["symbol"], "BTC/USD")
+        self.assertGreater(verdict.confidence, 0.60)
+
+    def test_crypto_tape_provider_maps_bearish_btc_to_no_for_up_market(self):
+        class FakeTape:
+            def analyze_question(self, question):
+                return CryptoExchangeSignal(
+                    direction="bearish",
+                    probability=0.67,
+                    confidence=0.67,
+                    asset="BTC",
+                    symbol="BTCUSDT",
+                    reason="fake tape sell pressure",
+                    features={"short_momentum_pct": -0.004},
+                )
+
+        market = market_from_gamma(_raw_market(question="Will Bitcoin go up in 5 minutes?"))
+        verdict = CryptoExchangeTapeProvider(client=FakeTape()).analyze(market)
+        self.assertEqual(verdict.source, "crypto_exchange_tape")
+        self.assertEqual(verdict.direction, "no")
+        self.assertEqual(verdict.evidence["symbol"], "BTCUSDT")
         self.assertGreater(verdict.confidence, 0.60)
 
 
@@ -992,6 +1014,11 @@ class TestProviderFactory(unittest.TestCase):
         cfg = ExternalConvictionConfig(provider="alpaca_market_data")
         prov = provider_from_config(cfg)
         self.assertIsInstance(prov, AlpacaMarketDataProvider)
+
+    def test_factory_creates_crypto_exchange_tape(self):
+        cfg = ExternalConvictionConfig(provider="crypto_exchange_tape")
+        prov = provider_from_config(cfg)
+        self.assertIsInstance(prov, CryptoExchangeTapeProvider)
 
     def test_factory_creates_whale_consensus(self):
         cfg = ExternalConvictionConfig(provider="whale_consensus")

@@ -37,6 +37,11 @@ from agents.application.alpaca_market_data import (
     alpaca_enabled_for_metabrain,
     question_aligned_direction,
 )
+from agents.application.crypto_exchange_tape import (
+    CryptoExchangeSignal,
+    CryptoExchangeTapeClient,
+    crypto_tape_enabled_for_metabrain,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -739,6 +744,31 @@ class AlpacaMarketDataReader:
             )
 
 
+class CryptoExchangeTapeReader:
+    """Reads Binance/OKX public crypto tape for fast-market context."""
+
+    def __init__(self, client: Optional[CryptoExchangeTapeClient] = None) -> None:
+        self.client = client or CryptoExchangeTapeClient()
+
+    def query(self, question: str) -> CryptoExchangeSignal:
+        if not crypto_tape_enabled_for_metabrain():
+            return CryptoExchangeSignal(
+                None, 0.5, 0.0, None, None, "crypto_tape: disabled for MetaBrain"
+            )
+        try:
+            return self.client.analyze_question(question)
+        except Exception as exc:
+            return CryptoExchangeSignal(
+                None,
+                0.5,
+                0.0,
+                None,
+                None,
+                f"crypto_tape: error:{type(exc).__name__}",
+                {"error": str(exc)[:180]},
+            )
+
+
 # ---------------------------------------------------------------------------
 # ConvictionJSONLReader
 # ---------------------------------------------------------------------------
@@ -771,6 +801,7 @@ class ConvictionJSONLReader:
         "./data/external_convictions.jsonl",
         "./data/external_convictions_aggregator.jsonl",
         "./data/external_convictions_alpaca.jsonl",
+        "./data/external_convictions_crypto_tape.jsonl",
         "./data/external_convictions_tradingview.jsonl",
         "./data/external_convictions_20test.jsonl",
     ]
@@ -1453,6 +1484,7 @@ class MetaBrain:
         self.news_reader = BreakingNewsReader()
         self.equity_fv_reader = EquityFairValueReader()
         self.alpaca_reader = AlpacaMarketDataReader()
+        self.crypto_tape_reader = CryptoExchangeTapeReader()
         self.execution_quality = ExecutionQualityAdvisor(db_path=self.db_path)
 
     def synthesize_crypto_straddle(
@@ -1970,6 +2002,28 @@ class MetaBrain:
         except Exception as exc:
             logger.debug("meta_brain: alpaca reader failed: %s", exc)
 
+        # 9. Fast crypto exchange tape — Binance spot bars/book plus OKX
+        #    funding.  This is the fastest public external signal for BTC/ETH
+        #    style Up/Down markets and remains read-only.
+        crypto_tape = CryptoExchangeSignal(None, 0.5, 0.0, None, None, "not_computed")
+        crypto_tape_direction = "skip"
+        try:
+            crypto_tape = self.crypto_tape_reader.query(question)
+            features["crypto_tape_direction"] = crypto_tape.direction
+            features["crypto_tape_probability"] = crypto_tape.probability
+            features["crypto_tape_confidence"] = crypto_tape.confidence
+            features["crypto_tape_asset"] = crypto_tape.asset
+            features["crypto_tape_symbol"] = crypto_tape.symbol
+            features["crypto_tape_reason"] = crypto_tape.reason
+            features["crypto_tape_features"] = crypto_tape.features
+            if crypto_tape.direction:
+                signal_sources.append(f"crypto_tape:{crypto_tape.symbol}")
+                crypto_tape_direction = question_aligned_direction(
+                    question, crypto_tape.direction
+                )
+        except Exception as exc:
+            logger.debug("meta_brain: crypto tape reader failed: %s", exc)
+
         # 8. Weighted score. Missing win-rate data gets a neutral prior, so new
         # strategies can trade, but proven history improves the final score.
         winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.50)
@@ -2021,6 +2075,11 @@ class MetaBrain:
             alpaca_component = alpaca.probability
         elif alpaca_direction == "no":
             alpaca_component = 1.0 - alpaca.probability
+        crypto_tape_component = 0.5
+        if crypto_tape_direction == "yes":
+            crypto_tape_component = crypto_tape.probability
+        elif crypto_tape_direction == "no":
+            crypto_tape_component = 1.0 - crypto_tape.probability
 
         weights = {
             "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.25),
@@ -2030,6 +2089,7 @@ class MetaBrain:
             "cross_market": _env_float("META_BRAIN_WEIGHT_CROSS_MARKET", 0.10),
             "equity_fv": _env_float("META_BRAIN_WEIGHT_EQUITY_FV", 0.12),
             "alpaca": _env_float("META_BRAIN_WEIGHT_ALPACA", 0.08),
+            "crypto_tape": _env_float("META_BRAIN_WEIGHT_CRYPTO_TAPE", 0.12),
             "whale": _env_float("META_BRAIN_WEIGHT_WHALE", 0.10),
             "news": _env_float("META_BRAIN_WEIGHT_NEWS", 0.10),
             "liquidity": _env_float("META_BRAIN_WEIGHT_LIQUIDITY", 0.05),
@@ -2042,6 +2102,7 @@ class MetaBrain:
             "cross_market": cross_market_component,
             "equity_fv": equity_fv_component,
             "alpaca": alpaca_component,
+            "crypto_tape": crypto_tape_component,
             "whale": whale_component,
             "news": news_component,
             "liquidity": liquidity_component,
@@ -2204,6 +2265,34 @@ class MetaBrain:
                         "asset_class": alpaca.asset_class,
                         "market_direction": alpaca.direction,
                         **alpaca.features,
+                    },
+                )
+            )
+        if crypto_tape_direction in ("yes", "no"):
+            crypto_tape_rel = self.source_reliability.best(
+                self.db_path,
+                ["crypto_exchange_tape", f"crypto_tape:{crypto_tape.symbol}"],
+                hours=reliability_hours,
+            )
+            claims.append(
+                EvidenceClaim(
+                    source_id=f"crypto_tape:{crypto_tape.symbol}",
+                    source_type="crypto_exchange_tape",
+                    direction=crypto_tape_direction,
+                    probability=(
+                        crypto_tape.probability
+                        if crypto_tape_direction == "yes"
+                        else 1.0 - crypto_tape.probability
+                    ),
+                    confidence=float(crypto_tape.confidence),
+                    reliability=(
+                        crypto_tape_rel if crypto_tape_rel.sample_size else None
+                    ),
+                    raw={
+                        "asset": crypto_tape.asset,
+                        "symbol": crypto_tape.symbol,
+                        "market_direction": crypto_tape.direction,
+                        **crypto_tape.features,
                     },
                 )
             )

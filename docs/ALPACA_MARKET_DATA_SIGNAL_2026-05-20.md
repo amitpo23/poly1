@@ -1,6 +1,8 @@
 # Alpaca Market Data Signal
 
-Status: read-only signal layer. It does not place orders.
+Status: read-only signal layer. It does not place orders. On the same date we
+also added `crypto_exchange_tape`, a faster Binance/OKX signal for crypto
+Up/Down markets.
 
 ## Purpose
 
@@ -63,3 +65,19 @@ Then inspect:
 tail -n 20 data/external_convictions_alpaca.jsonl
 sqlite3 data/trade_log.db "select agent, approved, reason, score from brain_decisions where agent like '%alpaca%' order by id desc limit 20;"
 ```
+
+## Crypto Exchange Tape Add-On
+
+`crypto_exchange_tape` reads:
+
+- Binance spot 1m klines
+- Binance top-of-book bid/ask
+- OKX perpetual funding rate
+
+It supports BTC, ETH, SOL, XRP, DOGE, and BNB question matching. It is weighted
+inside MetaBrain through `META_BRAIN_WEIGHT_CRYPTO_TAPE=0.12` and also writes
+shadow rows through `external-conviction-crypto-tape`.
+
+This is currently the most relevant public signal for fast crypto 5-minute
+markets because it is closer to the actual resolution/reference venue than
+general news or LLM reasoning.

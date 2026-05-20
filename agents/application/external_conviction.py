@@ -34,6 +34,7 @@ from agents.application.alpaca_market_data import (
     AlpacaMarketDataClient,
     question_aligned_direction,
 )
+from agents.application.crypto_exchange_tape import CryptoExchangeTapeClient
 
 
 logger = logging.getLogger(__name__)
@@ -559,6 +560,48 @@ class AlpacaMarketDataProvider(ExternalProvider):
             evidence={
                 "symbol": signal.symbol,
                 "asset_class": signal.asset_class,
+                "market_direction": signal.direction,
+                "probability": signal.probability,
+                **signal.features,
+            },
+        )
+
+
+class CryptoExchangeTapeProvider(ExternalProvider):
+    """Fast Binance/OKX public crypto tape provider."""
+
+    source = "crypto_exchange_tape"
+
+    def __init__(self, client: Optional[CryptoExchangeTapeClient] = None):
+        self.client = client or CryptoExchangeTapeClient()
+
+    def analyze(self, market: MarketSnapshot) -> ExternalVerdict:
+        signal = self.client.analyze_question(market.question)
+        if signal.direction not in {"bullish", "bearish"}:
+            return self._skip(signal.reason, {
+                "asset": signal.asset,
+                "symbol": signal.symbol,
+                **signal.features,
+            })
+        direction = question_aligned_direction(market.question, signal.direction)
+        if direction not in {"yes", "no"}:
+            return self._skip(
+                f"crypto_tape: could not align {signal.direction} to market wording",
+                {
+                    "asset": signal.asset,
+                    "symbol": signal.symbol,
+                    "market_direction": signal.direction,
+                    **signal.features,
+                },
+            )
+        return ExternalVerdict(
+            direction=direction,
+            confidence=signal.confidence,
+            source=self.source,
+            reason=signal.reason,
+            evidence={
+                "asset": signal.asset,
+                "symbol": signal.symbol,
                 "market_direction": signal.direction,
                 "probability": signal.probability,
                 **signal.features,
@@ -1934,6 +1977,8 @@ def provider_from_config(cfg: ExternalConvictionConfig) -> ExternalProvider:
         return TradingViewOptionsProvider()
     if provider in ("alpaca", "alpaca_market_data", "alpaca_data"):
         return AlpacaMarketDataProvider()
+    if provider in ("crypto_exchange_tape", "crypto_tape", "binance_okx"):
+        return CryptoExchangeTapeProvider()
     if provider in ("whale_consensus", "data_api_whale"):
         return DataAPIWhaleConsensusProvider()
     if provider in ("bull_bear_debate", "debate"):
@@ -1984,7 +2029,8 @@ def _build_aggregator(cfg: ExternalConvictionConfig) -> AggregatorProvider:
         # than heuristic/news density, so weak providers are opt-in only.
         names = [
             "manifold", "metaculus", "kalshi",
-            "tradingview_options", "alpaca_market_data", "technical_signal", "clob_whale",
+            "tradingview_options", "alpaca_market_data", "crypto_exchange_tape",
+            "technical_signal", "clob_whale",
         ]
     sub_providers: list[ExternalProvider] = []
     for name in names:

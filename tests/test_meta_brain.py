@@ -22,6 +22,7 @@ from agents.application.meta_brain import (
     EquityFairValueSignal,
     AlpacaMarketDataReader,
     AlpacaMarketSignal,
+    CryptoExchangeSignal,
     NewsSignal,
     WhaleSentimentSignal,
 )
@@ -791,6 +792,44 @@ class TestMetaBrain(unittest.TestCase):
         self.assertAlmostEqual(decision.features["weighted_components"]["alpaca"], 0.68)
         self.assertEqual(decision.features["alpaca_symbol"], "BTC/USD")
         self.assertIn("alpaca:BTC/USD", decision.signal_sources)
+
+    @patch.dict(os.environ, {
+        "META_BRAIN_WEIGHT_BRAIN": "0.0",
+        "META_BRAIN_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_WEIGHT_CROSS_MARKET": "0.0",
+        "META_BRAIN_WEIGHT_EQUITY_FV": "0.0",
+        "META_BRAIN_WEIGHT_ALPACA": "0.0",
+        "META_BRAIN_WEIGHT_CRYPTO_TAPE": "1.0",
+        "META_BRAIN_WEIGHT_WHALE": "0.0",
+        "META_BRAIN_WEIGHT_NEWS": "0.0",
+        "META_BRAIN_WEIGHT_LIQUIDITY": "0.0",
+        "META_BRAIN_MIN_EDGE_PCT": "0.0",
+        "META_BRAIN_MIN_RAW_EV": "0.0",
+    })
+    def test_crypto_tape_component_can_drive_meta_score(self):
+        mb = self._make_meta_brain(approved=True, score=0.55)
+        mb.crypto_tape_reader.query = lambda question: CryptoExchangeSignal(
+            direction="bearish",
+            probability=0.69,
+            confidence=0.69,
+            asset="BTC",
+            symbol="BTCUSDT",
+            reason="test crypto tape sell pressure",
+            features={"short_momentum_pct": -0.004},
+        )
+
+        decision = mb.synthesize(
+            market_id="m1",
+            question="Will Bitcoin go down in 5 minutes?",
+            poly_prob=0.50,
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertAlmostEqual(decision.features["weighted_components"]["crypto_tape"], 0.69)
+        self.assertEqual(decision.features["crypto_tape_symbol"], "BTCUSDT")
+        self.assertIn("crypto_tape:BTCUSDT", decision.signal_sources)
 
     def test_summary_is_nonempty(self):
         mb = self._make_meta_brain(approved=True, score=0.65)

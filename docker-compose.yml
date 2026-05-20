@@ -716,7 +716,7 @@ services:
       # All free providers — divergence signals (Manifold/Metaculus/Kalshi) rank first
       # because they compare cross-platform price vs Poly price.
       # GDELT adds news sentiment; heuristic is the cheap fallback.
-      EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS: "manifold,metaculus,kalshi,tradingview_options,alpaca_market_data,technical_signal,clob_whale,gdelt,public_news,heuristic"
+      EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS: "manifold,metaculus,kalshi,tradingview_options,alpaca_market_data,crypto_exchange_tape,technical_signal,clob_whale,gdelt,public_news,heuristic"
     command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
     volumes:
       - ./data:/app/data
@@ -805,6 +805,47 @@ services:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_alpaca_heartbeat') < 900"]
       interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-crypto-tape:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-crypto-tape
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_crypto_tape
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_crypto_tape
+      EXTERNAL_CONVICTION_STRATEGY_NAME: crypto_exchange_tape_event_probability
+      EXTERNAL_CONVICTION_PROVIDER: crypto_exchange_tape
+      EXTERNAL_CONVICTION_POLL_SEC: "60"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_crypto_tape.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_crypto_tape_heartbeat
+      CRYPTO_TAPE_CACHE_SEC: "15"
+      CRYPTO_TAPE_TIMEOUT_SEC: "4"
+      CRYPTO_TAPE_INTERVAL: "1m"
+      CRYPTO_TAPE_BAR_LIMIT: "30"
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_crypto_tape_heartbeat') < 240"]
+      interval: 60s
       timeout: 5s
       retries: 3
     logging:
