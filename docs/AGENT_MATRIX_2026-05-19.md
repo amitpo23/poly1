@@ -60,6 +60,7 @@ Hard policy:
 | `wallet_watcher` | Wallet intelligence | Tracks wallets and produces follow signals | No | `wallet_signals` |
 | `wallet_follow` | Whale-follow trader | Mirrors proven wallets only when EV/drift/liquidity pass | Yes | `wallet_signals`, trade log |
 | `external_conviction*` | Conviction family | Manifold, Metaculus, Kalshi, news, technical, whale, debate, aggregator | Signals; API variant can enter | JSONL outputs, `brain_decisions` |
+| `external_conviction_alpaca` | Alpaca market-data signal | Reads Alpaca crypto/stock bars as a tape/momentum input for MetaBrain | No | `external_convictions_alpaca.jsonl`, `brain_decisions` |
 | `settlement_reconciler` | Recovery layer | Detects resolved markets and redeemable/recoverable positions | No | settlement tables, Gamma |
 | `allocator_sync` | Capital allocator | Keeps reserves aligned with performance and runtime policy | No | `.env`, allocator tables |
 | `telegram_reporter` | Operator dashboard | Sends one broad hourly status report | No | trade log, wallet sync, heartbeats |

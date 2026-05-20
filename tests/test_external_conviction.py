@@ -16,6 +16,7 @@ from agents.application.external_conviction import (
     ExternalProvider,
     ExternalVerdict,
     HeuristicProvider,
+    AlpacaMarketDataProvider,
     KalshiDivergenceProvider,
     ManifoldDivergenceProvider,
     MetaculusDivergenceProvider,
@@ -30,6 +31,7 @@ from agents.application.external_conviction import (
     market_from_gamma,
     provider_from_config,
 )
+from agents.application.alpaca_market_data import AlpacaMarketSignal
 from agents.application.trade_log import TradeLog
 
 
@@ -178,6 +180,26 @@ class TestPlanning(unittest.TestCase):
         verdict = HeuristicProvider().analyze(market)
         self.assertIn(verdict.direction, ("yes", "no", "skip"))
         self.assertLessEqual(verdict.confidence, 0.72)
+
+    def test_alpaca_provider_maps_bullish_btc_to_yes_for_up_market(self):
+        class FakeAlpaca:
+            def analyze_question(self, question):
+                return AlpacaMarketSignal(
+                    direction="bullish",
+                    probability=0.66,
+                    confidence=0.66,
+                    symbol="BTC/USD",
+                    asset_class="crypto",
+                    reason="fake alpaca momentum",
+                    features={"momentum_pct": 0.004},
+                )
+
+        market = market_from_gamma(_raw_market(question="Will Bitcoin go up in 5 minutes?"))
+        verdict = AlpacaMarketDataProvider(client=FakeAlpaca()).analyze(market)
+        self.assertEqual(verdict.source, "alpaca_market_data")
+        self.assertEqual(verdict.direction, "yes")
+        self.assertEqual(verdict.evidence["symbol"], "BTC/USD")
+        self.assertGreater(verdict.confidence, 0.60)
 
 
 class TestAgent(unittest.TestCase):
@@ -965,6 +987,11 @@ class TestProviderFactory(unittest.TestCase):
         cfg = ExternalConvictionConfig(provider="tradingview_options")
         prov = provider_from_config(cfg)
         self.assertIsInstance(prov, TradingViewOptionsProvider)
+
+    def test_factory_creates_alpaca_market_data(self):
+        cfg = ExternalConvictionConfig(provider="alpaca_market_data")
+        prov = provider_from_config(cfg)
+        self.assertIsInstance(prov, AlpacaMarketDataProvider)
 
     def test_factory_creates_whale_consensus(self):
         cfg = ExternalConvictionConfig(provider="whale_consensus")

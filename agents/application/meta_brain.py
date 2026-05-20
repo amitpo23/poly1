@@ -31,6 +31,12 @@ from typing import Optional
 
 from agents.application.execution_quality import ExecutionQualityAdvisor
 from agents.application.sizing import binary_raw_ev
+from agents.application.alpaca_market_data import (
+    AlpacaMarketDataClient,
+    AlpacaMarketSignal,
+    alpaca_enabled_for_metabrain,
+    question_aligned_direction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -708,6 +714,31 @@ class EquityFairValueReader:
         return False
 
 
+class AlpacaMarketDataReader:
+    """Reads Alpaca bars as a direct MetaBrain signal with short caching."""
+
+    def __init__(self, client: Optional[AlpacaMarketDataClient] = None) -> None:
+        self.client = client or AlpacaMarketDataClient()
+
+    def query(self, question: str) -> AlpacaMarketSignal:
+        if not alpaca_enabled_for_metabrain():
+            return AlpacaMarketSignal(
+                None, 0.5, 0.0, None, None, "alpaca: disabled for MetaBrain"
+            )
+        try:
+            return self.client.analyze_question(question)
+        except Exception as exc:
+            return AlpacaMarketSignal(
+                None,
+                0.5,
+                0.0,
+                None,
+                None,
+                f"alpaca: error:{type(exc).__name__}",
+                {"error": str(exc)[:180]},
+            )
+
+
 # ---------------------------------------------------------------------------
 # ConvictionJSONLReader
 # ---------------------------------------------------------------------------
@@ -739,6 +770,7 @@ class ConvictionJSONLReader:
     DEFAULT_FALLBACK_PATHS = [
         "./data/external_convictions.jsonl",
         "./data/external_convictions_aggregator.jsonl",
+        "./data/external_convictions_alpaca.jsonl",
         "./data/external_convictions_tradingview.jsonl",
         "./data/external_convictions_20test.jsonl",
     ]
@@ -1420,6 +1452,7 @@ class MetaBrain:
         self.whale_reader = WhaleSentimentReader()
         self.news_reader = BreakingNewsReader()
         self.equity_fv_reader = EquityFairValueReader()
+        self.alpaca_reader = AlpacaMarketDataReader()
         self.execution_quality = ExecutionQualityAdvisor(db_path=self.db_path)
 
     def synthesize_crypto_straddle(
@@ -1917,6 +1950,26 @@ class MetaBrain:
         except Exception as exc:
             logger.debug("meta_brain: equity fair-value reader failed: %s", exc)
 
+        # 8. Alpaca market data — live external tape for supported crypto and
+        #    equity symbols.  This is a signal only; it never bypasses EV,
+        #    execution-quality, or risk gates.
+        alpaca = AlpacaMarketSignal(None, 0.5, 0.0, None, None, "not_computed")
+        alpaca_direction = "skip"
+        try:
+            alpaca = self.alpaca_reader.query(question)
+            features["alpaca_direction"] = alpaca.direction
+            features["alpaca_probability"] = alpaca.probability
+            features["alpaca_confidence"] = alpaca.confidence
+            features["alpaca_symbol"] = alpaca.symbol
+            features["alpaca_asset_class"] = alpaca.asset_class
+            features["alpaca_reason"] = alpaca.reason
+            features["alpaca_features"] = alpaca.features
+            if alpaca.direction:
+                signal_sources.append(f"alpaca:{alpaca.symbol}")
+                alpaca_direction = question_aligned_direction(question, alpaca.direction)
+        except Exception as exc:
+            logger.debug("meta_brain: alpaca reader failed: %s", exc)
+
         # 8. Weighted score. Missing win-rate data gets a neutral prior, so new
         # strategies can trade, but proven history improves the final score.
         winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.50)
@@ -1963,6 +2016,11 @@ class MetaBrain:
             equity_fv_component = equity_fv.probability
         elif equity_fv.direction == "no":
             equity_fv_component = 1.0 - equity_fv.probability
+        alpaca_component = 0.5
+        if alpaca_direction == "yes":
+            alpaca_component = alpaca.probability
+        elif alpaca_direction == "no":
+            alpaca_component = 1.0 - alpaca.probability
 
         weights = {
             "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.25),
@@ -1971,6 +2029,7 @@ class MetaBrain:
             "velocity": _env_float("META_BRAIN_WEIGHT_VELOCITY", 0.10),
             "cross_market": _env_float("META_BRAIN_WEIGHT_CROSS_MARKET", 0.10),
             "equity_fv": _env_float("META_BRAIN_WEIGHT_EQUITY_FV", 0.12),
+            "alpaca": _env_float("META_BRAIN_WEIGHT_ALPACA", 0.08),
             "whale": _env_float("META_BRAIN_WEIGHT_WHALE", 0.10),
             "news": _env_float("META_BRAIN_WEIGHT_NEWS", 0.10),
             "liquidity": _env_float("META_BRAIN_WEIGHT_LIQUIDITY", 0.05),
@@ -1982,6 +2041,7 @@ class MetaBrain:
             "velocity": velocity_component,
             "cross_market": cross_market_component,
             "equity_fv": equity_fv_component,
+            "alpaca": alpaca_component,
             "whale": whale_component,
             "news": news_component,
             "liquidity": liquidity_component,
@@ -2118,6 +2178,32 @@ class MetaBrain:
                         "selected_ticker": equity_fv.selected_ticker,
                         "selected_outcome": equity_fv.selected_outcome,
                         "edge": equity_fv.edge,
+                    },
+                )
+            )
+        if alpaca_direction in ("yes", "no"):
+            alpaca_rel = self.source_reliability.best(
+                self.db_path,
+                ["alpaca_market_data", f"alpaca:{alpaca.symbol}"],
+                hours=reliability_hours,
+            )
+            claims.append(
+                EvidenceClaim(
+                    source_id=f"alpaca:{alpaca.symbol}",
+                    source_type="alpaca_market_data",
+                    direction=alpaca_direction,
+                    probability=(
+                        alpaca.probability
+                        if alpaca_direction == "yes"
+                        else 1.0 - alpaca.probability
+                    ),
+                    confidence=float(alpaca.confidence),
+                    reliability=alpaca_rel if alpaca_rel.sample_size else None,
+                    raw={
+                        "symbol": alpaca.symbol,
+                        "asset_class": alpaca.asset_class,
+                        "market_direction": alpaca.direction,
+                        **alpaca.features,
                     },
                 )
             )

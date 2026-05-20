@@ -716,7 +716,7 @@ services:
       # All free providers — divergence signals (Manifold/Metaculus/Kalshi) rank first
       # because they compare cross-platform price vs Poly price.
       # GDELT adds news sentiment; heuristic is the cheap fallback.
-      EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS: "manifold,metaculus,kalshi,tradingview_options,technical_signal,clob_whale,gdelt,public_news,heuristic"
+      EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS: "manifold,metaculus,kalshi,tradingview_options,alpaca_market_data,technical_signal,clob_whale,gdelt,public_news,heuristic"
     command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
     volumes:
       - ./data:/app/data
@@ -763,6 +763,47 @@ services:
     healthcheck:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_tradingview_heartbeat') < 1800"]
+      interval: 300s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
+  external-conviction-alpaca:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-alpaca
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_alpaca
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_alpaca
+      EXTERNAL_CONVICTION_STRATEGY_NAME: alpaca_market_data_event_probability
+      EXTERNAL_CONVICTION_PROVIDER: alpaca_market_data
+      EXTERNAL_CONVICTION_POLL_SEC: "300"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_alpaca.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_alpaca_heartbeat
+      ALPACA_MARKET_DATA_CACHE_SEC: "60"
+      ALPACA_MARKET_DATA_TIMEOUT_SEC: "5"
+      ALPACA_MARKET_DATA_TIMEFRAME: "1Min"
+      ALPACA_MARKET_DATA_BAR_LIMIT: "20"
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_alpaca_heartbeat') < 900"]
       interval: 300s
       timeout: 5s
       retries: 3

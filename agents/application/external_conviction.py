@@ -30,6 +30,10 @@ from agents.application.sizing import kelly_size_usdc
 from agents.application.trade_log import TradeLog
 from agents.application.trading_policy import FAST_TAKE_PROFIT_PCT, STOP_LOSS_PCT
 from agents.utils.notify import notify_trade, _safe_balance
+from agents.application.alpaca_market_data import (
+    AlpacaMarketDataClient,
+    question_aligned_direction,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -511,6 +515,53 @@ class TradingViewOptionsProvider(ExternalProvider):
                 "call_volume": call_volume,
                 "put_volume": put_volume,
                 "snapshot_ts": snapshot.get("ts") or snapshot.get("timestamp"),
+            },
+        )
+
+
+class AlpacaMarketDataProvider(ExternalProvider):
+    """Alpaca market-data signal provider.
+
+    Uses recent crypto/stock bars as an external tape signal for markets that
+    reference a supported asset. It is intentionally shadow/research-only here;
+    execution still goes through MetaBrain, RiskGate, and journal dedupe.
+    """
+
+    source = "alpaca_market_data"
+
+    def __init__(self, client: Optional[AlpacaMarketDataClient] = None):
+        self.client = client or AlpacaMarketDataClient()
+
+    def analyze(self, market: MarketSnapshot) -> ExternalVerdict:
+        signal = self.client.analyze_question(market.question)
+        if signal.direction not in {"bullish", "bearish"}:
+            return self._skip(signal.reason, {
+                "symbol": signal.symbol,
+                "asset_class": signal.asset_class,
+                **signal.features,
+            })
+        direction = question_aligned_direction(market.question, signal.direction)
+        if direction not in {"yes", "no"}:
+            return self._skip(
+                f"alpaca: could not align {signal.direction} to market wording",
+                {
+                    "symbol": signal.symbol,
+                    "asset_class": signal.asset_class,
+                    "market_direction": signal.direction,
+                    **signal.features,
+                },
+            )
+        return ExternalVerdict(
+            direction=direction,
+            confidence=signal.confidence,
+            source=self.source,
+            reason=signal.reason,
+            evidence={
+                "symbol": signal.symbol,
+                "asset_class": signal.asset_class,
+                "market_direction": signal.direction,
+                "probability": signal.probability,
+                **signal.features,
             },
         )
 
@@ -1881,6 +1932,8 @@ def provider_from_config(cfg: ExternalConvictionConfig) -> ExternalProvider:
         return KalshiDivergenceProvider()
     if provider in ("tradingview_options", "tradingview", "tv_options"):
         return TradingViewOptionsProvider()
+    if provider in ("alpaca", "alpaca_market_data", "alpaca_data"):
+        return AlpacaMarketDataProvider()
     if provider in ("whale_consensus", "data_api_whale"):
         return DataAPIWhaleConsensusProvider()
     if provider in ("bull_bear_debate", "debate"):
@@ -1931,7 +1984,7 @@ def _build_aggregator(cfg: ExternalConvictionConfig) -> AggregatorProvider:
         # than heuristic/news density, so weak providers are opt-in only.
         names = [
             "manifold", "metaculus", "kalshi",
-            "tradingview_options", "technical_signal", "clob_whale",
+            "tradingview_options", "alpaca_market_data", "technical_signal", "clob_whale",
         ]
     sub_providers: list[ExternalProvider] = []
     for name in names:
