@@ -66,6 +66,13 @@ Scanner-quality upgrade now implemented locally:
   (`SCANNER_FETCH_ORDERS`) and dedupes the universe.
 - `SCANNER_TARGET_TRADE_DECISIONS` targets diverse per-cycle approvals instead
   of repeatedly writing the same market cluster.
+- Markets already in recent close cooldown are skipped before filling the
+  scanner target, so the scanner keeps looking instead of writing approvals the
+  executor must reject.
+- The scanner service override broadens proof coverage to
+  `SCANNER_MARKET_LIMIT=300`, `SCANNER_MAX_CANDIDATES=60`,
+  `SCANNER_MIN_LIQUIDITY_USDC=1000`, and `SCANNER_MIN_VOLUME_USDC=500`; the
+  executor still requires live orderbook, drift, EV, RiskGate, and dedupe.
 - Recent stop-losses/resolved losses apply a soft score penalty before routing.
 - `scanner_executor` rejects live fills if the executable entry price drifted
   too far from the scanner-approved price.

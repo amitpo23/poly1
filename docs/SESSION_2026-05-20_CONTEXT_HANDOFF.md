@@ -61,6 +61,14 @@ Implemented after the negative micro proof:
 - `SCANNER_TARGET_TRADE_DECISIONS` lets a cycle aim for a small number of
   diverse trade approvals instead of flooding the journal with the same market
   cluster.
+- Recent-close cooldown markets are skipped before target fill, so the scanner
+  keeps searching instead of spending its target slots on markets the executor
+  will reject.
+- The scanner compose override intentionally broadens proof coverage:
+  `SCANNER_MARKET_LIMIT=300`, `SCANNER_MAX_CANDIDATES=60`,
+  `SCANNER_MIN_LIQUIDITY_USDC=1000`, `SCANNER_MIN_VOLUME_USDC=500`. This
+  increases candidate discovery while live orderbook, drift, net EV, RiskGate,
+  and dedupe still decide execution.
 - Recent `closed_stop_loss` / `resolved_loss` rows apply a soft score penalty
   before a market is routed again.
 - `scanner_executor` revalidates live executable price against the scanner
