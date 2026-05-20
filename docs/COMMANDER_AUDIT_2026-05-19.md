@@ -112,3 +112,38 @@ The correct posture is still freeze/no new live entries until:
 5. `trading_stability_preflight.py --mode freeze` passes on the server.
 6. A single-agent live probe is generated via `scripts/runtime_control.py` and
    passes `--mode live` preflight before starting that agent profile.
+
+## Follow-up - 2026-05-20 Source-of-Truth Cleanup
+
+The 2026-05-19 server drift findings were remediated on 2026-05-20.
+
+Actions completed:
+
+- Archived server root-level orphan files outside the live repo:
+  `/home/trader/poly1_server_orphans/20260520T054647Z`.
+- Updated `market_scanner` to use the canonical `poly1:local` Docker image and
+  the same runtime env stack as the other managed services.
+- Added strict checks to `scripts/verify_server_source_of_truth.sh` for server
+  git hygiene and Docker image parity.
+- Rebuilt and force-recreated the managed compose stack in `freeze`.
+- Confirmed all managed `poly1` services were healthy and running from
+  `poly1:local`.
+
+Post-cleanup verification:
+
+```text
+Local HEAD: 93a7ccf
+Server HEAD: 93a7ccf
+Server runtime: freeze
+Server HALT: present
+Allowed live agents: []
+Local tests: 519 OK
+Server preflight: trading_stability_preflight[freeze]: ok
+Source-of-truth verifier: OK
+```
+
+Remaining rule:
+
+- Do not start live trading unless `scripts/verify_server_source_of_truth.sh`
+  and `python3 scripts/trading_stability_preflight.py --mode freeze` both pass
+  immediately before switching to a bounded live probe.
