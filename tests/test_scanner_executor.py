@@ -44,12 +44,18 @@ class ScannerExecutorTests(unittest.TestCase):
         *,
         execute=True,
         price=0.50,
+        avg_price=None,
         fillable=1.0,
         allow_wait_with_high_score=False,
         wait_override_min_score=0.79,
+        min_net_ev=0.03,
     ):
         pm = MagicMock()
-        pm._fillable_market_buy.return_value = (price, fillable, price)
+        pm._fillable_market_buy.return_value = (
+            price,
+            fillable,
+            price if avg_price is None else avg_price,
+        )
         pm.execute_market_order.return_value = {
             "status": "matched",
             "order_avg_price_estimate": price,
@@ -64,6 +70,9 @@ class ScannerExecutorTests(unittest.TestCase):
             position_size_usdc=1.0,
             min_score=0.55,
             min_raw_ev=0.04,
+            min_net_ev=min_net_ev,
+            round_trip_cost_pct=0.04,
+            max_entry_drift_pct=0.04,
             require_timing_now=True,
             allow_wait_with_high_score=allow_wait_with_high_score,
             wait_override_min_score=wait_override_min_score,
@@ -134,7 +143,7 @@ class ScannerExecutorTests(unittest.TestCase):
             reason="scanner_approved score=0.900",
             score=0.90,
             market_type="general_binary",
-            features=_features(estimated_win_probability=0.54),
+            features=_features(selected_entry_price=0.55, estimated_win_probability=0.54),
             action="BUY",
         )
         engine, pm = self._engine(execute=True, price=0.55)
@@ -144,6 +153,50 @@ class ScannerExecutorTests(unittest.TestCase):
         self.assertEqual(stats["skipped"], 1)
         pm.execute_market_order.assert_not_called()
         self.assertEqual(self.log.recent_brain_decisions(limit=1)[0]["reason"], "raw_ev_below_executor_min")
+
+    def test_rejects_when_net_ev_does_not_cover_round_trip_cost(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.900",
+            score=0.90,
+            market_type="general_binary",
+            features=_features(estimated_win_probability=0.53),
+            action="BUY",
+        )
+        engine, pm = self._engine(execute=True, price=0.50)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        row = self.log.recent_brain_decisions(limit=1)[0]
+        self.assertEqual(row["reason"], "net_ev_below_executor_min")
+        self.assertIn('"net_ev": 0.02', row["features_json"])
+
+    def test_rejects_when_live_entry_price_worsens_after_scan(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.900",
+            score=0.90,
+            market_type="general_binary",
+            features=_features(selected_entry_price=0.50, estimated_win_probability=0.75),
+            action="BUY",
+        )
+        engine, pm = self._engine(execute=True, price=0.52, avg_price=0.53)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(self.log.recent_brain_decisions(limit=1)[0]["reason"], "entry_price_drift_too_high")
 
     def test_shadow_mode_does_not_call_exchange(self):
         self.log.insert_brain_decision(
@@ -190,6 +243,29 @@ class ScannerExecutorTests(unittest.TestCase):
         pm.execute_market_order.assert_called_once()
         response = self.log.filled_positions_with_id()[0]["response_json"]
         self.assertIn('"timing_override": true', response)
+
+    def test_executor_preserves_scanner_signal_source_for_feedback(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(signal_source="meta_brain,tavily"),
+            action="BUY",
+            signal_source="meta_brain,tavily",
+        )
+        engine, _ = self._engine(execute=True)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["executed"], 1)
+        row = self.log.recent_brain_decisions(limit=1)[0]
+        self.assertEqual(row["signal_source"], "meta_brain,tavily")
+        self.assertIn('"scanner_signal_source": "meta_brain,tavily"', row["features_json"])
 
     def test_wait_timing_still_rejects_when_override_score_is_low(self):
         self.log.insert_brain_decision(

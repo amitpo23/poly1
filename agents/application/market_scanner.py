@@ -203,6 +203,8 @@ class ScannerConfig:
     poll_seconds: int = MARKET_SCAN_SECONDS
     market_limit: int = 120
     max_candidates: int = 30
+    fetch_orders: str = "volume24hr,volume,liquidity"
+    target_trade_decisions: int = 4
     # Market quality gates (applied before any API calls).
     min_liquidity_usdc: float = 5_000.0
     min_volume_usdc: float = 3_000.0
@@ -217,6 +219,8 @@ class ScannerConfig:
     max_near_res_hours: float = 24.0
     near_res_confidence: float = 0.60
     news_shock_materiality: float = 0.40  # Tavily confidence to write news_signal
+    recent_stop_penalty_hours: int = 12
+    recent_stop_penalty_score: float = 0.12
     # Manifold divergence gate: only worth calling if spread exists.
     manifold_min_divergence: float = 0.07
     # Output.
@@ -230,6 +234,10 @@ class ScannerConfig:
             poll_seconds=_env_int("SCANNER_POLL_SEC", MARKET_SCAN_SECONDS),
             market_limit=_env_int("SCANNER_MARKET_LIMIT", 120),
             max_candidates=_env_int("SCANNER_MAX_CANDIDATES", 30),
+            fetch_orders=os.getenv(
+                "SCANNER_FETCH_ORDERS", "volume24hr,volume,liquidity"
+            ),
+            target_trade_decisions=_env_int("SCANNER_TARGET_TRADE_DECISIONS", 4),
             min_liquidity_usdc=_env_float("SCANNER_MIN_LIQUIDITY_USDC", 5_000.0),
             min_volume_usdc=_env_float("SCANNER_MIN_VOLUME_USDC", 3_000.0),
             min_price=_env_float("SCANNER_MIN_PRICE", 0.10),
@@ -242,6 +250,8 @@ class ScannerConfig:
             max_near_res_hours=_env_float("SCANNER_MAX_NEAR_RES_HOURS", 24.0),
             near_res_confidence=_env_float("SCANNER_NEAR_RES_CONFIDENCE", 0.60),
             news_shock_materiality=_env_float("SCANNER_NEWS_SHOCK_MATERIALITY", 0.40),
+            recent_stop_penalty_hours=_env_int("SCANNER_RECENT_STOP_PENALTY_HOURS", 12),
+            recent_stop_penalty_score=_env_float("SCANNER_RECENT_STOP_PENALTY_SCORE", 0.12),
             manifold_min_divergence=_env_float("SCANNER_MANIFOLD_MIN_DIVERGENCE", 0.07),
             heartbeat_path=os.getenv(
                 "SCANNER_HEARTBEAT_PATH", "/app/data/scanner_heartbeat"
@@ -289,6 +299,7 @@ class MarketScanner:
             "ts": now.isoformat(),
             "fetched": 0,
             "filtered": 0,
+            "scored": 0,
             "brain_approved": 0,
             "dispatched_trade": 0,
             "dispatched_near_resolution": 0,
@@ -311,9 +322,18 @@ class MarketScanner:
         )
 
         # 3. Score each candidate.
-        for mkt in candidates[: self.cfg.max_candidates]:
+        trade_clusters: set[str] = set()
+        for mkt in candidates:
+            if result["scored"] >= self.cfg.max_candidates:
+                break
+            if (
+                self.cfg.target_trade_decisions > 0
+                and result["dispatched_trade"] >= self.cfg.target_trade_decisions
+            ):
+                break
+            result["scored"] += 1
             try:
-                self._process_market(mkt, now, result)
+                self._process_market(mkt, now, result, trade_clusters)
             except Exception:
                 logger.exception(
                     "scanner: unhandled error for market %s", mkt.get("id", "?")
@@ -326,12 +346,33 @@ class MarketScanner:
     # -------------------------------------------------------------- private
 
     def _fetch_markets(self) -> list[dict]:
+        orders = [
+            x.strip()
+            for x in str(self.cfg.fetch_orders or "volume24hr").split(",")
+            if x.strip()
+        ] or ["volume24hr"]
+        deduped: dict[str, dict] = {}
+        for order in orders:
+            fetched = self._fetch_markets_by_order(order)
+            for market in fetched:
+                key = str(
+                    market.get("conditionId")
+                    or market.get("condition_id")
+                    or market.get("id")
+                    or market.get("slug")
+                    or ""
+                )
+                if key and key not in deduped:
+                    deduped[key] = market
+        return list(deduped.values())
+
+    def _fetch_markets_by_order(self, order: str) -> list[dict]:
         try:
             params = urllib.parse.urlencode({
                 "active": "true",
                 "closed": "false",
                 "limit": self.cfg.market_limit,
-                "order": "volume24hr",
+                "order": order,
                 "ascending": "false",
             })
             url = f"{GAMMA_MARKETS_URL}?{params}"
@@ -339,7 +380,7 @@ class MarketScanner:
             with urllib.request.urlopen(req, timeout=12) as resp:
                 return json.loads(resp.read())
         except Exception as exc:
-            logger.warning("scanner: Gamma fetch failed: %s", exc)
+            logger.warning("scanner: Gamma fetch failed order=%s: %s", order, exc)
             return []
 
     def _filter_candidates(self, markets: list[dict], now: datetime) -> list[dict]:
@@ -379,7 +420,13 @@ class MarketScanner:
             out.append(m)
         return out
 
-    def _process_market(self, mkt: dict, now: datetime, result: dict) -> None:
+    def _process_market(
+        self,
+        mkt: dict,
+        now: datetime,
+        result: dict,
+        trade_clusters: Optional[set[str]] = None,
+    ) -> None:
         market_id = str(
             mkt.get("conditionId") or mkt.get("condition_id") or mkt.get("id") or ""
         )
@@ -463,6 +510,26 @@ class MarketScanner:
             yes_price=yes_price,
             no_price=no_price,
         )
+        selected_token_id = str(execution_meta.get("selected_token_id") or "")
+        recent_stop_losses = self.trade_log.count_recent_closes_for_market(
+            market_id,
+            hours=self.cfg.recent_stop_penalty_hours,
+            token_id=selected_token_id or None,
+            statuses=("closed_stop_loss", "resolved_loss"),
+        )
+        stop_penalty = min(
+            0.30,
+            float(recent_stop_losses) * max(0.0, self.cfg.recent_stop_penalty_score),
+        )
+        if stop_penalty > 0:
+            opportunity_score = max(0.0, opportunity_score - stop_penalty)
+        cluster = _market_cluster(question, str(mkt.get("slug") or ""))
+        signal_source = _signal_source(
+            meta_sources=meta.signal_sources,
+            evidence_route=meta.features.get("evidence_route"),
+            tavily_ctx=tavily_ctx,
+            manifold_source=manifold_source,
+        )
 
         features = {
             "question": question,
@@ -475,7 +542,7 @@ class MarketScanner:
             "yes_price": round(yes_price, 4),
             "no_price": round(no_price, 4),
             "selected_side": execution_meta.get("selected_side"),
-            "selected_token_id": execution_meta.get("selected_token_id"),
+            "selected_token_id": selected_token_id,
             "selected_outcome": execution_meta.get("selected_outcome"),
             "selected_entry_price": execution_meta.get("selected_entry_price"),
             "estimated_win_probability": execution_meta.get("estimated_win_probability"),
@@ -491,11 +558,15 @@ class MarketScanner:
             "meta_conviction": meta.conviction_direction,
             "meta_velocity": meta.velocity_direction,
             "meta_signal_sources": meta.signal_sources,
+            "signal_source": signal_source,
             "tavily_direction": tavily_direction,
             "tavily_confidence": round(tavily_confidence_val, 3),
             "tavily_preview": tavily_ctx[:120] if tavily_ctx else "",
             "manifold_divergence": round(manifold_divergence, 4),
             "opportunity_score": round(opportunity_score, 4),
+            "market_cluster": cluster,
+            "recent_stop_losses": recent_stop_losses,
+            "recent_stop_penalty": round(stop_penalty, 4),
         }
         if meta.features.get("weighted_components"):
             features["weighted_components"] = meta.features["weighted_components"]
@@ -504,23 +575,28 @@ class MarketScanner:
 
         # Route 1: trade — write brain_decision so conviction gate sees it.
         if opportunity_score >= self.cfg.min_trade_score:
-            self.trade_log.insert_brain_decision(
-                agent="market_scanner",
-                strategy="scanner_trade_opportunity",
-                decision_type="entry",
-                market_id=market_id,
-                approved=True,
-                reason=f"scanner_approved score={opportunity_score:.3f}",
-                score=opportunity_score,
-                market_type="general_binary",
-                features=features,
-                action=str(execution_meta.get("selected_side") or "BUY"),
-            )
-            result["dispatched_trade"] += 1
-            logger.info(
-                "scanner → trade: market=%s score=%.3f %s",
-                market_id[:20], opportunity_score, question[:60],
-            )
+            cluster_seen = trade_clusters is not None and cluster in trade_clusters
+            if not cluster_seen:
+                self.trade_log.insert_brain_decision(
+                    agent="market_scanner",
+                    strategy="scanner_trade_opportunity",
+                    decision_type="entry",
+                    market_id=market_id,
+                    approved=True,
+                    reason=f"scanner_approved score={opportunity_score:.3f}",
+                    score=opportunity_score,
+                    market_type="general_binary",
+                    features=features,
+                    action=str(execution_meta.get("selected_side") or "BUY"),
+                    signal_source=signal_source,
+                )
+                if trade_clusters is not None:
+                    trade_clusters.add(cluster)
+                result["dispatched_trade"] += 1
+                logger.info(
+                    "scanner → trade: market=%s score=%.3f %s",
+                    market_id[:20], opportunity_score, question[:60],
+                )
 
         # Route 2: near_resolution — write news_signal so near_resolution agent sees it.
         if (
@@ -684,6 +760,58 @@ def _json_list(raw) -> list:
         return parsed if isinstance(parsed, list) else []
     except Exception:
         return []
+
+
+def _market_cluster(question: str, slug: str = "") -> str:
+    """Small deterministic cluster key for same-cycle diversity.
+
+    This is intentionally conservative. It avoids filling a cycle with the
+    same tournament/team/topic while leaving deeper correlation modeling to the
+    backtest layer.
+    """
+    text = f"{slug} {question}".lower()
+    keep = []
+    stop = {
+        "will", "the", "and", "or", "vs", "to", "in", "on", "by", "of",
+        "a", "an", "be", "win", "wins", "match", "game", "today",
+    }
+    for raw in text.replace("-", " ").replace("/", " ").split():
+        token = "".join(ch for ch in raw if ch.isalnum())
+        if len(token) < 3 or token in stop or token.isdigit():
+            continue
+        keep.append(token)
+        if len(keep) >= 4:
+            break
+    return ":".join(keep) if keep else (slug or question[:32]).lower()
+
+
+def _signal_source(
+    *,
+    meta_sources: list,
+    evidence_route: object,
+    tavily_ctx: str,
+    manifold_source: str,
+) -> str:
+    sources = ["meta_brain"]
+    if isinstance(evidence_route, dict):
+        provider = str(evidence_route.get("provider") or evidence_route.get("source") or "")
+        if provider:
+            sources.append(provider)
+    for src in meta_sources or []:
+        if src:
+            sources.append(str(src))
+    if tavily_ctx:
+        sources.append("tavily")
+    if manifold_source:
+        sources.append(f"manifold:{manifold_source}")
+    out = []
+    seen = set()
+    for src in sources:
+        key = src.strip()
+        if key and key not in seen:
+            out.append(key)
+            seen.add(key)
+    return ",".join(out)
 
 
 def _execution_metadata_for_market(

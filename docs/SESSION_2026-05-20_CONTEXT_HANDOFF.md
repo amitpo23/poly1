@@ -11,10 +11,13 @@ before touching live trading.
 - Runtime mode: `freeze`
 - HALT: present
 - Open positions from today's scanner proofs: none
-- Latest deployed commit: `1c0434c fix: reconcile delayed clob orders before marking failure`
-- Tests after latest change: `python3 -m unittest discover -s tests` → `535 tests OK`
+- Latest deployed commit before scanner-quality upgrade:
+  `a5c8eb2 docs: update live proof handoff after delayed order fix`
+- Tests after scanner-quality upgrade:
+  `python3 -m unittest discover -s tests` → `538 tests OK`
 - Server freeze preflight after deployment: OK
-- Current server cash/equity: `27.55036 USDC`
+- Current server cash/equity after the final negative micro proof:
+  `27.403582 USDC`
 
 Do not copy local `data/`, local `.env`, or local `deploy/.env.runtime` to the
 server. Use `scripts/runtime_control.py` only.
@@ -42,7 +45,31 @@ showed all entries were `MATCHED`. Position manager sold `8.32` shares at
 `0.65`; after manual reconciliation, no open positions remained and equity was
 `27.55036 USDC`, about `+0.375 USDC` versus the `27.175115` baseline.
 
+A later 15-minute controlled proof opened two `$1` scanner-executor positions.
+Both closed by stop-loss and the run ended around `27.403582 USDC`, about
+`-0.1468 USDC` from the `27.55036` baseline. Infrastructure still behaved
+correctly; the failure mode was signal quality and repetitive market selection.
+
 ## Key Fixes From The Proof
+
+### Scanner Quality Upgrade
+
+Implemented after the negative micro proof:
+
+- `market_scanner` fetches multiple Gamma market orderings via
+  `SCANNER_FETCH_ORDERS` and dedupes the result.
+- `SCANNER_TARGET_TRADE_DECISIONS` lets a cycle aim for a small number of
+  diverse trade approvals instead of flooding the journal with the same market
+  cluster.
+- Recent `closed_stop_loss` / `resolved_loss` rows apply a soft score penalty
+  before a market is routed again.
+- `scanner_executor` revalidates live executable price against the scanner
+  entry price and rejects excessive drift.
+- `scanner_executor` requires raw EV plus net EV after
+  `SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT`, so spread/slippage/exit friction is
+  part of the gate.
+- Scanner and executor decisions preserve `signal_source` in `brain_decisions`
+  for later provider trust and outcome feedback.
 
 ### Equity Guard
 
@@ -153,8 +180,8 @@ success plus a signal/exit-pricing lesson.
 
 - OpenAI returns HTTP `429` in live position-manager logs. Anthropic fallback is
   working, but OpenAI quota/billing should be fixed before relying on OpenAI.
-- Scanner market quality is still weak. It can produce trades, but today's PnL
-  was negative.
+- Scanner market quality was weak in the last proof; the local scanner-quality
+  upgrade needs deployment and a fresh controlled proof before increasing size.
 - Position-manager now has executable-profit protection, but this needs a fresh
   proof run before increasing size.
 - Some old journal rows from previous experiments still appear in broad

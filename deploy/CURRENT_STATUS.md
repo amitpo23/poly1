@@ -6,15 +6,16 @@ Server source of truth remains `trader@83.229.82.193:/srv/poly1`. Local is
 development/staging only. Do not copy local `data/`, `.env`, or
 `deploy/.env.runtime` over the server.
 
-Current runtime state after the controlled scanner-executor proof and delayed
-CLOB reconciliation fix:
+Current runtime state after the controlled scanner-executor proof, delayed
+CLOB reconciliation fix, and follow-up negative micro proof:
 
 - Server is in `freeze`; `data/HALT` is present.
 - No open positions remain.
-- Latest deployed commit: `1c0434c fix: reconcile delayed clob orders before marking failure`.
-- Full local test suite passed after that commit: `535 tests OK`.
+- Latest deployed commit before the scanner-quality upgrade:
+  `a5c8eb2 docs: update live proof handoff after delayed order fix`.
+- Full local test suite after scanner-quality upgrade: `538 tests OK`.
 - Server `trading_stability_preflight --mode freeze` passed after deployment.
-- Current cash/equity after the final proof and reconciliation: `27.55036 USDC`.
+- Current cash/equity after the final negative micro proof: `27.403582 USDC`.
 - OpenAI is still returning quota/rate-limit `429` in live logs; Anthropic
   fallback is working for position-manager exit decisions.
 
@@ -53,6 +54,25 @@ Controlled proof result:
   `MATCHED`. Position manager sold `8.32` shares at `0.65`; final reconciled
   result was about `+0.375 USDC` versus the `27.175115` start baseline.
 - The delayed-response bug is now fixed in code and deployed.
+- A later 15-minute proof opened two `$1` positions from repetitive scanner
+  approvals and closed both as stop-loss. Net result was about `-0.1468 USDC`.
+  The lesson was signal quality, not infrastructure: the scanner needed broader
+  market sourcing, same-cycle diversity, stop-loss penalties, and EV checks
+  that account for spread/slippage/exit friction.
+
+Scanner-quality upgrade now implemented locally:
+
+- `market_scanner` fetches multiple Gamma orderings
+  (`SCANNER_FETCH_ORDERS`) and dedupes the universe.
+- `SCANNER_TARGET_TRADE_DECISIONS` targets diverse per-cycle approvals instead
+  of repeatedly writing the same market cluster.
+- Recent stop-losses/resolved losses apply a soft score penalty before routing.
+- `scanner_executor` rejects live fills if the executable entry price drifted
+  too far from the scanner-approved price.
+- `scanner_executor` now requires both raw EV and net EV after
+  `SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT`.
+- Scanner/executor decisions preserve `signal_source` so provider trust can be
+  measured against later outcomes.
 
 Before the next live run:
 

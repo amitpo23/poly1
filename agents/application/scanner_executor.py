@@ -64,6 +64,9 @@ class ScannerExecutorConfig:
     reserve_usdc: float = 0.0
     min_score: float = 0.80
     min_raw_ev: float = 0.04
+    min_net_ev: float = 0.03
+    round_trip_cost_pct: float = 0.04
+    max_entry_drift_pct: float = 0.04
     require_timing_now: bool = True
     allow_wait_with_high_score: bool = False
     wait_override_min_score: float = 0.79
@@ -81,6 +84,9 @@ class ScannerExecutorConfig:
             reserve_usdc=_env_float("SCANNER_EXECUTOR_RESERVE_USDC", 0.0),
             min_score=_env_float("SCANNER_EXECUTOR_MIN_SCORE", 0.80),
             min_raw_ev=_env_float("SCANNER_EXECUTOR_MIN_RAW_EV", 0.04),
+            min_net_ev=_env_float("SCANNER_EXECUTOR_MIN_NET_EV", 0.03),
+            round_trip_cost_pct=_env_float("SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT", 0.04),
+            max_entry_drift_pct=_env_float("SCANNER_EXECUTOR_MAX_ENTRY_DRIFT_PCT", 0.04),
             require_timing_now=_env_bool("SCANNER_EXECUTOR_REQUIRE_TIMING_NOW", True),
             allow_wait_with_high_score=_env_bool(
                 "SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE",
@@ -228,7 +234,26 @@ class ScannerExecutor:
             self._record_reject(row, "orderbook_not_executable", {"error": str(exc)[:240]})
             return "skipped"
 
-        raw_ev = binary_raw_ev(estimated_prob, live_price)
+        executable_entry_price = _safe_float(avg_price, live_price) or live_price
+        scanner_entry_price = _safe_float(features.get("selected_entry_price"), 0.0)
+        if scanner_entry_price > 0:
+            entry_drift = (executable_entry_price - scanner_entry_price) / scanner_entry_price
+            if entry_drift > self.cfg.max_entry_drift_pct:
+                self._record_reject(
+                    row,
+                    "entry_price_drift_too_high",
+                    {
+                        "scanner_entry_price": round(scanner_entry_price, 4),
+                        "live_entry_price": round(live_price, 4),
+                        "avg_entry_price": round(executable_entry_price, 4),
+                        "entry_drift": round(entry_drift, 4),
+                        "max_entry_drift_pct": self.cfg.max_entry_drift_pct,
+                    },
+                )
+                return "skipped"
+
+        raw_ev = binary_raw_ev(estimated_prob, executable_entry_price)
+        net_ev = raw_ev - max(0.0, self.cfg.round_trip_cost_pct)
         if raw_ev < self.cfg.min_raw_ev:
             self._record_reject(
                 row,
@@ -236,8 +261,24 @@ class ScannerExecutor:
                 {
                     "estimated_win_probability": round(estimated_prob, 4),
                     "live_entry_price": round(live_price, 4),
+                    "avg_entry_price": round(executable_entry_price, 4),
                     "raw_ev": round(raw_ev, 4),
                     "min_raw_ev": self.cfg.min_raw_ev,
+                },
+            )
+            return "skipped"
+        if net_ev < self.cfg.min_net_ev:
+            self._record_reject(
+                row,
+                "net_ev_below_executor_min",
+                {
+                    "estimated_win_probability": round(estimated_prob, 4),
+                    "live_entry_price": round(live_price, 4),
+                    "avg_entry_price": round(executable_entry_price, 4),
+                    "raw_ev": round(raw_ev, 4),
+                    "net_ev": round(net_ev, 4),
+                    "round_trip_cost_pct": self.cfg.round_trip_cost_pct,
+                    "min_net_ev": self.cfg.min_net_ev,
                 },
             )
             return "skipped"
@@ -255,7 +296,7 @@ class ScannerExecutor:
         sizing = kelly_size_usdc(
             balance_usdc=balance,
             win_probability=estimated_prob,
-            entry_price=live_price,
+            entry_price=executable_entry_price,
             fallback_amount_usdc=min(self.cfg.position_size_usdc, fillable_usdc),
         )
         amount_usdc = min(fillable_usdc, sizing.amount_usdc or self.cfg.position_size_usdc)
@@ -265,6 +306,11 @@ class ScannerExecutor:
         execution_features = {
             "meta_timing": meta_timing,
             "timing_override": timing_override,
+            "live_entry_price": round(live_price, 4),
+            "avg_entry_price": round(executable_entry_price, 4),
+            "raw_ev": round(raw_ev, 4),
+            "net_ev": round(net_ev, 4),
+            "round_trip_cost_pct": self.cfg.round_trip_cost_pct,
             **sizing.features(),
         }
 
@@ -296,6 +342,7 @@ class ScannerExecutor:
                     "source_decision_id": decision_id,
                     "entry_mode": "scanner_executor",
                     "raw_ev": round(raw_ev, 4),
+                    "net_ev": round(net_ev, 4),
                     "meta_timing": meta_timing,
                     "timing_override": timing_override,
                     **sizing.features(),
@@ -304,7 +351,7 @@ class ScannerExecutor:
                 price=live_price,
                 size_usdc=amount_usdc,
             )
-            self._record_approval(row, "shadow_executed", live_price, amount_usdc, raw_ev, execution_features)
+            self._record_approval(row, "shadow_executed", live_price, amount_usdc, raw_ev, net_ev, execution_features)
             return "shadow"
 
         try:
@@ -329,6 +376,7 @@ class ScannerExecutor:
                 "source_decision_id": decision_id,
                 "entry_mode": "scanner_executor",
                 "raw_ev": round(raw_ev, 4),
+                "net_ev": round(net_ev, 4),
                 "meta_timing": meta_timing,
                 "timing_override": timing_override,
                 **sizing.features(),
@@ -336,7 +384,7 @@ class ScannerExecutor:
             price=entry_price,
             size_usdc=entry_size,
         )
-        self._record_approval(row, "live_executed", entry_price, entry_size, raw_ev, execution_features)
+        self._record_approval(row, "live_executed", entry_price, entry_size, raw_ev, net_ev, execution_features)
         notify_trade(
             event="fill",
             agent="scanner_executor",
@@ -344,7 +392,7 @@ class ScannerExecutor:
             side=side,
             price=entry_price,
             size_usdc=entry_size,
-            reason=f"scanner_decision={decision_id} score={score:.3f} ev={raw_ev:.3f} {question[:80]}",
+            reason=f"scanner_decision={decision_id} score={score:.3f} ev={raw_ev:.3f} net={net_ev:.3f} {question[:80]}",
             balance_usdc=_safe_balance(self.polymarket),
         )
         return "executed"
@@ -365,19 +413,24 @@ class ScannerExecutor:
         return (_DocMarket(metadata), 0.0)
 
     def _record_reject(self, row: dict, reason: str, features: dict) -> None:
+        row_features = _parse_features(row.get("features_json"))
         self.trade_log.insert_brain_decision(
             agent="scanner_executor",
             strategy="execute_scanner_trade_opportunity",
             decision_type="entry",
             market_id=str(row["market_id"]),
-            token_id=str((_parse_features(row.get("features_json")).get("selected_token_id") or "")),
+            token_id=str((row_features.get("selected_token_id") or "")),
             approved=False,
             reason=reason,
             score=float(row.get("score") or 0.0),
             market_type="scanner_executor",
-            features={"source_decision_id": int(row["id"]), **features},
+            features={
+                "source_decision_id": int(row["id"]),
+                "scanner_signal_source": row.get("signal_source") or row_features.get("signal_source"),
+                **features,
+            },
             action=str(row.get("action") or ""),
-            signal_source="market_scanner",
+            signal_source=str(row.get("signal_source") or row_features.get("signal_source") or "market_scanner"),
         )
         logger.info(
             "scanner_executor skip: decision=%s market=%s reason=%s",
@@ -391,6 +444,7 @@ class ScannerExecutor:
         entry_price: float,
         amount_usdc: float,
         raw_ev: float,
+        net_ev: float,
         extra: dict,
     ) -> None:
         features = _parse_features(row.get("features_json"))
@@ -409,10 +463,12 @@ class ScannerExecutor:
                 "entry_price": round(entry_price, 4),
                 "amount_usdc": round(amount_usdc, 4),
                 "raw_ev": round(raw_ev, 4),
+                "net_ev": round(net_ev, 4),
+                "scanner_signal_source": row.get("signal_source") or features.get("signal_source"),
                 **extra,
             },
             action=str(features.get("selected_side") or row.get("action") or ""),
-            signal_source="market_scanner",
+            signal_source=str(row.get("signal_source") or features.get("signal_source") or "market_scanner"),
         )
         logger.info(
             "scanner_executor %s: decision=%s market=%s price=%.4f size=%.4f ev=%.4f",

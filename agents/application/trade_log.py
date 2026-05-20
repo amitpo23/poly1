@@ -939,6 +939,39 @@ class TradeLog:
             row = conn.execute(sql, (*id_params, *_CLOSE_STATUSES, cutoff)).fetchone()
             return row is not None
 
+    def count_recent_closes_for_market(
+        self,
+        market_id: str,
+        hours: int = 12,
+        token_id: Optional[str] = None,
+        statuses: Optional[tuple[str, ...]] = None,
+    ) -> int:
+        """Count recent terminal rows for a market/token.
+
+        Scanner/ranking code uses this as a soft learning signal: a recent
+        stop-loss should reduce enthusiasm even before the hard re-entry
+        cooldown blocks execution.
+        """
+        close_statuses = statuses or (
+            "closed_take_profit", "closed_stop_loss",
+            "closed_timeout", "closed_dust",
+        )
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        ph = ",".join("?" for _ in close_statuses)
+        if token_id:
+            id_clause = "(market_id = ? OR (token_id = ? AND token_id IS NOT NULL))"
+            id_params = (str(market_id), str(token_id))
+        else:
+            id_clause = "market_id = ?"
+            id_params = (str(market_id),)
+        sql = (
+            f"SELECT COUNT(*) AS n FROM trades WHERE {id_clause} "
+            f"AND status IN ({ph}) AND ts >= ?"
+        )
+        with self._lock, self._connect() as conn:
+            row = conn.execute(sql, (*id_params, *close_statuses, cutoff)).fetchone()
+            return int(row["n"] if row is not None else 0)
+
     def count_recent_fills_for_market(
         self,
         market_id: str,
