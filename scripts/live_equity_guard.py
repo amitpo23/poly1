@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Callable, Iterable, Any
@@ -58,7 +59,10 @@ def _float(value: Any, default: float = 0.0) -> float:
 
 def _midpoint_from_response(resp: Any, fallback: float) -> tuple[float, str]:
     if isinstance(resp, dict):
-        return _float(resp.get("mid"), fallback), "clob_midpoint"
+        return (
+            _float(resp.get("mid"), fallback),
+            str(resp.get("_source") or "clob_midpoint"),
+        )
     return _float(resp, fallback), "clob_midpoint"
 
 
@@ -138,6 +142,23 @@ def _baseline_from_control(path: Path) -> float:
     )
 
 
+def _latest_position_marks(db_path: Path) -> dict[str, float]:
+    try:
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT token_id, current_price FROM position_marks WHERE token_id IS NOT NULL"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    for token_id, current_price in rows:
+        price = _float(current_price)
+        if token_id and price > 0:
+            out[str(token_id)] = price
+    return out
+
+
 def live_snapshot(args: argparse.Namespace) -> EquitySnapshot:
     from agents.application.trade_log import TradeLog
     from agents.polymarket.polymarket import Polymarket
@@ -152,9 +173,19 @@ def live_snapshot(args: argparse.Namespace) -> EquitySnapshot:
         else _baseline_from_control(control_path)
     )
     rows = TradeLog(str(db_path)).filled_positions_with_id()
+    position_marks = _latest_position_marks(db_path)
+
+    def midpoint_for_token(token_id: str) -> Any:
+        try:
+            return poly.client.get_midpoint(token_id)
+        except Exception:
+            if token_id in position_marks:
+                return {"mid": position_marks[token_id], "_source": "position_mark"}
+            raise
+
     positions = compute_position_values(
         rows,
-        lambda token_id: poly.client.get_midpoint(token_id),
+        midpoint_for_token,
     )
     return compute_equity_snapshot(
         cash_usdc=cash,

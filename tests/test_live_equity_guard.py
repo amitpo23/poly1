@@ -81,6 +81,22 @@ class LiveEquityGuardTests(unittest.TestCase):
         self.assertAlmostEqual(positions[0].mtm_usdc, 2.0)
         self.assertEqual(positions[0].midpoint_source, "entry_fallback")
 
+    def test_midpoint_source_can_come_from_position_mark(self):
+        guard = _load_guard()
+        positions = guard.compute_position_values(
+            [{
+                "id": 1,
+                "market_id": "M1",
+                "token_id": "TOK",
+                "side": "BUY",
+                "price": 0.50,
+                "size_usdc": 1.0,
+            }],
+            lambda token_id: {"mid": 0.45, "_source": "position_mark"},
+        )
+        self.assertAlmostEqual(positions[0].mtm_usdc, 0.9)
+        self.assertEqual(positions[0].midpoint_source, "position_mark")
+
 
 if __name__ == "__main__":
     unittest.main()
