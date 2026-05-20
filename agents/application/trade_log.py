@@ -878,6 +878,7 @@ class TradeLog:
         sql = f"""
             SELECT 1 FROM trades
             WHERE {id_clause} AND status = 'filled'
+              AND (error IS NULL OR error NOT LIKE 'SHADOW%')
               AND id > COALESCE(
                 (SELECT MAX(id) FROM trades
                  WHERE {id_clause} AND status IN ({terminal_ph})), 0
@@ -1647,6 +1648,7 @@ class TradeLog:
             ") x ON x.token_id = t.token_id "
             "WHERE t.status = ? AND t.token_id IS NOT NULL "
             "AND t.token_id != '' "
+            "AND (t.error IS NULL OR t.error NOT LIKE 'SHADOW%') "
             "AND t.id > COALESCE(x.terminal_id, 0) "
             "ORDER BY t.id"
         )

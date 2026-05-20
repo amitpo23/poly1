@@ -296,6 +296,8 @@ class ScannerExecutorTests(unittest.TestCase):
         pm.execute_market_order.assert_not_called()
         rows = self.log.filled_positions_with_id()
         self.assertEqual(rows, [])
+        self.assertEqual(self.log.filled_positions(), [])
+        self.assertFalse(self.log.has_active_trade_for_market("0xabc", token_id="tok_up"))
         raw_rows = self.log.count_recent(FILLED, hours=1)
         self.assertEqual(raw_rows, 1)
 
