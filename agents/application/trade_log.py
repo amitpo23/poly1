@@ -1705,6 +1705,29 @@ class TradeLog:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def recent_scanner_trade_opportunities(
+        self,
+        *,
+        max_age_seconds: int = 180,
+        limit: int = 50,
+    ) -> list:
+        """Return fresh approved scanner opportunities for the execution bridge."""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+        ).isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM brain_decisions "
+                "WHERE agent = 'market_scanner' "
+                "AND strategy = 'scanner_trade_opportunity' "
+                "AND decision_type = 'entry' "
+                "AND approved = 1 "
+                "AND ts >= ? "
+                "ORDER BY id ASC LIMIT ?",
+                (cutoff, int(limit)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def market_brain_decisions(
         self, market_id: str, hours: float = 6, limit: int = 5
     ) -> list:

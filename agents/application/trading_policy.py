@@ -107,6 +107,11 @@ AGENT_MANIFEST: dict[str, dict[str, str]] = {
         "strategy": "Scan Gamma and external evidence, then write opportunities for entry agents.",
         "places_orders": "no",
     },
+    "scanner_executor": {
+        "role": "scanner execution bridge",
+        "strategy": "Consume fresh market_scanner brain approvals only when execution metadata, live order book, EV, dedupe, and RiskGate all pass.",
+        "places_orders": "yes",
+    },
     "position_manager": {
         "role": "exit brain",
         "strategy": "Re-evaluate exits every minute; exit fast by default, hold only on strong brain/forecast evidence, enforce 3% stop and 25% hard cap.",

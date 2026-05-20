@@ -13,11 +13,11 @@ Runs every SCANNER_POLL_SEC seconds (default 60 = 1 min).  Each cycle:
    ├─────────────────────┼──────────────────────────────────────────────────────┤
    │  news_shock         │  Tavily found material news (materiality ≥ 0.4)      │
    │  near_resolution    │  hours_to_close ≤ 24 AND confidence ≥ 0.60           │
-   │  trade (main LLM)   │  Overall score ≥ SCANNER_MIN_TRADE_SCORE             │
+   │  scanner_executor   │  Overall score ≥ SCANNER_MIN_TRADE_SCORE             │
    └─────────────────────┴──────────────────────────────────────────────────────┘
 
 Output to existing DB tables (no new schema):
-  • brain_decisions  — conviction gate in trade.py reads these
+  • brain_decisions  — scanner_executor/trade conviction gates read these
   • news_signals     — news_shock agent reads these; scanner writes when
                        Tavily surfaced a material headline
 
@@ -162,8 +162,9 @@ AGENT_GOALS: dict[str, dict] = {
         "goal": (
             "Proactively scan the most liquid Polymarket markets every minute. "
             "Score each market with brain + Tavily + Manifold divergence. "
-            "Route approved signals to the right agent via brain_decisions (conviction "
-            "gate) and news_signals (news_shock). Never places orders directly."
+            "Route approved signals to the right agent via brain_decisions with "
+            "execution metadata (scanner_executor) and news_signals (news_shock). "
+            "Never places orders directly."
         ),
         "entry_criteria": "N/A — discovery only.",
         "exit_criteria": "N/A — discovery only.",
@@ -389,8 +390,11 @@ class MarketScanner:
         try:
             prices = json.loads(mkt.get("outcomePrices") or '["0.5","0.5"]')
             yes_price = float(prices[0])
+            no_price = float(prices[1]) if len(prices) > 1 else max(0.0, 1.0 - yes_price)
         except Exception:
+            prices = [0.5, 0.5]
             yes_price = 0.5
+            no_price = 0.5
 
         spread_pct = _spread_pct(mkt)
         hours_to_close = _hours_to_close(mkt, now)
@@ -452,8 +456,31 @@ class MarketScanner:
         tavily_boost = 0.10 if tavily_ctx else 0.0
         opportunity_score = min(1.0, base_score + tavily_boost)
 
+        execution_meta = _execution_metadata_for_market(
+            mkt=mkt,
+            meta_features=meta.features,
+            meta_score=meta.score,
+            yes_price=yes_price,
+            no_price=no_price,
+        )
+
         features = {
+            "question": question,
+            "condition_id": market_id,
+            "gamma_market_id": str(mkt.get("id") or ""),
+            "slug": str(mkt.get("slug") or ""),
+            "outcomes": execution_meta.get("outcomes"),
+            "outcome_prices": execution_meta.get("outcome_prices"),
+            "clob_token_ids": execution_meta.get("clob_token_ids"),
             "yes_price": round(yes_price, 4),
+            "no_price": round(no_price, 4),
+            "selected_side": execution_meta.get("selected_side"),
+            "selected_token_id": execution_meta.get("selected_token_id"),
+            "selected_outcome": execution_meta.get("selected_outcome"),
+            "selected_entry_price": execution_meta.get("selected_entry_price"),
+            "estimated_win_probability": execution_meta.get("estimated_win_probability"),
+            "scanner_raw_ev": execution_meta.get("scanner_raw_ev"),
+            "evidence_route": meta.features.get("evidence_route"),
             "spread_pct": round(spread_pct, 4) if spread_pct else None,
             "hours_to_close": round(hours_to_close, 2) if hours_to_close else None,
             "liquidity_usdc": round(liq, 0),
@@ -487,7 +514,7 @@ class MarketScanner:
                 score=opportunity_score,
                 market_type="general_binary",
                 features=features,
-                action="BUY",
+                action=str(execution_meta.get("selected_side") or "BUY"),
             )
             result["dispatched_trade"] += 1
             logger.info(
@@ -648,6 +675,77 @@ def _compute_vibe_for_scanner(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _json_list(raw) -> list:
+    if isinstance(raw, list):
+        return raw
+    try:
+        parsed = json.loads(raw or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def _execution_metadata_for_market(
+    *,
+    mkt: dict,
+    meta_features: dict,
+    meta_score: float,
+    yes_price: float,
+    no_price: float,
+) -> dict:
+    """Build the exact orderable side/token payload for scanner approvals.
+
+    The scanner still does not place orders. It only writes enough audited
+    metadata for scanner_executor to decide whether a brain approval is
+    actually executable. Direction comes from EvidenceRouter when available;
+    otherwise scanner defaults to YES because MarketBrain scores the question
+    against outcome[0].
+    """
+    outcomes = [str(x) for x in _json_list(mkt.get("outcomes"))]
+    token_ids = [str(x) for x in _json_list(mkt.get("clobTokenIds"))]
+    prices = [float(x) for x in _json_list(mkt.get("outcomePrices"))[:2] or [yes_price, no_price]]
+
+    evidence_route = meta_features.get("evidence_route") or {}
+    route_direction = str(evidence_route.get("direction") or "").lower()
+    conviction_direction = str(meta_features.get("conviction_direction") or "").lower()
+    direction = route_direction if route_direction in {"yes", "no"} else conviction_direction
+    if direction not in {"yes", "no"}:
+        direction = "yes"
+
+    selected_index = 0 if direction == "yes" else 1
+    selected_side = "BUY" if selected_index == 0 else "SELL"
+    selected_token = token_ids[selected_index] if len(token_ids) > selected_index else ""
+    selected_outcome = outcomes[selected_index] if len(outcomes) > selected_index else direction.upper()
+    selected_entry_price = yes_price if selected_index == 0 else no_price
+    if len(prices) > selected_index:
+        selected_entry_price = float(prices[selected_index])
+
+    route_probability = evidence_route.get("probability")
+    internal_probability = meta_features.get("internal_probability")
+    if route_probability is not None:
+        estimated = _safe_float(route_probability, meta_score)
+    elif direction == "no" and meta_features.get("cross_market_prob") is not None:
+        estimated = 1.0 - _safe_float(meta_features.get("cross_market_prob"), 0.5)
+    elif internal_probability is not None:
+        estimated = _safe_float(internal_probability, meta_score)
+    else:
+        estimated = float(meta_score)
+    estimated = max(0.0, min(1.0, estimated))
+
+    entry = max(1e-9, float(selected_entry_price))
+    raw_ev = (estimated - entry) / entry
+    return {
+        "outcomes": outcomes,
+        "outcome_prices": [round(float(x), 4) for x in prices[:2]],
+        "clob_token_ids": token_ids,
+        "selected_side": selected_side,
+        "selected_token_id": selected_token,
+        "selected_outcome": selected_outcome,
+        "selected_entry_price": round(entry, 4),
+        "estimated_win_probability": round(estimated, 4),
+        "scanner_raw_ev": round(raw_ev, 4),
+    }
 
 def _safe_float(val, default: float = 0.0) -> float:
     try:

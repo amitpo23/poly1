@@ -62,6 +62,7 @@ class RiskGate:
         wallet_follow_reserve_usdc: Optional[float] = None,
         external_conviction_reserve_usdc: Optional[float] = None,
         btc_5min_reserve_usdc: Optional[float] = None,
+        scanner_executor_reserve_usdc: Optional[float] = None,
         runtime_control_file: Optional[str] = None,
     ):
         self.trade_log = trade_log
@@ -154,6 +155,11 @@ class RiskGate:
                 btc_5min_reserve_usdc
                 if btc_5min_reserve_usdc is not None
                 else _env_float("BTC_5MIN_RESERVE_USDC", 0.0)
+            ),
+            "scanner_executor": (
+                scanner_executor_reserve_usdc
+                if scanner_executor_reserve_usdc is not None
+                else _env_float("SCANNER_EXECUTOR_RESERVE_USDC", 0.0)
             ),
         }
         self._mtm_cache_value: Optional[float] = None

@@ -49,6 +49,12 @@
       "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
       "compose_service": "external-conviction-api",
       "compose_profile": "external_conviction"
+    },
+    "scanner_executor": {
+      "execute_flag": "EXECUTE_SCANNER_EXECUTOR",
+      "reserve_flag": "SCANNER_EXECUTOR_RESERVE_USDC",
+      "compose_service": "scanner-executor",
+      "compose_profile": "scanner"
     }
   },
   "live_support_services": {

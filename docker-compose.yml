@@ -921,6 +921,38 @@ services:
     stop_grace_period: 30s
     profiles: ["scanner"]
 
+  scanner-executor:
+    build: .
+    image: poly1:local
+    container_name: poly1-scanner-executor
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: scanner_executor
+    command: ["python", "-m", "agents.application.scanner_executor"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/scanner_executor_heartbeat') < 60\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["scanner"]
+
   market_universe:
     build: .
     image: poly1:local
