@@ -380,9 +380,17 @@ def live_probe(args: argparse.Namespace) -> int:
 def shadow_probe(args: argparse.Namespace) -> int:
     policy = _load_policy()
     agents = policy["entry_agents"]
-    if args.agent not in agents:
+    requested = [
+        item.strip()
+        for item in str(args.agent).split(",")
+        if item.strip()
+    ]
+    if requested == ["all"]:
+        requested = list(agents.keys())
+    unknown = [agent for agent in requested if agent not in agents]
+    if unknown:
         valid = ", ".join(sorted(agents))
-        raise SystemExit(f"unknown agent {args.agent!r}; valid: {valid}")
+        raise SystemExit(f"unknown agents {unknown!r}; valid: {valid}")
     duration_minutes = int(args.minutes)
     if duration_minutes <= 0 or duration_minutes > 180:
         raise SystemExit("--minutes must be between 1 and 180")
@@ -390,10 +398,11 @@ def shadow_probe(args: argparse.Namespace) -> int:
     env = dict(BASE_ENV)
     env["RUNTIME_MODE"] = "paper"
     env["EXECUTE"] = "false"
-    spec = agents[args.agent]
-    env[spec["execute_flag"]] = "false"
-    if spec.get("reserve_flag"):
-        env[spec["reserve_flag"]] = "0"
+    for agent in requested:
+        spec = agents[agent]
+        env[spec["execute_flag"]] = "false"
+        if spec.get("reserve_flag"):
+            env[spec["reserve_flag"]] = "0"
     if args.scanner_allow_wait:
         env["SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE"] = "true"
         env["SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE"] = args.scanner_wait_min_score
@@ -404,7 +413,7 @@ def shadow_probe(args: argparse.Namespace) -> int:
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
     control_base = {
         "mode": "paper",
-        "allowed_live_agents": [args.agent],
+        "allowed_live_agents": requested,
         "budget_usdc": 0.0,
         "expires_at": expires_at.isoformat(),
         "requires_halt": False,
@@ -424,7 +433,7 @@ def shadow_probe(args: argparse.Namespace) -> int:
     if args.arm:
         HALT_PATH.unlink(missing_ok=True)
     print(
-        f"runtime mode set: paper shadow agent={args.agent} "
+        f"runtime mode set: paper shadow agents={','.join(requested)} "
         f"minutes={duration_minutes} hash={config_hash}"
     )
     print(f"expires_at={expires_at.isoformat()}")

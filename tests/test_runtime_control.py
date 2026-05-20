@@ -127,6 +127,55 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertTrue(control["shadow_only"])
             self.assertFalse(halt.exists())
 
+    def test_shadow_probe_accepts_multiple_agents_without_live_execute_flags(self):
+        rc = _load_runtime_control()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "deploy").mkdir()
+            (root / "data").mkdir()
+            policy = {
+                "entry_agents": {
+                    "scanner_executor": {
+                        "execute_flag": "EXECUTE_SCANNER_EXECUTOR",
+                        "reserve_flag": "SCANNER_EXECUTOR_RESERVE_USDC",
+                    },
+                    "btc_5min": {
+                        "execute_flag": "EXECUTE_BTC_5MIN",
+                        "reserve_flag": "BTC_5MIN_RESERVE_USDC",
+                    },
+                }
+            }
+            (root / "deploy" / "runtime_policy.json").write_text(json.dumps(policy))
+            halt = root / "data" / "HALT"
+            halt.write_text("halt\n")
+
+            rc.ROOT = root
+            rc.POLICY_PATH = root / "deploy" / "runtime_policy.json"
+            rc.ENV_RUNTIME_PATH = root / "deploy" / ".env.runtime"
+            rc.CONTROL_PATH = root / "data" / "runtime_control.json"
+            rc.HALT_PATH = halt
+
+            args = argparse.Namespace(
+                agent="scanner_executor,btc_5min",
+                minutes=30,
+                position_size_usdc="1.00",
+                scanner_allow_wait=True,
+                scanner_wait_min_score="0.79",
+                note="shadow suite",
+                arm=True,
+            )
+            rc.shadow_probe(args)
+
+            env_text = rc.ENV_RUNTIME_PATH.read_text()
+            control = json.loads(rc.CONTROL_PATH.read_text())
+            self.assertIn('EXECUTE_SCANNER_EXECUTOR="false"', env_text)
+            self.assertIn('EXECUTE_BTC_5MIN="false"', env_text)
+            self.assertEqual(control["mode"], "paper")
+            self.assertEqual(control["allowed_live_agents"], ["scanner_executor", "btc_5min"])
+            self.assertEqual(control["budget_usdc"], 0.0)
+            self.assertTrue(control["shadow_only"])
+            self.assertFalse(halt.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
