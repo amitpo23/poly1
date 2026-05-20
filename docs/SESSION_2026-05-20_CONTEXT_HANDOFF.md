@@ -10,10 +10,11 @@ before touching live trading.
 - Server is the only live source of truth.
 - Runtime mode: `freeze`
 - HALT: present
-- Open positions from today's scanner proof: none
-- Latest deployed commit: `181734c fix: require executable profit for take-profit exits`
-- Tests after latest change: `python3 -m unittest discover -s tests` → `531 tests OK`
+- Open positions from today's scanner proofs: none
+- Latest deployed commit: `1c0434c fix: reconcile delayed clob orders before marking failure`
+- Tests after latest change: `python3 -m unittest discover -s tests` → `535 tests OK`
 - Server freeze preflight after deployment: OK
+- Current server cash/equity: `27.55036 USDC`
 
 Do not copy local `data/`, local `.env`, or local `deploy/.env.runtime` to the
 server. Use `scripts/runtime_control.py` only.
@@ -34,6 +35,12 @@ Today we proved the chain can now run end to end:
 
 The proof opened three micro trades and all three closed. PnL was slightly
 negative, but the infrastructure path worked.
+
+A follow-up proof with `--scanner-wait-min-score 0.76` opened five MIBR entries
+at `$1` each. The CLOB initially returned `delayed`, but `get_order` later
+showed all entries were `MATCHED`. Position manager sold `8.32` shares at
+`0.65`; after manual reconciliation, no open positions remained and equity was
+`27.55036 USDC`, about `+0.375 USDC` versus the `27.175115` baseline.
 
 ## Key Fixes From The Proof
 
@@ -105,6 +112,19 @@ not `closed_take_profit`.
 Relevant commit:
 
 - `181734c fix: require executable profit for take-profit exits`
+
+### Delayed CLOB Reconciliation
+
+The final proof exposed a money-safety bug: FOK/FAK orders can return
+`status=delayed` and then become `MATCHED` moments later. The old code marked
+those rows failed immediately, which created a real but unmanaged position.
+
+Now both entry and exit order paths briefly call `get_order(order_id)` before
+deciding that a delayed order failed.
+
+Relevant commit:
+
+- `1c0434c fix: reconcile delayed clob orders before marking failure`
 
 ## Live Proof Result
 
@@ -195,4 +215,3 @@ docker compose exec -T trader python scripts/live_equity_guard.py --drawdown-lim
 - Do not mark midpoint-only gains as success.
 - Do not ignore OpenAI 429; fallback works, but it is still a live dependency
   gap.
-

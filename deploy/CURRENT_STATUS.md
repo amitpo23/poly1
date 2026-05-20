@@ -6,13 +6,15 @@ Server source of truth remains `trader@83.229.82.193:/srv/poly1`. Local is
 development/staging only. Do not copy local `data/`, `.env`, or
 `deploy/.env.runtime` over the server.
 
-Current runtime state after the controlled scanner-executor proof:
+Current runtime state after the controlled scanner-executor proof and delayed
+CLOB reconciliation fix:
 
 - Server is in `freeze`; `data/HALT` is present.
-- No open positions remain from the 2026-05-20 scanner-executor proof.
-- Latest deployed commit: `181734c fix: require executable profit for take-profit exits`.
-- Full local test suite passed after that commit: `531 tests OK`.
+- No open positions remain.
+- Latest deployed commit: `1c0434c fix: reconcile delayed clob orders before marking failure`.
+- Full local test suite passed after that commit: `535 tests OK`.
 - Server `trading_stability_preflight --mode freeze` passed after deployment.
+- Current cash/equity after the final proof and reconciliation: `27.55036 USDC`.
 - OpenAI is still returning quota/rate-limit `429` in live logs; Anthropic
   fallback is working for position-manager exit decisions.
 
@@ -33,6 +35,10 @@ What the proof established:
   `closed_take_profit` only if the executable sell price clears
   `MAINTAIN_MIN_TAKE_PROFIT_NET_PCT=0.015` or
   `MAINTAIN_MIN_TAKE_PROFIT_USDC=0.01`. Midpoint-only profit is not enough.
+- CLOB `delayed` order responses are not trusted as final. Entry/exit order
+  code now calls `get_order(order_id)` briefly before marking an order failed,
+  because the 2026-05-20 proof showed `delayed` FOK/FAK orders can become
+  `MATCHED` moments later.
 
 Controlled proof result:
 
@@ -42,6 +48,11 @@ Controlled proof result:
   whether you compare close rows or full equity including fees/slippage.
 - The important result is infrastructure, not PnL: entry, journal, brain exit,
   orderbook close, freeze, and accounting all completed end to end.
+- Follow-up proof after lowering wait threshold to `0.76` opened five `$1`
+  MIBR entries that first came back `delayed` but were later verified as
+  `MATCHED`. Position manager sold `8.32` shares at `0.65`; final reconciled
+  result was about `+0.375 USDC` versus the `27.175115` start baseline.
+- The delayed-response bug is now fixed in code and deployed.
 
 Before the next live run:
 
