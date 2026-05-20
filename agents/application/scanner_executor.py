@@ -19,8 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from agents.application.decision_council import DecisionCouncil
 from agents.application.risk_gate import RiskGate
-from agents.application.sizing import binary_raw_ev, kelly_size_usdc
+from agents.application.sizing import kelly_size_usdc
 from agents.application.trade_log import FILLED, TradeLog
 from agents.utils.notify import _safe_balance, notify_trade
 from agents.utils.objects import TradeRecommendation
@@ -140,6 +141,11 @@ class ScannerExecutor:
             scanner_executor_reserve_usdc=self.cfg.reserve_usdc,
             max_open_positions=self.cfg.max_open_positions,
         )
+        self.decision_council = DecisionCouncil.from_env(
+            min_raw_ev=self.cfg.min_raw_ev,
+            min_net_ev=self.cfg.min_net_ev,
+            round_trip_cost_pct=self.cfg.round_trip_cost_pct,
+        )
         self._processed: set[int] = set()
 
     def run_once(self) -> dict:
@@ -252,25 +258,34 @@ class ScannerExecutor:
                 )
                 return "skipped"
 
-        raw_ev = binary_raw_ev(estimated_prob, executable_entry_price)
-        net_ev = raw_ev - max(0.0, self.cfg.round_trip_cost_pct)
-        if raw_ev < self.cfg.min_raw_ev:
+        council = self.decision_council.review_entry(
+            features=features,
+            score=score,
+            live_entry_price=live_price,
+            avg_entry_price=executable_entry_price,
+            fillable_usdc=fillable_usdc,
+            signal_source=str(row.get("signal_source") or features.get("signal_source") or "market_scanner"),
+        )
+        estimated_prob = council.internal_probability or estimated_prob
+        raw_ev = council.raw_ev
+        net_ev = council.net_ev
+        if council.reason == "raw_ev_below_council_min":
             self._record_reject(
                 row,
-                "raw_ev_below_executor_min",
+                "raw_ev_below_council_min",
                 {
                     "estimated_win_probability": round(estimated_prob, 4),
                     "live_entry_price": round(live_price, 4),
                     "avg_entry_price": round(executable_entry_price, 4),
                     "raw_ev": round(raw_ev, 4),
-                    "min_raw_ev": self.cfg.min_raw_ev,
+                    **council.features,
                 },
             )
             return "skipped"
-        if net_ev < self.cfg.min_net_ev:
+        if not council.approved:
             self._record_reject(
                 row,
-                "net_ev_below_executor_min",
+                council.reason,
                 {
                     "estimated_win_probability": round(estimated_prob, 4),
                     "live_entry_price": round(live_price, 4),
@@ -278,7 +293,7 @@ class ScannerExecutor:
                     "raw_ev": round(raw_ev, 4),
                     "net_ev": round(net_ev, 4),
                     "round_trip_cost_pct": self.cfg.round_trip_cost_pct,
-                    "min_net_ev": self.cfg.min_net_ev,
+                    **council.features,
                 },
             )
             return "skipped"
@@ -311,6 +326,7 @@ class ScannerExecutor:
             "raw_ev": round(raw_ev, 4),
             "net_ev": round(net_ev, 4),
             "round_trip_cost_pct": self.cfg.round_trip_cost_pct,
+            **council.features,
             **sizing.features(),
         }
 
@@ -414,23 +430,53 @@ class ScannerExecutor:
 
     def _record_reject(self, row: dict, reason: str, features: dict) -> None:
         row_features = _parse_features(row.get("features_json"))
+        signal_source = str(row.get("signal_source") or row_features.get("signal_source") or "market_scanner")
+        token_id = str((row_features.get("selected_token_id") or ""))
+        action = str(row.get("action") or row_features.get("selected_side") or "")
         self.trade_log.insert_brain_decision(
             agent="scanner_executor",
             strategy="execute_scanner_trade_opportunity",
             decision_type="entry",
             market_id=str(row["market_id"]),
-            token_id=str((row_features.get("selected_token_id") or "")),
+            token_id=token_id,
             approved=False,
             reason=reason,
             score=float(row.get("score") or 0.0),
             market_type="scanner_executor",
             features={
                 "source_decision_id": int(row["id"]),
-                "scanner_signal_source": row.get("signal_source") or row_features.get("signal_source"),
+                "scanner_signal_source": signal_source,
                 **features,
             },
-            action=str(row.get("action") or ""),
-            signal_source=str(row.get("signal_source") or row_features.get("signal_source") or "market_scanner"),
+            action=action,
+            signal_source=signal_source,
+        )
+        self.trade_log.insert_decision_journal(
+            decision_id=int(row["id"]),
+            agent="scanner_executor",
+            strategy="execute_scanner_trade_opportunity",
+            market_id=str(row["market_id"]),
+            token_id=token_id,
+            action=action,
+            decision="REJECT",
+            reason=reason,
+            signal_source=signal_source,
+            market_price=_safe_float(row_features.get("selected_entry_price"), None),
+            live_entry_price=_safe_float(features.get("avg_entry_price") or features.get("live_entry_price"), None),
+            internal_probability=_safe_float(
+                features.get("decision_council_internal_probability")
+                or features.get("estimated_win_probability"),
+                None,
+            ),
+            raw_ev=_safe_float(features.get("raw_ev") or features.get("decision_council_raw_ev"), None),
+            net_ev=_safe_float(features.get("net_ev") or features.get("decision_council_net_ev"), None),
+            score=float(row.get("score") or 0.0),
+            mode=str(features.get("decision_council_mode") or ""),
+            features={
+                "source_decision_id": int(row["id"]),
+                "question": row_features.get("question"),
+                **features,
+            },
         )
         logger.info(
             "scanner_executor skip: decision=%s market=%s reason=%s",
@@ -448,12 +494,15 @@ class ScannerExecutor:
         extra: dict,
     ) -> None:
         features = _parse_features(row.get("features_json"))
+        signal_source = str(row.get("signal_source") or features.get("signal_source") or "market_scanner")
+        token_id = str(features.get("selected_token_id") or "")
+        action = str(features.get("selected_side") or row.get("action") or "")
         self.trade_log.insert_brain_decision(
             agent="scanner_executor",
             strategy="execute_scanner_trade_opportunity",
             decision_type="entry",
             market_id=str(row["market_id"]),
-            token_id=str(features.get("selected_token_id") or ""),
+            token_id=token_id,
             approved=True,
             reason=reason,
             score=float(row.get("score") or 0.0),
@@ -464,11 +513,39 @@ class ScannerExecutor:
                 "amount_usdc": round(amount_usdc, 4),
                 "raw_ev": round(raw_ev, 4),
                 "net_ev": round(net_ev, 4),
-                "scanner_signal_source": row.get("signal_source") or features.get("signal_source"),
+                "scanner_signal_source": signal_source,
                 **extra,
             },
-            action=str(features.get("selected_side") or row.get("action") or ""),
-            signal_source=str(row.get("signal_source") or features.get("signal_source") or "market_scanner"),
+            action=action,
+            signal_source=signal_source,
+        )
+        self.trade_log.insert_decision_journal(
+            decision_id=int(row["id"]),
+            agent="scanner_executor",
+            strategy="execute_scanner_trade_opportunity",
+            market_id=str(row["market_id"]),
+            token_id=token_id,
+            action=action,
+            decision="ENTER" if reason == "live_executed" else "SHADOW_ENTER",
+            reason=reason,
+            signal_source=signal_source,
+            market_price=_safe_float(features.get("selected_entry_price"), None),
+            live_entry_price=entry_price,
+            internal_probability=_safe_float(
+                extra.get("decision_council_internal_probability")
+                or extra.get("kelly_win_probability"),
+                None,
+            ),
+            raw_ev=raw_ev,
+            net_ev=net_ev,
+            score=float(row.get("score") or 0.0),
+            mode=str(extra.get("decision_council_mode") or ""),
+            features={
+                "source_decision_id": int(row["id"]),
+                "question": features.get("question"),
+                "amount_usdc": round(amount_usdc, 4),
+                **extra,
+            },
         )
         logger.info(
             "scanner_executor %s: decision=%s market=%s price=%.4f size=%.4f ev=%.4f",

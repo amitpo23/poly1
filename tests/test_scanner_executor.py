@@ -152,7 +152,7 @@ class ScannerExecutorTests(unittest.TestCase):
 
         self.assertEqual(stats["skipped"], 1)
         pm.execute_market_order.assert_not_called()
-        self.assertEqual(self.log.recent_brain_decisions(limit=1)[0]["reason"], "raw_ev_below_executor_min")
+        self.assertEqual(self.log.recent_brain_decisions(limit=1)[0]["reason"], "raw_ev_below_council_min")
 
     def test_rejects_when_net_ev_does_not_cover_round_trip_cost(self):
         self.log.insert_brain_decision(
@@ -174,8 +174,85 @@ class ScannerExecutorTests(unittest.TestCase):
         self.assertEqual(stats["skipped"], 1)
         pm.execute_market_order.assert_not_called()
         row = self.log.recent_brain_decisions(limit=1)[0]
-        self.assertEqual(row["reason"], "net_ev_below_executor_min")
+        self.assertEqual(row["reason"], "net_ev_below_council_min")
         self.assertIn('"net_ev": 0.02', row["features_json"])
+
+    def test_decision_journal_records_rejects_and_live_enters(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.900",
+            score=0.90,
+            market_type="general_binary",
+            features=_features(estimated_win_probability=0.53),
+            action="BUY",
+        )
+        engine, _ = self._engine(execute=True, price=0.50)
+
+        engine.run_once()
+
+        journal = self.log.recent_decision_journal(limit=1)[0]
+        self.assertEqual(journal["decision"], "REJECT")
+        self.assertEqual(journal["reason"], "net_ev_below_council_min")
+        self.assertAlmostEqual(journal["internal_probability"], 0.53)
+
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xdef",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(
+                condition_id="0xdef",
+                selected_token_id="tok_up2",
+                clob_token_ids=["tok_up2", "tok_down2"],
+            ),
+            action="BUY",
+        )
+        engine, _ = self._engine(execute=True)
+
+        engine.run_once()
+
+        journal = self.log.recent_decision_journal(limit=1)[0]
+        self.assertEqual(journal["decision"], "ENTER")
+        self.assertEqual(journal["reason"], "live_executed")
+        self.assertGreater(journal["net_ev"], 0.0)
+
+    def test_expert_solo_can_use_lower_net_ev_threshold(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.700",
+            score=0.70,
+            market_type="general_binary",
+            features=_features(
+                estimated_win_probability=0.535,
+                evidence_route={
+                    "mode": "solo",
+                    "leader": "wallet:abc",
+                    "reason": "expert_solo:wallet:abc",
+                },
+            ),
+            action="BUY",
+            signal_source="wallet:abc",
+        )
+        engine, pm = self._engine(execute=True, price=0.50)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["executed"], 1)
+        pm.execute_market_order.assert_called_once()
+        journal = self.log.recent_decision_journal(limit=1)[0]
+        self.assertEqual(journal["mode"], "solo")
 
     def test_rejects_when_live_entry_price_worsens_after_scan(self):
         self.log.insert_brain_decision(

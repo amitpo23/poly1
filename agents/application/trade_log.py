@@ -115,6 +115,37 @@ CREATE INDEX IF NOT EXISTS idx_decision_reflections_ts ON decision_reflections(t
 CREATE INDEX IF NOT EXISTS idx_decision_reflections_agent_ts ON decision_reflections(agent, ts);
 CREATE INDEX IF NOT EXISTS idx_decision_reflections_market_ts ON decision_reflections(market_id, ts);
 
+CREATE TABLE IF NOT EXISTS decision_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    decision_id INTEGER,
+    agent TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    token_id TEXT,
+    action TEXT,
+    decision TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    signal_source TEXT,
+    market_price REAL,
+    live_entry_price REAL,
+    internal_probability REAL,
+    raw_ev REAL,
+    net_ev REAL,
+    score REAL,
+    mode TEXT,
+    features_json TEXT,
+    outcome_5m_json TEXT,
+    outcome_15m_json TEXT,
+    outcome_60m_json TEXT,
+    outcome_status TEXT,
+    FOREIGN KEY(decision_id) REFERENCES brain_decisions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_ts ON decision_journal(ts);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_market_ts ON decision_journal(market_id, ts);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_source_ts ON decision_journal(signal_source, ts);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_decision_ts ON decision_journal(decision, ts);
+
 CREATE TABLE IF NOT EXISTS wallet_signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
@@ -1863,5 +1894,69 @@ class TradeLog:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM decision_reflections ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def insert_decision_journal(
+        self,
+        *,
+        agent: str,
+        strategy: str,
+        market_id: str,
+        decision: str,
+        reason: str,
+        decision_id: Optional[int] = None,
+        token_id: Optional[str] = None,
+        action: Optional[str] = None,
+        signal_source: Optional[str] = None,
+        market_price: Optional[float] = None,
+        live_entry_price: Optional[float] = None,
+        internal_probability: Optional[float] = None,
+        raw_ev: Optional[float] = None,
+        net_ev: Optional[float] = None,
+        score: Optional[float] = None,
+        mode: Optional[str] = None,
+        features: Optional[dict] = None,
+        outcome_status: Optional[str] = None,
+    ) -> int:
+        features_json = json.dumps(features, default=str) if features is not None else None
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO decision_journal (
+                    ts, decision_id, agent, strategy, market_id, token_id, action,
+                    decision, reason, signal_source, market_price, live_entry_price,
+                    internal_probability, raw_ev, net_ev, score, mode,
+                    features_json, outcome_status
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    _now(),
+                    int(decision_id) if decision_id is not None else None,
+                    agent,
+                    strategy,
+                    str(market_id),
+                    token_id,
+                    action,
+                    decision,
+                    reason,
+                    signal_source,
+                    market_price,
+                    live_entry_price,
+                    internal_probability,
+                    raw_ev,
+                    net_ev,
+                    score,
+                    mode,
+                    features_json,
+                    outcome_status,
+                ),
+            )
+            return cur.lastrowid
+
+    def recent_decision_journal(self, limit: int = 50) -> list:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM decision_journal ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]

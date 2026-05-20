@@ -21,7 +21,10 @@ as execution candidates.
    - scanner-side raw EV
    - MetaBrain timing and evidence route
 3. `scanner_executor` consumes only fresh approved scanner decisions.
-4. It executes only if all gates pass:
+4. It asks `DecisionCouncil` for a final deterministic review using the live
+   executable entry price, source provenance, MetaBrain evidence route, and
+   net EV after round-trip cost.
+5. It executes only if all gates pass:
    - decision age is within `SCANNER_EXECUTOR_MAX_DECISION_AGE_SEC`
    - `meta_timing == now` when required, unless controlled wait-probe mode is
      enabled and the score is above `SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE`
@@ -30,11 +33,15 @@ as execution candidates.
    - no active/recently closed duplicate position
    - live order book is fillable and exitable
    - live raw EV >= `SCANNER_EXECUTOR_MIN_RAW_EV`
+   - live net EV passes the council threshold:
+     - normal candidates: `DECISION_COUNCIL_MIN_NET_EV`
+     - proven `expert_solo` candidates: `DECISION_COUNCIL_EXPERT_MIN_NET_EV`
+     - thin markets: `DECISION_COUNCIL_THIN_MIN_NET_EV`
    - RiskGate and runtime control allow this agent
    - Kelly sizing returns a positive size
 
 If any gate fails, `scanner_executor` writes a rejected brain decision with the
-exact reason. Missing data is a skip, not a trade.
+exact reason and a `decision_journal` row. Missing data is a skip, not a trade.
 
 ## Runtime Controls
 
@@ -46,6 +53,14 @@ SCANNER_EXECUTOR_RESERVE_USDC=0
 SCANNER_EXECUTOR_POSITION_SIZE_USDC=1.0
 SCANNER_EXECUTOR_MIN_SCORE=0.80
 SCANNER_EXECUTOR_MIN_RAW_EV=0.04
+SCANNER_EXECUTOR_MIN_NET_EV=0.03
+SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT=0.04
+DECISION_COUNCIL_MIN_NET_EV=0.04
+DECISION_COUNCIL_EXPERT_MIN_NET_EV=0.025
+DECISION_COUNCIL_THIN_MIN_NET_EV=0.06
+DECISION_COUNCIL_MIN_PROBABILITY=0.52
+DECISION_COUNCIL_EXPERT_MIN_PROBABILITY=0.50
+DECISION_COUNCIL_THIN_LIQUIDITY_USDC=5000
 SCANNER_EXECUTOR_REQUIRE_TIMING_NOW=true
 SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE=false
 SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE=0.79
@@ -67,6 +82,9 @@ executor score gate.
 
 - `market_scanner` still never places orders.
 - `scanner_executor` inserts a pending journal row before any live order.
+- `scanner_executor` also writes every final ENTER/SHADOW_ENTER/REJECT into
+  `decision_journal`, including live price, internal probability, raw EV, net
+  EV, source, mode (`solo`/`consensus`/`blocked`), and the reason.
 - Live fills are written with status `filled`, so `position_manager` manages
   them with the standard stop-loss/take-profit/timeout logic.
 - Controlled `$1` probes use `MAINTAIN_MIN_EXIT_NOTIONAL_USDC=0.50`, so smart
@@ -76,3 +94,16 @@ executor score gate.
   clears `MAINTAIN_MIN_TAKE_PROFIT_NET_PCT` or `MAINTAIN_MIN_TAKE_PROFIT_USDC`.
   Midpoint-only profit is not enough.
 - Telegram fill notifications use the existing `notify_trade` path.
+
+## Provider Scorecard
+
+`scripts/provider_scorecard.py` builds `data/provider_scorecard.json` from
+resolved `brain_decisions.signal_source` rows:
+
+```bash
+python scripts/provider_scorecard.py --db data/trade_log.db --out data/provider_scorecard.json
+```
+
+MetaBrain's `SourceReliabilityAdvisor` can consume that file through
+`PROVIDER_SCORECARD_PATH`. This gives the brain a measured reliability fallback
+for providers before they have enough locally resolved live rows.

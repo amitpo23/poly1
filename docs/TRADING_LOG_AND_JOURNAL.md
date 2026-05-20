@@ -5,6 +5,42 @@ Last updated: 2026-05-05 08:56 Israel time
 This document explains where the bot records trades, decisions, and runtime
 events.
 
+## Decision Journal
+
+Money-touching execution bridges also write an audit row to:
+
+```sql
+decision_journal
+```
+
+This table is the canonical learning log for candidates that reached final
+execution review. It records both executed and rejected opportunities:
+
+- source `brain_decisions.id`
+- agent / strategy
+- market and token
+- action (`BUY` / `SELL`)
+- final decision (`ENTER`, `SHADOW_ENTER`, `REJECT`)
+- reason
+- signal source
+- scanner market price
+- live executable entry price
+- internal probability
+- raw EV
+- net EV after round-trip cost
+- decision mode (`solo`, `consensus`, `blocked`)
+- feature JSON for postmortems
+
+Useful query:
+
+```bash
+sqlite3 data/trade_log.db "select id,ts,agent,decision,reason,signal_source,round(internal_probability,3),round(live_entry_price,3),round(net_ev,3),mode from decision_journal order by id desc limit 30"
+```
+
+This is separate from `trades`: `trades` says what happened to orders;
+`decision_journal` says why the system did or did not allow a candidate to touch
+money.
+
 ## Current Morning Status
 
 - Bot container: `poly1`
