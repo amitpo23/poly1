@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import Mock, patch
 
 from agents.application.openbb_market_data import OpenBBMarketDataClient
 
@@ -34,6 +35,38 @@ class OpenBBMarketDataTests(unittest.TestCase):
         self.assertIsNone(signal.direction)
         self.assertEqual(signal.confidence, 0.0)
         self.assertIn("insufficient", signal.reason)
+
+    @patch("agents.application.openbb_market_data.requests.get")
+    def test_fetch_bars_falls_back_to_yahoo_chart(self, mock_get):
+        response = Mock()
+        response.json.return_value = {
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": list(range(12)),
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "close": [100 + i for i in range(12)],
+                                    "high": [101 + i for i in range(12)],
+                                    "low": [99 + i for i in range(12)],
+                                    "volume": [1000 + i for i in range(12)],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+        response.raise_for_status.return_value = None
+        mock_get.return_value = response
+        client = OpenBBMarketDataClient(cache_ttl_sec=0)
+
+        bars = client.fetch_bars("NVDA")
+
+        self.assertEqual(len(bars), 12)
+        self.assertEqual(bars[-1]["close"], 111.0)
+        self.assertEqual(bars[-1]["_dependency"], "yahoo_chart")
 
 
 if __name__ == "__main__":

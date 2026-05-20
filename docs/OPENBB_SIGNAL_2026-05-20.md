@@ -20,8 +20,9 @@ macro, commodity, and crypto markets.
 
 - The provider is shadow-only.
 - It never places orders.
-- If the optional `openbb` package is missing or the data request fails, it
-  returns a skip verdict and logs the reason.
+- If the optional `openbb` package is missing and `OPENBB_PROVIDER=yfinance`,
+  the adapter falls back to Yahoo Finance's chart endpoint via `requests`.  If
+  both data paths fail, it returns a skip verdict and logs the reason.
 - Promotion requires a positive provider scorecard and positive markouts.
 
 ## Runtime
@@ -38,7 +39,10 @@ Config:
 - `OPENBB_MARKET_DATA_BAR_LIMIT=60`
 - `OPENBB_MARKET_DATA_MIN_BARS=10`
 - `OPENBB_MARKET_DATA_CACHE_SEC=300`
+- `OPENBB_MARKET_DATA_TIMEOUT_SEC=5`
 - `OPENBB_MARKET_DATA_MOMENTUM_THRESHOLD=0.01`
+- `OPENBB_YAHOO_INTERVAL=5m`
+- `OPENBB_YAHOO_RANGE=5d`
 
 ## Signal Logic
 
@@ -61,14 +65,18 @@ It computes:
 The output is bounded to a conservative probability/confidence so it cannot
 overpower the system before it proves value in shadow.
 
-## Next Step
+## Dependency Policy
 
-Install OpenBB only if we want real data inside the container:
+Do not install the full `openbb` package in the live image casually.  It pulls a
+large dependency set and may upgrade infrastructure packages.  The current
+production-safe path is:
+
+1. Use OpenBB when it is already available.
+2. Otherwise use the `yfinance`/Yahoo chart fallback.
+3. Keep the provider shadow-only until scorecards and markouts prove value.
+
+Install full OpenBB only in a dedicated dependency-upgrade pass:
 
 ```bash
 pip install openbb
 ```
-
-For now the provider can run safely without the dependency; it will simply
-produce auditable skip rows.  If installed later, keep it shadow-only until the
-strategy scorecard shows positive markouts.

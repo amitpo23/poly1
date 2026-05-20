@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+import requests
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -111,6 +113,10 @@ class OpenBBMarketDataClient:
         try:
             from openbb import obb  # type: ignore
         except Exception as exc:
+            if self.provider.lower() == "yfinance":
+                bars = self._fetch_yahoo_chart_bars(symbol)
+                self._cache[symbol] = (now, bars)
+                return bars
             raise RuntimeError("openbb package not installed") from exc
 
         limit = _env_int("OPENBB_MARKET_DATA_BAR_LIMIT", 60)
@@ -137,6 +143,49 @@ class OpenBBMarketDataClient:
                 for _, row in frame.iterrows()
             ]
         self._cache[symbol] = (now, bars)
+        return bars
+
+    def _fetch_yahoo_chart_bars(self, symbol: str) -> list[dict]:
+        """Lightweight yfinance-compatible fallback without adding OpenBB deps."""
+
+        limit = _env_int("OPENBB_MARKET_DATA_BAR_LIMIT", 60)
+        interval = os.getenv("OPENBB_YAHOO_INTERVAL", "5m")
+        range_param = os.getenv("OPENBB_YAHOO_RANGE", "5d")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        response = requests.get(
+            url,
+            params={"range": range_param, "interval": interval},
+            timeout=_env_float("OPENBB_MARKET_DATA_TIMEOUT_SEC", 5.0),
+            headers={"User-Agent": "poly1-openbb-signal/1.0"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        results = (((payload or {}).get("chart") or {}).get("result") or [])
+        if not results:
+            return []
+        result = results[0]
+        timestamps = result.get("timestamp") or []
+        quote = (((result.get("indicators") or {}).get("quote") or [{}])[0]) or {}
+        closes = quote.get("close") or []
+        highs = quote.get("high") or []
+        lows = quote.get("low") or []
+        volumes = quote.get("volume") or []
+        bars = []
+        for idx, _ts in enumerate(timestamps[-limit:]):
+            src_idx = len(timestamps) - len(timestamps[-limit:]) + idx
+            close = _seq_float(closes, src_idx)
+            if close <= 0:
+                continue
+            bars.append(
+                {
+                    "close": close,
+                    "high": _seq_float(highs, src_idx),
+                    "low": _seq_float(lows, src_idx),
+                    "volume": _seq_float(volumes, src_idx),
+                    "_dependency": "yahoo_chart",
+                    "_provider": "yfinance",
+                }
+            )
         return bars
 
     def signal_from_bars(
@@ -215,7 +264,7 @@ class OpenBBMarketDataClient:
                 "range_pct": round(range_pct, 6),
                 "volume_ratio": round(vol_ratio, 4),
                 "provider": self.provider,
-                "dependency": "openbb",
+                "dependency": str(bars[-1].get("_dependency") or "openbb"),
             },
         )
 
@@ -231,3 +280,11 @@ def _bar_float(bar: dict, *names: str) -> float:
         except (TypeError, ValueError):
             continue
     return 0.0
+
+
+def _seq_float(values: list, idx: int) -> float:
+    try:
+        raw = values[idx]
+        return float(raw or 0.0)
+    except (IndexError, TypeError, ValueError):
+        return 0.0
