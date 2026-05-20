@@ -27,6 +27,7 @@ class AgentRegistryTests(unittest.TestCase):
         self.assertEqual(registry.require("arb_quality_guard").role, "cross_venue_arb_validator")
         self.assertEqual(registry.require("rl_reward_lab").role, "offline_policy_research")
         self.assertEqual(registry.require("research_scanner").role, "research_intake")
+        self.assertEqual(registry.require("research_harness").role, "research_orchestrator")
         self.assertFalse(registry.require("rl_reward_lab").places_orders)
         self.assertEqual(registry.require("risk_gate").role, "risk_manager")
 

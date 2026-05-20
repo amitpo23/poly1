@@ -251,6 +251,20 @@
       "promotion_criteria": {"docs_required": true, "shadow_first_required": true}
     },
     {
+      "agent_id": "research_harness",
+      "display_name": "Research Harness",
+      "role": "research_orchestrator",
+      "mode": "shadow",
+      "places_orders": false,
+      "markets": ["research", "shadow"],
+      "owner_service": "research-harness",
+      "required_inputs": ["research_harness", "research_queue", "agent_registry", "shadow_metrics"],
+      "signal_schema": "research_harness_plan_v1",
+      "anchor_rules": {"allowed": false},
+      "veto_rules": ["unknown_skill", "missing_guardrail", "live_trading_requested", "insufficient_evidence"],
+      "promotion_criteria": {"offline_only": true, "deerflow_pattern_without_deerflow_runtime": true}
+    },
+    {
       "agent_id": "telegram_reporter",
       "display_name": "Telegram Reporter",
       "role": "operator_dashboard",

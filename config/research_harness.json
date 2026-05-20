@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "updated_at": "2026-05-21",
+  "description": "DeerFlow-inspired but deterministic research harness for poly1. It defines small skills, guardrails, and run modes for research/backtest/shadow work.",
+  "max_parallel_tasks": 3,
+  "default_mode": "standard",
+  "modes": {
+    "flash": "Fast validation, no broad research.",
+    "standard": "Single-threaded research or validation with structured output.",
+    "pro": "Multi-step research/backtest plan with explicit evidence.",
+    "ultra": "Reserved for future parallel subtask orchestration; never live trading."
+  },
+  "skills": [
+    {
+      "skill_id": "shadow_markout_backtest",
+      "purpose": "Evaluate 1/3/5/15 minute markouts, 30-day provider winrate, sample size, and PnL proxies before live promotion.",
+      "inputs": ["decision_journal", "brain_decisions", "shadow_markouts", "trades"],
+      "outputs": ["sample_size", "winrate", "avg_markout", "pnl_proxy", "promotion_state"],
+      "guardrails": ["no_live_trading", "read_only", "requires_backtest", "requires_markout"],
+      "max_parallel_tasks": 3
+    },
+    {
+      "skill_id": "market_microstructure_review",
+      "purpose": "Review VWAP, z-score, volatility, and regime features for OpenBB/Alpaca/crypto tape signals.",
+      "inputs": ["bar_series", "openbb_market_data", "alpaca_market_data", "crypto_exchange_tape"],
+      "outputs": ["vwap_deviation", "regime", "feature_quality", "signal_adjustment"],
+      "guardrails": ["shadow_only", "no_live_trading"],
+      "max_parallel_tasks": 2
+    },
+    {
+      "skill_id": "cross_venue_arb_review",
+      "purpose": "Validate cross-venue prediction-market arbitrage using rule mapping, quote freshness, depth, and net profit after costs.",
+      "inputs": ["polymarket_quote", "external_venue_quote", "rule_mapping", "fee_model"],
+      "outputs": ["rule_match", "net_profit_after_costs", "depth_check", "arb_candidate"],
+      "guardrails": ["shadow_only", "no_live_trading", "requires_rule_mapping"],
+      "max_parallel_tasks": 2
+    },
+    {
+      "skill_id": "paper_review",
+      "purpose": "Convert papers, repos, and social strategy claims into structured claims, evidence level, replication plan, and risk notes.",
+      "inputs": ["paper_or_repo_url", "claim_text", "source_notes"],
+      "outputs": ["claims", "evidence_level", "replication_plan", "risk_notes"],
+      "guardrails": ["read_only", "no_secret_export"],
+      "max_parallel_tasks": 3
+    },
+    {
+      "skill_id": "research_to_shadow_spec",
+      "purpose": "Turn an approved research idea into a shadow-only spec with data requirements, expected EV hypothesis, metrics, and live blockers.",
+      "inputs": ["research_queue", "paper_review", "existing_agent_registry"],
+      "outputs": ["shadow_spec", "required_tests", "live_blockers", "owner_agent"],
+      "guardrails": ["shadow_only", "no_live_trading", "requires_human_approval"],
+      "max_parallel_tasks": 1
+    }
+  ]
+}
