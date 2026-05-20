@@ -144,6 +144,54 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
         self.assertTrue(tl.has_active_trade_for_market("777", hours=6))
         self.assertTrue(tl.has_active_trade_for_market("777", hours=1))
 
+    def test_closed_filled_row_is_not_active_trade(self):
+        tl = TradeLog(self.db_path)
+        trade_id = tl.insert_pending(
+            cycle_id="c-closed",
+            market_id="42",
+            token_id="tok-closed",
+            side="BUY",
+            price=0.50,
+            size_usdc=1.0,
+            confidence=0.8,
+        )
+        tl.mark(trade_id, "filled")
+        tl.insert_terminal(
+            cycle_id="c-close",
+            market_id="42",
+            token_id="tok-closed",
+            side="BUY",
+            price=0.49,
+            size_usdc=0.98,
+            confidence=0.8,
+            status="closed_stop_loss",
+        )
+
+        self.assertFalse(
+            tl.has_active_trade_for_market("42", hours=6, token_id="tok-closed")
+        )
+        self.assertTrue(
+            tl.has_recent_close_for_market("42", hours=12, token_id="tok-closed")
+        )
+
+    def test_unclosed_filled_row_blocks_beyond_dedupe_window(self):
+        import sqlite3
+        from datetime import datetime, timedelta, timezone
+
+        tl = TradeLog(self.db_path)
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO trades (ts, cycle_id, market_id, token_id, side, status) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (old_ts, "old-fill", "42", "tok-old", "BUY", "filled"),
+            )
+            conn.commit()
+
+        self.assertTrue(
+            tl.has_active_trade_for_market("42", hours=1, token_id="tok-old")
+        )
+
     def test_scalper_pairs_table_exists(self):
         log = TradeLog(db_path=self.db_path)
         with log._connect() as conn:

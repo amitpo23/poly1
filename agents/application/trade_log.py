@@ -307,6 +307,10 @@ TIME_BOUNDED_ACTIVE_STATUSES = (PENDING, SUBMITTED, FILLED)
 # could double-fill. Operator must verify on-chain and clear the row manually.
 UNBOUNDED_BLOCKING_STATUSES = (MAY_HAVE_FIRED,)
 ACTIVE_STATUSES = TIME_BOUNDED_ACTIVE_STATUSES + UNBOUNDED_BLOCKING_STATUSES
+TERMINAL_POSITION_STATUSES = (
+    "closed_take_profit", "closed_stop_loss", "closed_timeout",
+    "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
+)
 
 
 def _now() -> str:
@@ -830,10 +834,7 @@ class TradeLog:
         the cross-agent dedupe gap where the Trader stores a numeric market ID
         while external_conviction stores a hex token ID.
         """
-        _TERMINAL = (
-            "closed_take_profit", "closed_stop_loss", "closed_timeout",
-            "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
-        )
+        _TERMINAL = TERMINAL_POSITION_STATUSES
         terminal_ph = ",".join("?" * len(_TERMINAL))
         if token_id:
             id_clause = "(market_id = ? OR (token_id = ? AND token_id IS NOT NULL))"
@@ -861,8 +862,17 @@ class TradeLog:
     def has_active_trade_for_market(
         self, market_id: str, hours: int = 6, token_id: Optional[str] = None,
     ) -> bool:
+        """Return True when a market/token is still unsafe to enter.
+
+        Pending/submitted rows are time-bounded dedupe guards. Filled rows are
+        different: they represent an owned position and should block until a
+        later terminal close/resolution row exists. This keeps money safety
+        strict while allowing already-closed scanner proof positions to stop
+        masquerading as active positions.
+        """
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        time_bounded_placeholders = ",".join("?" for _ in TIME_BOUNDED_ACTIVE_STATUSES)
+        time_bounded_statuses = (PENDING, SUBMITTED)
+        time_bounded_placeholders = ",".join("?" for _ in time_bounded_statuses)
         unbounded_placeholders = ",".join("?" for _ in UNBOUNDED_BLOCKING_STATUSES)
         if token_id:
             id_clause = "(market_id = ? OR (token_id = ? AND token_id IS NOT NULL))"
@@ -870,8 +880,9 @@ class TradeLog:
         else:
             id_clause = "market_id = ?"
             id_params = (str(market_id),)
-        # MAY_HAVE_FIRED rows block forever (operator must clear manually);
-        # other active statuses block only within the dedupe window.
+        # MAY_HAVE_FIRED rows block forever (operator must clear manually).
+        # Pending/submitted rows block only within the dedupe window. Filled
+        # rows are checked below with terminal-row awareness.
         sql = (
             f"SELECT 1 FROM trades WHERE {id_clause} AND ("
             f"  (status IN ({time_bounded_placeholders}) AND ts >= ?)"
@@ -883,12 +894,14 @@ class TradeLog:
                 sql,
                 (
                     *id_params,
-                    *TIME_BOUNDED_ACTIVE_STATUSES,
+                    *time_bounded_statuses,
                     cutoff,
                     *UNBOUNDED_BLOCKING_STATUSES,
                 ),
             ).fetchone()
-            return row is not None
+        if row is not None:
+            return True
+        return self.has_filled_position_for_market(market_id, token_id=token_id)
 
     def has_recent_close_for_market(
         self,
