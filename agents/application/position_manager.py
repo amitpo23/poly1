@@ -18,10 +18,12 @@ On success a new `closed_*` row is written to the journal preserving the
 audit trail; the original `filled` row is left in place but won't trigger
 re-evaluation because we also write a `closed_take_profit` /
 `closed_stop_loss` / `closed_timeout` row that the dedupe gate will see.
+Sub-minimum-notional dust is not terminal while shares still exist on-chain;
+it stays visible to the manager until it can be sold or resolved.
 
-Idempotency: each position is identified by `token_id`. Once a closing
-order has been posted (regardless of whether it filled), we mark the
-position with a `closed_*` row so subsequent cycles skip it.
+Idempotency: each position is identified by `token_id`. Once a successful
+non-dust closing order has been posted, we mark the position with a terminal
+`closed_*` row so subsequent cycles skip it.
 
 Single-shot per token: even if two `filled` rows exist for the same
 token (because of averaging-down before Fix B), they're treated as one
@@ -718,10 +720,6 @@ class PositionManager:
         # on-chain tokens are redeemable via CTF, not the CLOB.
         if self.trade_log.has_resolved_marker_for_token(token_id, after_id=after_id):
             return True
-        # Dust close does not warrant retry — position was evaluated as
-        # sub-minimum notional; retrying always reproduces closed_dust.
-        if self.trade_log.has_dust_close_for_token(token_id, after_id=after_id):
-            return True
         on_chain = self._on_chain_shares(token_id)
         if on_chain is None:
             return True
@@ -826,25 +824,14 @@ class PositionManager:
             )
             return False
         if shares_to_sell * sell_price < self.cfg.min_exit_notional_usdc:
-            self.trade_log.insert_terminal(
-                cycle_id=f"dust:{pos.token_id[:12]}",
-                market_id=pos.market_id,
-                status=CLOSED_DUST,
-                token_id=pos.token_id,
-                side="SELL",
-                price=sell_price,
-                size_usdc=shares_to_sell * sell_price,
-                error=(
-                    f"dust notional below min_exit_notional_usdc="
-                    f"{self.cfg.min_exit_notional_usdc:.4f}"
-                ),
-            )
-            self.trade_log.mark_position_closed(pos.token_id, status=CLOSED_DUST)
             logger.info(
-                "position_manager dust skip: token=%s notional=$%.4f",
-                pos.token_id[:18], shares_to_sell * sell_price,
+                "position_manager dust defer: token=%s notional=$%.4f "
+                "< min_exit_notional_usdc=$%.4f; keeping position open",
+                pos.token_id[:18],
+                shares_to_sell * sell_price,
+                self.cfg.min_exit_notional_usdc,
             )
-            return True
+            return "deferred"
         status_value = {
             "take_profit": CLOSED_PARTIAL_TP if partial_exit else CLOSED_TP,
             "stop_loss": CLOSED_SL,

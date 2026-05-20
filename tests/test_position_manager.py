@@ -364,7 +364,7 @@ class TestClosing(_TmpDB, unittest.TestCase):
     def test_reentry_after_old_close_is_managed(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
         self.tl.insert_terminal(
-            cycle_id="old-close", market_id="M1", status=CLOSED_DUST,
+            cycle_id="old-close", market_id="M1", status=CLOSED_TP,
             token_id="TOK", side="SELL", price=0.50, size_usdc=0.5,
         )
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
@@ -395,17 +395,19 @@ class TestClosing(_TmpDB, unittest.TestCase):
         statuses = [r["status"] for r in rows]
         self.assertIn(CLOSE_FAILED, statuses)
 
-    def test_dust_exit_is_marked_without_sell(self):
+    def test_dust_exit_is_deferred_and_kept_open(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
         pm = self._polymarket({"TOK": 0.55})
         mgr = PositionManager(polymarket=pm, trade_log=self.tl,
                               cfg=self._config(execute=True, min_exit_notional_usdc=1.0))
         mgr._on_chain_shares = MagicMock(return_value=0.01)
         result = mgr.check_and_close_positions()
-        self.assertEqual(result["closed_tp"], 1)
+        self.assertEqual(result["closed_tp"], 0)
+        self.assertEqual(result["deferred"], 1)
         pm.sell_shares.assert_not_called()
         rows = self.tl.recent(limit=5)
-        self.assertIn("closed_dust", [r["status"] for r in rows])
+        self.assertNotIn("closed_dust", [r["status"] for r in rows])
+        self.assertEqual(len(self.tl.filled_positions_with_id()), 1)
 
     def test_live_order_status_live_is_not_marked_closed(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)

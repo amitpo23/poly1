@@ -254,7 +254,7 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
             side="SELL",
             price=0.50,
             size_usdc=5.0,
-            status="closed_dust",
+            status="closed_take_profit",
         )
         new_id = log.insert_terminal(
             cycle_id="new-open",
