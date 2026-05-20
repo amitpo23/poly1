@@ -81,6 +81,52 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertEqual(control["equity_at_start_usdc"], 35.125)
             self.assertFalse(halt.exists())
 
+    def test_shadow_probe_allows_riskgate_without_live_execute_flags(self):
+        rc = _load_runtime_control()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "deploy").mkdir()
+            (root / "data").mkdir()
+            policy = {
+                "entry_agents": {
+                    "scanner_executor": {
+                        "execute_flag": "EXECUTE_SCANNER_EXECUTOR",
+                        "reserve_flag": "SCANNER_EXECUTOR_RESERVE_USDC",
+                    },
+                }
+            }
+            (root / "deploy" / "runtime_policy.json").write_text(json.dumps(policy))
+            halt = root / "data" / "HALT"
+            halt.write_text("halt\n")
+
+            rc.ROOT = root
+            rc.POLICY_PATH = root / "deploy" / "runtime_policy.json"
+            rc.ENV_RUNTIME_PATH = root / "deploy" / ".env.runtime"
+            rc.CONTROL_PATH = root / "data" / "runtime_control.json"
+            rc.HALT_PATH = halt
+
+            args = argparse.Namespace(
+                agent="scanner_executor",
+                minutes=30,
+                position_size_usdc="1.00",
+                scanner_allow_wait=True,
+                scanner_wait_min_score="0.79",
+                note="shadow",
+                arm=True,
+            )
+            rc.shadow_probe(args)
+
+            env_text = rc.ENV_RUNTIME_PATH.read_text()
+            control = json.loads(rc.CONTROL_PATH.read_text())
+            self.assertIn('RUNTIME_MODE="paper"', env_text)
+            self.assertIn('EXECUTE="false"', env_text)
+            self.assertIn('EXECUTE_SCANNER_EXECUTOR="false"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_MIN_SCORE="0.79"', env_text)
+            self.assertEqual(control["mode"], "paper")
+            self.assertEqual(control["allowed_live_agents"], ["scanner_executor"])
+            self.assertTrue(control["shadow_only"])
+            self.assertFalse(halt.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

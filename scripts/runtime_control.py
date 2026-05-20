@@ -354,6 +354,66 @@ def live_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def shadow_probe(args: argparse.Namespace) -> int:
+    policy = _load_policy()
+    agents = policy["entry_agents"]
+    if args.agent not in agents:
+        valid = ", ".join(sorted(agents))
+        raise SystemExit(f"unknown agent {args.agent!r}; valid: {valid}")
+    duration_minutes = int(args.minutes)
+    if duration_minutes <= 0 or duration_minutes > 180:
+        raise SystemExit("--minutes must be between 1 and 180")
+
+    env = dict(BASE_ENV)
+    env["RUNTIME_MODE"] = "paper"
+    env["EXECUTE"] = "false"
+    spec = agents[args.agent]
+    env[spec["execute_flag"]] = "false"
+    if spec.get("reserve_flag"):
+        env[spec["reserve_flag"]] = "0"
+    if args.scanner_allow_wait:
+        env["SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE"] = "true"
+        env["SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE"] = args.scanner_wait_min_score
+        env["SCANNER_EXECUTOR_MIN_SCORE"] = args.scanner_wait_min_score
+    if args.position_size_usdc:
+        env["SCANNER_EXECUTOR_POSITION_SIZE_USDC"] = args.position_size_usdc
+
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
+    control_base = {
+        "mode": "paper",
+        "allowed_live_agents": [args.agent],
+        "budget_usdc": 0.0,
+        "expires_at": expires_at.isoformat(),
+        "requires_halt": False,
+        "shadow_only": True,
+    }
+    config_hash = _hash_payload({"env": env, "control": control_base})
+    env["RUNTIME_CONFIG_HASH"] = config_hash
+    control = {
+        **control_base,
+        "config_hash": config_hash,
+        "updated_at": _utc_now(),
+        "updated_by": "scripts/runtime_control.py shadow-probe",
+        "note": args.note or f"shadow probe for {args.agent}; no live entries",
+    }
+    _write_env(env)
+    _write_control(control)
+    if args.arm:
+        HALT_PATH.unlink(missing_ok=True)
+    print(
+        f"runtime mode set: paper shadow agent={args.agent} "
+        f"minutes={duration_minutes} hash={config_hash}"
+    )
+    print(f"expires_at={expires_at.isoformat()}")
+    print(f"wrote {ENV_RUNTIME_PATH}")
+    print(f"wrote {CONTROL_PATH}")
+    if args.arm:
+        print(f"removed {HALT_PATH}; execute flags remain false")
+    else:
+        print(f"left {HALT_PATH} unchanged; pass --arm to let RiskGate allow shadow")
+    return 0
+
+
 def live_hour(args: argparse.Namespace) -> int:
     policy = _load_policy()
     all_agents = policy["entry_agents"]
@@ -485,6 +545,16 @@ def main() -> int:
     p_live.add_argument("--note", default="")
     p_live.add_argument("--arm", action="store_true", help="remove HALT after writing live control")
     p_live.set_defaults(func=live_probe)
+
+    p_shadow = sub.add_parser("shadow-probe")
+    p_shadow.add_argument("--agent", required=True)
+    p_shadow.add_argument("--minutes", type=int, default=30)
+    p_shadow.add_argument("--position-size-usdc", default="1.00")
+    p_shadow.add_argument("--scanner-allow-wait", action="store_true")
+    p_shadow.add_argument("--scanner-wait-min-score", default="0.79")
+    p_shadow.add_argument("--note", default="")
+    p_shadow.add_argument("--arm", action="store_true", help="remove HALT; execute flags stay false")
+    p_shadow.set_defaults(func=shadow_probe)
 
     p_live_hour = sub.add_parser("live-hour")
     p_live_hour.add_argument("--budget", type=float, required=True)
