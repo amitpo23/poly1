@@ -1,5 +1,61 @@
 # Current Status
 
+## 2026-05-20 Context Window Snapshot — Read First
+
+Server source of truth remains `trader@83.229.82.193:/srv/poly1`. Local is
+development/staging only. Do not copy local `data/`, `.env`, or
+`deploy/.env.runtime` over the server.
+
+Current runtime state after the controlled scanner-executor proof:
+
+- Server is in `freeze`; `data/HALT` is present.
+- No open positions remain from the 2026-05-20 scanner-executor proof.
+- Latest deployed commit: `181734c fix: require executable profit for take-profit exits`.
+- Full local test suite passed after that commit: `531 tests OK`.
+- Server `trading_stability_preflight --mode freeze` passed after deployment.
+- OpenAI is still returning quota/rate-limit `429` in live logs; Anthropic
+  fallback is working for position-manager exit decisions.
+
+What the proof established:
+
+- `market_scanner` approvals can now flow into live execution through
+  `scanner_executor`.
+- Controlled wait probes work when launched through `runtime_control.py
+  live-hour --scanner-allow-wait --scanner-wait-min-score 0.79`; this aligns
+  both `SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE` and
+  `SCANNER_EXECUTOR_MIN_SCORE`.
+- Portfolio safety uses equity, not cash-only: `scripts/live_equity_guard.py`
+  reads cash plus marked open positions and compares against
+  `runtime_control.equity_at_start_usdc`.
+- `$1` micro-probes require `MAINTAIN_MIN_EXIT_NOTIONAL_USDC=0.50`; the old
+  `$1.00` dust floor blocked valid exits.
+- Take-profit is now executable-only. `position_manager` may label an exit as
+  `closed_take_profit` only if the executable sell price clears
+  `MAINTAIN_MIN_TAKE_PROFIT_NET_PCT=0.015` or
+  `MAINTAIN_MIN_TAKE_PROFIT_USDC=0.01`. Midpoint-only profit is not enough.
+
+Controlled proof result:
+
+- Three micro trades opened through scanner-executor.
+- All three later closed successfully after the dust threshold fix.
+- The run was slightly negative, roughly `-0.08` to `-0.15 USDC` depending on
+  whether you compare close rows or full equity including fees/slippage.
+- The important result is infrastructure, not PnL: entry, journal, brain exit,
+  orderbook close, freeze, and accounting all completed end to end.
+
+Before the next live run:
+
+1. Keep system in `freeze` until explicitly armed.
+2. Run `python3 -m unittest discover -s tests` locally if code changed.
+3. On server, run `python3 scripts/trading_stability_preflight.py --mode freeze`.
+4. If opening a new proof, use a short `runtime_control.py live-hour` window,
+   equity baseline, `--agents scanner_executor`, `$1` size, max-open 4, and a
+   fresh auto-freeze watcher.
+5. Monitor with `live_equity_guard.py`; drawdown comparisons must use equity,
+   not cash.
+
+Detailed handoff: `docs/SESSION_2026-05-20_CONTEXT_HANDOFF.md`.
+
 ## 2026-05-19 Source Of Truth Lock
 
 - Live runtime source of truth is only `trader@83.229.82.193:/srv/poly1`.
