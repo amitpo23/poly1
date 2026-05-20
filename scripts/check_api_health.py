@@ -221,7 +221,11 @@ def check_hermes_forecast() -> Check:
     )
     if not url:
         return Check("hermes_forecast", "WARN", "not configured")
-    health_url = urllib.parse.urljoin(url.rstrip("/") + "/", "healthz")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.path.rstrip("/").endswith("/forecast"):
+        health_url = urllib.parse.urlunparse(parsed._replace(path="/healthz", query=""))
+    else:
+        health_url = urllib.parse.urljoin(url.rstrip("/") + "/", "healthz")
     return check_url("hermes_forecast", health_url, timeout=10)
 
 
