@@ -306,7 +306,17 @@ class ScannerExecutorTests(unittest.TestCase):
             features=_features(),
             action="BUY",
         )
-        engine, pm = self._engine(execute=False)
+        wide_book = {
+            "book_quality_score": 0.95,
+            "best_bid": 0.47,
+            "best_ask": 0.505,
+            "spread_pct": 0.069,
+            "bid_depth_usdc": 50.0,
+            "ask_depth_usdc": 50.0,
+            "fillable_usdc": 1.0,
+            "avg_entry_price": 0.505,
+        }
+        engine, pm = self._engine(execute=False, price=0.505, book_quality=wide_book)
 
         stats = engine.run_once()
 
@@ -317,7 +327,96 @@ class ScannerExecutorTests(unittest.TestCase):
         self.assertEqual(self.log.filled_positions(), [])
         self.assertFalse(self.log.has_active_trade_for_market("0xabc", token_id="tok_up"))
         raw_rows = self.log.count_recent(FILLED, hours=1)
-        self.assertEqual(raw_rows, 1)
+        self.assertEqual(raw_rows, 0)
+        journal = self.log.recent_decision_journal(limit=1)[0]
+        self.assertEqual(journal["decision"], "SHADOW_QUOTE")
+        self.assertEqual(journal["reason"], "shadow_maker_quoted")
+
+    def test_shadow_mode_dedupes_recent_same_market_token(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(),
+            action="BUY",
+        )
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.861",
+            score=0.861,
+            market_type="general_binary",
+            features=_features(),
+            action="BUY",
+        )
+        wide_book = {
+            "book_quality_score": 0.95,
+            "best_bid": 0.47,
+            "best_ask": 0.505,
+            "spread_pct": 0.069,
+            "bid_depth_usdc": 50.0,
+            "ask_depth_usdc": 50.0,
+            "fillable_usdc": 1.0,
+            "avg_entry_price": 0.505,
+        }
+        engine, pm = self._engine(execute=False, price=0.505, book_quality=wide_book)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["shadow"], 1)
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(
+            self.log.recent_brain_decisions(limit=1)[0]["reason"],
+            "shadow_recent_entry_exists",
+        )
+
+    def test_rejects_taker_entry_when_spread_alone_crosses_stop(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(
+                selected_entry_price=0.27,
+                estimated_win_probability=0.80,
+            ),
+            action="BUY",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            price=0.27,
+            book_quality={
+                "book_quality_score": 0.95,
+                "best_bid": 0.25,
+                "best_ask": 0.27,
+                "spread_pct": 0.074,
+                "bid_depth_usdc": 500.0,
+                "ask_depth_usdc": 500.0,
+                "fillable_usdc": 1.0,
+                "avg_entry_price": 0.27,
+            },
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        row = self.log.recent_brain_decisions(limit=1)[0]
+        self.assertEqual(row["reason"], "taker_entry_below_stop_on_spread")
+        self.assertIn('"immediate_exit_loss_pct": 0.0741', row["features_json"])
 
     def test_wait_timing_can_execute_as_controlled_probe_when_score_is_high(self):
         self.log.insert_brain_decision(

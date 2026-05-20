@@ -135,6 +135,8 @@ CREATE TABLE IF NOT EXISTS decision_journal (
     score REAL,
     mode TEXT,
     features_json TEXT,
+    outcome_1m_json TEXT,
+    outcome_3m_json TEXT,
     outcome_5m_json TEXT,
     outcome_15m_json TEXT,
     outcome_60m_json TEXT,
@@ -437,6 +439,8 @@ class TradeLog:
                 "ALTER TABLE wallet_signals ADD COLUMN wallet_winrate_external REAL",
                 "ALTER TABLE wallet_signals ADD COLUMN wallet_total_trades_external INTEGER",
                 "ALTER TABLE wallet_signals ADD COLUMN wallet_rank INTEGER",
+                "ALTER TABLE decision_journal ADD COLUMN outcome_1m_json TEXT",
+                "ALTER TABLE decision_journal ADD COLUMN outcome_3m_json TEXT",
             ]:
                 try:
                     conn.execute(_migration)
@@ -704,6 +708,36 @@ class TradeLog:
             if age > float(max_age_seconds):
                 return None
             data["age_seconds"] = age
+        return data
+
+    def orderbook_snapshot_at_or_after(
+        self,
+        token_id: str,
+        target_ts: datetime,
+        *,
+        max_lag_seconds: float = 90.0,
+    ) -> Optional[dict]:
+        """Return the first stored book at/after target_ts within max lag."""
+        if target_ts.tzinfo is None:
+            target_ts = target_ts.replace(tzinfo=timezone.utc)
+        target_iso = target_ts.astimezone(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM orderbook_snapshots "
+                "WHERE token_id = ? AND ts >= ? "
+                "ORDER BY ts ASC LIMIT 1",
+                (str(token_id), target_iso),
+            ).fetchone()
+            if row is None:
+                return None
+            data = dict(row)
+        ts = _parse_iso_ts(data.get("ts"))
+        if ts is None:
+            return None
+        lag = (ts - target_ts.astimezone(timezone.utc)).total_seconds()
+        if lag < 0 or lag > float(max_lag_seconds):
+            return None
+        data["target_lag_seconds"] = lag
         return data
 
     def prune_orderbook_snapshots(self, older_than_minutes: int = 180) -> int:
@@ -1962,3 +1996,56 @@ class TradeLog:
                 "SELECT * FROM decision_journal ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def has_recent_decision_journal(
+        self,
+        *,
+        agent: str,
+        market_id: str,
+        token_id: Optional[str] = None,
+        decisions: tuple[str, ...] = ("SHADOW_ENTER", "ENTER"),
+        minutes: float = 10.0,
+    ) -> bool:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(minutes=float(minutes))
+        ).isoformat()
+        params: list = [agent, str(market_id), cutoff, *decisions]
+        token_clause = ""
+        if token_id:
+            token_clause = "AND token_id = ? "
+            params.append(str(token_id))
+        placeholders = ",".join("?" for _ in decisions)
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM decision_journal "
+                "WHERE agent = ? AND market_id = ? AND ts >= ? "
+                f"AND decision IN ({placeholders}) "
+                f"{token_clause}"
+                "LIMIT 1",
+                params,
+            ).fetchone()
+            return row is not None
+
+    def update_decision_journal_markout(
+        self,
+        journal_id: int,
+        *,
+        minutes: int,
+        payload: dict,
+    ) -> None:
+        column_by_minutes = {
+            1: "outcome_1m_json",
+            3: "outcome_3m_json",
+            5: "outcome_5m_json",
+            15: "outcome_15m_json",
+            60: "outcome_60m_json",
+        }
+        column = column_by_minutes.get(int(minutes))
+        if column is None:
+            raise ValueError(f"unsupported markout horizon: {minutes}")
+        text = json.dumps(payload, default=str)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                f"UPDATE decision_journal SET {column} = ? WHERE id = ?",
+                (text, int(journal_id)),
+            )

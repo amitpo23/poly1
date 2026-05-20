@@ -49,7 +49,10 @@ def _env_int(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class MakerShadowConfig:
     poll_seconds: int = 2
-    universe_limit: int = 30
+    universe_limit: int = 80
+    route_agents: tuple[str, ...] = ("btc_5min", "scalper", "unassigned_5min")
+    assets: tuple[str, ...] = ("btc", "eth", "sol", "xrp", "doge", "bnb")
+    require_eligible: bool = False
     max_orderbook_age_sec: float = 8.0
     quote_size_usdc: float = 1.0
     tick_size: float = 0.01
@@ -59,7 +62,7 @@ class MakerShadowConfig:
     min_ask_depth_usdc: float = 20.0
     max_spread_pct: float = 0.16
     min_seconds_to_expiry: int = 45
-    max_seconds_to_expiry: int = 240
+    max_seconds_to_expiry: int = 600
     min_mid_price: float = 0.35
     max_mid_price: float = 0.65
     max_pair_ask_sum: float = 1.08
@@ -69,7 +72,16 @@ class MakerShadowConfig:
     def from_env(cls) -> "MakerShadowConfig":
         return cls(
             poll_seconds=_env_int("CRYPTO_5M_MM_SHADOW_POLL_SEC", 2),
-            universe_limit=_env_int("CRYPTO_5M_MM_SHADOW_UNIVERSE_LIMIT", 30),
+            universe_limit=_env_int("CRYPTO_5M_MM_SHADOW_UNIVERSE_LIMIT", 80),
+            route_agents=_env_tuple(
+                "CRYPTO_5M_MM_SHADOW_ROUTE_AGENTS",
+                ("btc_5min", "scalper", "unassigned_5min"),
+            ),
+            assets=_env_tuple(
+                "CRYPTO_5M_MM_SHADOW_ASSETS",
+                ("btc", "eth", "sol", "xrp", "doge", "bnb"),
+            ),
+            require_eligible=_env_bool("CRYPTO_5M_MM_SHADOW_REQUIRE_ELIGIBLE", False),
             max_orderbook_age_sec=_env_float("CRYPTO_5M_MM_SHADOW_MAX_BOOK_AGE_SEC", 8.0),
             quote_size_usdc=_env_float("CRYPTO_5M_MM_SHADOW_QUOTE_SIZE_USDC", 1.0),
             tick_size=_env_float("CRYPTO_5M_MM_SHADOW_TICK_SIZE", 0.01),
@@ -79,7 +91,7 @@ class MakerShadowConfig:
             min_ask_depth_usdc=_env_float("CRYPTO_5M_MM_SHADOW_MIN_ASK_DEPTH_USDC", 20.0),
             max_spread_pct=_env_float("CRYPTO_5M_MM_SHADOW_MAX_SPREAD_PCT", 0.16),
             min_seconds_to_expiry=_env_int("CRYPTO_5M_MM_SHADOW_MIN_SECONDS_TO_EXPIRY", 45),
-            max_seconds_to_expiry=_env_int("CRYPTO_5M_MM_SHADOW_MAX_SECONDS_TO_EXPIRY", 240),
+            max_seconds_to_expiry=_env_int("CRYPTO_5M_MM_SHADOW_MAX_SECONDS_TO_EXPIRY", 600),
             min_mid_price=_env_float("CRYPTO_5M_MM_SHADOW_MIN_MID_PRICE", 0.35),
             max_mid_price=_env_float("CRYPTO_5M_MM_SHADOW_MAX_MID_PRICE", 0.65),
             max_pair_ask_sum=_env_float("CRYPTO_5M_MM_SHADOW_MAX_PAIR_ASK_SUM", 1.08),
@@ -168,18 +180,35 @@ class Crypto5mMarketMakerShadow:
         self._processed: set[str] = set()
 
     def run_once(self) -> dict:
-        stats = {"markets": 0, "quotes": 0, "approved": 0, "rejected": 0}
+        stats = {
+            "candidates": 0,
+            "markets": 0,
+            "quotes": 0,
+            "approved": 0,
+            "rejected": 0,
+            "skipped": 0,
+        }
         rows = self.trade_log.list_market_universe(
-            route_agent="btc_5min",
             horizon="5m",
             limit=self.cfg.universe_limit,
         )
         now = time.time()
         for row in rows:
+            stats["candidates"] += 1
+            route_agent = str(row.get("route_agent") or "")
+            asset = str(row.get("asset") or "").lower()
+            if route_agent not in self.cfg.route_agents or asset not in self.cfg.assets:
+                stats["skipped"] += 1
+                continue
+            if self.cfg.require_eligible and not row.get("eligible"):
+                stats["skipped"] += 1
+                continue
             if not row.get("accepting_orders"):
+                stats["skipped"] += 1
                 continue
             seconds_to_expiry = int(row.get("period_ts") or 0) + 300 - int(now)
             if seconds_to_expiry < self.cfg.min_seconds_to_expiry or seconds_to_expiry > self.cfg.max_seconds_to_expiry:
+                stats["skipped"] += 1
                 continue
             stats["markets"] += 1
             plans = self._evaluate_market(row, seconds_to_expiry=seconds_to_expiry)
@@ -190,6 +219,8 @@ class Crypto5mMarketMakerShadow:
                 else:
                     stats["rejected"] += 1
                 self._record(row, plan, seconds_to_expiry=seconds_to_expiry)
+        if stats["markets"] == 0:
+            self._record_cycle_reject("no_candidate_in_time_window", stats)
         self._heartbeat()
         return stats
 
@@ -297,6 +328,50 @@ class Crypto5mMarketMakerShadow:
             features=features,
         )
 
+    def _record_cycle_reject(self, reason: str, stats: dict) -> None:
+        key = f"cycle:{reason}:{int(time.time()) // 60}"
+        if key in self._processed:
+            return
+        self._processed.add(key)
+        features = {
+            "shadow_only": True,
+            "route_agents": list(self.cfg.route_agents),
+            "assets": list(self.cfg.assets),
+            "min_seconds_to_expiry": self.cfg.min_seconds_to_expiry,
+            "max_seconds_to_expiry": self.cfg.max_seconds_to_expiry,
+            "max_orderbook_age_sec": self.cfg.max_orderbook_age_sec,
+            **stats,
+        }
+        decision_id = self.trade_log.insert_brain_decision(
+            agent="crypto_5m_market_maker_shadow",
+            strategy="spread_capture_shadow",
+            decision_type="maker_quote_shadow_cycle",
+            market_id="crypto_5m_market_maker_shadow",
+            token_id=None,
+            approved=False,
+            reason=reason,
+            score=0.0,
+            market_type="crypto_5m_maker",
+            asset="crypto",
+            features=features,
+            action="NO_QUOTE",
+            signal_source="crypto_5m_market_maker_shadow",
+        )
+        self.trade_log.insert_decision_journal(
+            decision_id=decision_id,
+            agent="crypto_5m_market_maker_shadow",
+            strategy="spread_capture_shadow",
+            market_id="crypto_5m_market_maker_shadow",
+            token_id=None,
+            action="NO_QUOTE",
+            decision="REJECT",
+            reason=reason,
+            signal_source="crypto_5m_market_maker_shadow",
+            score=0.0,
+            mode="maker_shadow",
+            features=features,
+        )
+
     def _heartbeat(self) -> None:
         try:
             path = Path(self.cfg.heartbeat_path)
@@ -337,6 +412,21 @@ def _float(value) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def _env_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    values = tuple(x.strip().lower() for x in raw.split(",") if x.strip())
+    return values or default
 
 
 def main() -> int:

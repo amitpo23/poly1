@@ -120,6 +120,16 @@ class Crypto5mMarketMakerShadowTests(unittest.TestCase):
         brain = self.log.recent_brain_decisions(limit=1)[0]
         self.assertEqual(brain["agent"], "crypto_5m_market_maker_shadow")
 
+    def test_run_once_records_no_market_cycle_reject(self):
+        engine = Crypto5mMarketMakerShadow(cfg=self._cfg(), trade_log=self.log)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["markets"], 0)
+        row = self.log.recent_decision_journal(limit=1)[0]
+        self.assertEqual(row["decision"], "REJECT")
+        self.assertEqual(row["reason"], "no_candidate_in_time_window")
+
 
 if __name__ == "__main__":
     unittest.main()

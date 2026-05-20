@@ -68,11 +68,16 @@ class ScannerExecutorConfig:
     min_net_ev: float = 0.03
     round_trip_cost_pct: float = 0.04
     max_entry_drift_pct: float = 0.04
+    max_immediate_exit_loss_pct: float = 0.03
+    prefer_maker_for_fast_markets: bool = True
+    maker_tick_size: float = 0.01
+    maker_min_profit_cents: float = 0.01
     require_timing_now: bool = True
     allow_wait_with_high_score: bool = False
     wait_override_min_score: float = 0.79
     max_open_positions: int = 4
     reentry_cooldown_hours: int = 12
+    shadow_entry_cooldown_minutes: int = 10
     heartbeat_path: str = "/app/data/scanner_executor_heartbeat"
 
     @classmethod
@@ -88,6 +93,16 @@ class ScannerExecutorConfig:
             min_net_ev=_env_float("SCANNER_EXECUTOR_MIN_NET_EV", 0.03),
             round_trip_cost_pct=_env_float("SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT", 0.04),
             max_entry_drift_pct=_env_float("SCANNER_EXECUTOR_MAX_ENTRY_DRIFT_PCT", 0.04),
+            max_immediate_exit_loss_pct=_env_float(
+                "SCANNER_EXECUTOR_MAX_IMMEDIATE_EXIT_LOSS_PCT",
+                0.03,
+            ),
+            prefer_maker_for_fast_markets=_env_bool(
+                "SCANNER_EXECUTOR_PREFER_MAKER_FOR_FAST_MARKETS",
+                True,
+            ),
+            maker_tick_size=_env_float("SCANNER_EXECUTOR_MAKER_TICK_SIZE", 0.01),
+            maker_min_profit_cents=_env_float("SCANNER_EXECUTOR_MAKER_MIN_PROFIT_CENTS", 0.01),
             require_timing_now=_env_bool("SCANNER_EXECUTOR_REQUIRE_TIMING_NOW", True),
             allow_wait_with_high_score=_env_bool(
                 "SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE",
@@ -99,6 +114,10 @@ class ScannerExecutorConfig:
             ),
             max_open_positions=_env_int("SCANNER_EXECUTOR_MAX_OPEN", 4),
             reentry_cooldown_hours=_env_int("SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS", 12),
+            shadow_entry_cooldown_minutes=_env_int(
+                "SCANNER_EXECUTOR_SHADOW_ENTRY_COOLDOWN_MINUTES",
+                10,
+            ),
             heartbeat_path=os.getenv(
                 "SCANNER_EXECUTOR_HEARTBEAT_PATH",
                 "/app/data/scanner_executor_heartbeat",
@@ -233,6 +252,22 @@ class ScannerExecutor:
         ):
             self._record_reject(row, "recent_close_cooldown", {"hours": self.cfg.reentry_cooldown_hours})
             return "skipped"
+        if (
+            not self.execute
+            and self.trade_log.has_recent_decision_journal(
+                agent="scanner_executor",
+                market_id=market_id,
+                token_id=token_id,
+                decisions=("SHADOW_ENTER", "SHADOW_QUOTE"),
+                minutes=self.cfg.shadow_entry_cooldown_minutes,
+            )
+        ):
+            self._record_reject(
+                row,
+                "shadow_recent_entry_exists",
+                {"minutes": self.cfg.shadow_entry_cooldown_minutes},
+            )
+            return "skipped"
 
         estimated_prob = _safe_float(features.get("estimated_win_probability"), score)
         try:
@@ -315,6 +350,29 @@ class ScannerExecutor:
             )
             return "skipped"
 
+        maker_shadow_candidate = (
+            not self.execute
+            and self.cfg.prefer_maker_for_fast_markets
+            and _is_fast_market(features, market_type=str(row.get("market_type") or ""))
+        )
+        best_bid = _safe_float(book_quality.get("best_bid"), None)
+        if not maker_shadow_candidate and best_bid is not None and executable_entry_price > 0:
+            immediate_exit_loss_pct = max(0.0, 1.0 - (best_bid / executable_entry_price))
+            if immediate_exit_loss_pct >= self.cfg.max_immediate_exit_loss_pct:
+                self._record_reject(
+                    row,
+                    "taker_entry_below_stop_on_spread",
+                    {
+                        "best_bid": round(best_bid, 4),
+                        "avg_entry_price": round(executable_entry_price, 4),
+                        "immediate_exit_loss_pct": round(immediate_exit_loss_pct, 4),
+                        "max_immediate_exit_loss_pct": self.cfg.max_immediate_exit_loss_pct,
+                        **_round_float_payload(book_quality),
+                        **council.features,
+                    },
+                )
+                return "skipped"
+
         risk_reason = self.risk_gate.reason()
         if risk_reason:
             self._record_reject(row, "risk_gate_blocked", {"risk_reason": risk_reason})
@@ -347,6 +405,30 @@ class ScannerExecutor:
             **council.features,
             **sizing.features(),
         }
+
+        if maker_shadow_candidate:
+            maker_plan = self._maker_shadow_plan(book_quality)
+            if maker_plan is None:
+                self._record_reject(
+                    row,
+                    "maker_quote_no_room",
+                    {
+                        "maker_tick_size": self.cfg.maker_tick_size,
+                        "maker_min_profit_cents": self.cfg.maker_min_profit_cents,
+                        **_round_float_payload(book_quality),
+                    },
+                )
+                return "skipped"
+            self._record_maker_quote(
+                row,
+                maker_bid=maker_plan["maker_bid"],
+                maker_ask=maker_plan["maker_ask"],
+                amount_usdc=amount_usdc,
+                raw_ev=raw_ev,
+                net_ev=net_ev,
+                extra={**execution_features, **maker_plan},
+            )
+            return "shadow"
 
         anchor_price = live_price if side == "BUY" else 1.0 - live_price
         pending_id = self.trade_log.insert_pending(
@@ -570,6 +652,90 @@ class ScannerExecutor:
             reason, row["id"], str(row["market_id"])[:20], entry_price, amount_usdc, raw_ev,
         )
 
+    def _maker_shadow_plan(self, book_quality: dict) -> Optional[dict]:
+        best_bid = _safe_float(book_quality.get("best_bid"), None)
+        best_ask = _safe_float(book_quality.get("best_ask"), None)
+        if best_bid is None or best_ask is None or best_bid <= 0 or best_ask >= 1:
+            return None
+        maker_bid = round(best_bid + self.cfg.maker_tick_size, 4)
+        maker_ask = round(best_ask - self.cfg.maker_tick_size, 4)
+        profit = round(maker_ask - maker_bid, 4)
+        if maker_bid <= 0 or maker_ask >= 1 or maker_bid >= maker_ask:
+            return None
+        if profit < self.cfg.maker_min_profit_cents:
+            return None
+        return {
+            "maker_bid": maker_bid,
+            "maker_ask": maker_ask,
+            "maker_profit_cents": profit,
+            "maker_tick_size": self.cfg.maker_tick_size,
+            "maker_min_profit_cents": self.cfg.maker_min_profit_cents,
+        }
+
+    def _record_maker_quote(
+        self,
+        row: dict,
+        *,
+        maker_bid: float,
+        maker_ask: float,
+        amount_usdc: float,
+        raw_ev: float,
+        net_ev: float,
+        extra: dict,
+    ) -> None:
+        features = _parse_features(row.get("features_json"))
+        signal_source = str(row.get("signal_source") or features.get("signal_source") or "market_scanner")
+        token_id = str(features.get("selected_token_id") or "")
+        action = str(features.get("selected_side") or row.get("action") or "")
+        payload = {
+            "source_decision_id": int(row["id"]),
+            "question": features.get("question"),
+            "amount_usdc": round(amount_usdc, 4),
+            "entry_style": "maker_first_shadow",
+            **extra,
+        }
+        self.trade_log.insert_brain_decision(
+            agent="scanner_executor",
+            strategy="execute_scanner_trade_opportunity",
+            decision_type="entry",
+            market_id=str(row["market_id"]),
+            token_id=token_id,
+            approved=True,
+            reason="shadow_maker_quoted",
+            score=float(row.get("score") or 0.0),
+            market_type="scanner_executor",
+            features=payload,
+            action=action,
+            signal_source=signal_source,
+        )
+        self.trade_log.insert_decision_journal(
+            decision_id=int(row["id"]),
+            agent="scanner_executor",
+            strategy="execute_scanner_trade_opportunity",
+            market_id=str(row["market_id"]),
+            token_id=token_id,
+            action=action,
+            decision="SHADOW_QUOTE",
+            reason="shadow_maker_quoted",
+            signal_source=signal_source,
+            market_price=maker_bid,
+            live_entry_price=maker_ask,
+            internal_probability=_safe_float(
+                extra.get("decision_council_internal_probability")
+                or extra.get("kelly_win_probability"),
+                None,
+            ),
+            raw_ev=raw_ev,
+            net_ev=net_ev,
+            score=float(row.get("score") or 0.0),
+            mode=str(extra.get("decision_council_mode") or "maker_shadow"),
+            features=payload,
+        )
+        logger.info(
+            "scanner_executor shadow_maker_quoted: decision=%s market=%s bid=%.4f ask=%.4f ev=%.4f",
+            row["id"], str(row["market_id"])[:20], maker_bid, maker_ask, raw_ev,
+        )
+
     def _heartbeat(self) -> None:
         try:
             p = Path(self.cfg.heartbeat_path)
@@ -621,6 +787,21 @@ def _parse_features(raw) -> dict:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
+
+
+def _is_fast_market(features: dict, *, market_type: str = "") -> bool:
+    haystack = " ".join(
+        str(features.get(k) or "")
+        for k in ("slug", "question", "horizon", "market_type")
+    ).lower()
+    market_type = market_type.lower()
+    return (
+        "5m" in haystack
+        or "5 minute" in haystack
+        or "5-minute" in haystack
+        or "updown-5m" in haystack
+        or "crypto_5m" in market_type
+    )
 
 
 def _as_list(value) -> list:
