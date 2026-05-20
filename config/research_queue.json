@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "updated_at": "2026-05-21",
+  "description": "Shadow-first research queue for strategy ideas before any live promotion.",
+  "items": [
+    {
+      "id": "vwap_microstructure_signal",
+      "source": "VWAP day-trading and microstructure papers",
+      "status": "implemented_shadow",
+      "owner_agent": "market_microstructure_features",
+      "expected_value_hypothesis": "VWAP deviation and volume-confirmed momentum improve timing for equity-linked and crypto-linked Polymarket entries.",
+      "required_evidence": ["positive_1m_5m_markout", "spread_fee_ev_positive", "provider_scorecard"],
+      "live_policy": "feature_only_until_positive_shadow_markouts"
+    },
+    {
+      "id": "mean_reversion_regime_filter",
+      "source": "Mean reversion and regime-switching research",
+      "status": "implemented_shadow",
+      "owner_agent": "market_microstructure_features",
+      "expected_value_hypothesis": "A mean-reverting regime should dampen late momentum entries and support counter-move hypotheses only after explicit MetaBrain validation.",
+      "required_evidence": ["walk_forward_shadow", "no_lookahead_features", "negative_markout_veto_when_stretched"],
+      "live_policy": "veto_or_confidence_adjustment_only"
+    },
+    {
+      "id": "oddpool_style_cross_venue_arb",
+      "source": "Oddpool/Kalshi/Polymarket cross-venue arbitrage scanners",
+      "status": "implemented_guard",
+      "owner_agent": "arb_quality_guard",
+      "expected_value_hypothesis": "Cross-venue binary contracts can be traded only when rules match and YES+NO cost is below payout after fees and depth.",
+      "required_evidence": ["rule_mapping", "quote_freshness", "net_profit_after_costs", "depth_check"],
+      "live_policy": "never_anchor_without_arb_quality_candidate"
+    },
+    {
+      "id": "ssrn_research_ingestion",
+      "source": "Manual SSRN/research-paper discovery workflow",
+      "status": "queued",
+      "owner_agent": "research_scanner",
+      "expected_value_hypothesis": "New strategy papers should enter the backlog with a testable hypothesis, not directly modify live logic.",
+      "required_evidence": ["paper_summary", "replication_plan", "shadow_metric"],
+      "live_policy": "research_only"
+    },
+    {
+      "id": "latent_regime_chaos_score",
+      "source": "Z-field/latent chaos social strategy claims",
+      "status": "deferred",
+      "owner_agent": "research_scanner",
+      "expected_value_hypothesis": "Latent regime models may add value only after a reproducible benchmark beats simple VWAP/regime features.",
+      "required_evidence": ["open_methodology", "reproducible_backtest", "walk_forward_benchmark"],
+      "live_policy": "do_not_integrate_until_reproduced"
+    }
+  ]
+}

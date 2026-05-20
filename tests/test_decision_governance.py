@@ -22,7 +22,11 @@ class AgentRegistryTests(unittest.TestCase):
         self.assertIn("scanner_executor", summary["live_capable_agents"])
         self.assertIn("crypto_5m_market_maker_shadow", summary["anchor_capable_agents"])
         self.assertIn("external_conviction_openbb", summary["anchor_capable_agents"])
+        self.assertIn("arb_quality_guard", summary["anchor_capable_agents"])
+        self.assertEqual(registry.require("market_microstructure_features").role, "underlying_feature_provider")
+        self.assertEqual(registry.require("arb_quality_guard").role, "cross_venue_arb_validator")
         self.assertEqual(registry.require("rl_reward_lab").role, "offline_policy_research")
+        self.assertEqual(registry.require("research_scanner").role, "research_intake")
         self.assertFalse(registry.require("rl_reward_lab").places_orders)
         self.assertEqual(registry.require("risk_gate").role, "risk_manager")
 

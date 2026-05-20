@@ -14,6 +14,8 @@ from typing import Optional
 
 import requests
 
+from agents.application.market_microstructure import feature_snapshot_from_bars
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -229,6 +231,7 @@ class OpenBBMarketDataClient:
         prior = volumes[:-short_window] or volumes
         prior_vol = sum(prior) / max(1, len(prior))
         vol_ratio = recent_vol / prior_vol if prior_vol > 0 else 1.0
+        micro = feature_snapshot_from_bars(symbol, asset_class, bars)
 
         threshold = _env_float("OPENBB_MARKET_DATA_MOMENTUM_THRESHOLD", 0.01)
         composite = 0.65 * momentum + 0.35 * ma_edge
@@ -241,7 +244,9 @@ class OpenBBMarketDataClient:
         strength = min(1.0, abs(composite) / max(threshold, 1e-6))
         vol_boost = min(0.08, max(0.0, vol_ratio - 1.0) * 0.04)
         range_boost = min(0.06, range_pct * 1.2)
+        regime_boost = _microstructure_confidence_adjustment(direction, micro)
         confidence = min(0.76, 0.48 + 0.16 * strength + vol_boost + range_boost)
+        confidence = max(0.0, min(0.78, confidence + regime_boost))
         if direction is None:
             confidence = min(confidence, 0.52)
         probability = 0.5 if direction is None else min(0.76, 0.5 + (confidence - 0.5))
@@ -253,7 +258,8 @@ class OpenBBMarketDataClient:
             asset_class,
             (
                 f"openbb {asset_class} bars: composite={composite:+.3%}, "
-                f"momentum={momentum:+.3%}, ma_edge={ma_edge:+.3%}, vol_ratio={vol_ratio:.2f}"
+                f"momentum={momentum:+.3%}, ma_edge={ma_edge:+.3%}, vol_ratio={vol_ratio:.2f}, "
+                f"regime={micro.regime}"
             ),
             {
                 "bar_count": len(bars),
@@ -266,6 +272,8 @@ class OpenBBMarketDataClient:
                 "volume_ratio": round(vol_ratio, 4),
                 "provider": self.provider,
                 "dependency": str(bars[-1].get("_dependency") or "openbb"),
+                "microstructure_adjustment": round(regime_boost, 4),
+                **micro.features,
             },
         )
 
@@ -298,3 +306,22 @@ def _keyword_matches(text: str, keyword: str) -> bool:
     if re.search(r"[a-z0-9]", key):
         return re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", text) is not None
     return key in text
+
+
+def _microstructure_confidence_adjustment(direction: Optional[str], micro) -> float:
+    if direction is None:
+        return 0.0
+    adjustment = 0.0
+    deviation = micro.vwap_deviation_pct or 0.0
+    zscore = micro.mean_reversion_zscore or 0.0
+    if micro.regime == "trending":
+        if direction == "bullish" and deviation > 0:
+            adjustment += 0.025
+        elif direction == "bearish" and deviation < 0:
+            adjustment += 0.025
+    elif micro.regime in {"mean_reverting", "stretched"} and abs(zscore) >= 1.5:
+        if direction == "bullish" and zscore > 0:
+            adjustment -= 0.035
+        elif direction == "bearish" and zscore < 0:
+            adjustment -= 0.035
+    return adjustment

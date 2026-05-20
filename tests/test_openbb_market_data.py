@@ -27,6 +27,8 @@ class OpenBBMarketDataTests(unittest.TestCase):
         self.assertEqual(signal.direction, "bullish")
         self.assertGreater(signal.confidence, 0.60)
         self.assertEqual(signal.symbol, "NVDA")
+        self.assertIn("micro_vwap", signal.features)
+        self.assertIn("micro_regime", signal.features)
 
     def test_signal_from_bars_insufficient_data_skips(self):
         client = OpenBBMarketDataClient()

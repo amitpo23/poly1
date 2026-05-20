@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-20",
+  "updated_at": "2026-05-21",
   "description": "Single source of truth for poly1 agent roles, modes, signal contracts, and live promotion rules.",
   "defaults": {
     "mode": "shadow",
@@ -67,6 +67,34 @@
       "anchor_rules": {"allowed": true, "min_confidence": 0.65, "requires_positive_ev": true, "requires_positive_markout": true},
       "veto_rules": ["openbb_unavailable", "stale_external_data", "conflicts_with_market_price"],
       "promotion_criteria": {"positive_provider_scorecard_required": true, "optional_dependency_required": "openbb"}
+    },
+    {
+      "agent_id": "market_microstructure_features",
+      "display_name": "VWAP And Regime Feature Extractor",
+      "role": "underlying_feature_provider",
+      "mode": "shadow",
+      "places_orders": false,
+      "markets": ["equity_linked", "index", "commodities", "crypto"],
+      "owner_service": "external-conviction-openbb",
+      "required_inputs": ["openbb_market_data", "alpaca_market_data", "bar_series"],
+      "signal_schema": "microstructure_features_v1",
+      "anchor_rules": {"allowed": false},
+      "veto_rules": ["insufficient_bars", "stale_bars", "lookahead_bias"],
+      "promotion_criteria": {"feature_only": true, "positive_shadow_markout_required": true}
+    },
+    {
+      "agent_id": "arb_quality_guard",
+      "display_name": "Cross-Venue Arbitrage Quality Guard",
+      "role": "cross_venue_arb_validator",
+      "mode": "shadow",
+      "places_orders": false,
+      "markets": ["polymarket:any", "kalshi:any", "cross_venue"],
+      "owner_service": "scanner-executor",
+      "required_inputs": ["polymarket_quote", "external_venue_quote", "rule_mapping", "fee_model"],
+      "signal_schema": "arb_quality_v1",
+      "anchor_rules": {"allowed": true, "min_net_profit": 0.015, "requires_rule_match": true, "requires_depth": true},
+      "veto_rules": ["rule_mismatch", "stale_quote", "insufficient_depth", "net_profit_below_min"],
+      "promotion_criteria": {"rule_mapping_required": true, "positive_shadow_markout_required": true, "no_live_until_integrated_with_executor": true}
     },
     {
       "agent_id": "external_conviction_tradingview",
@@ -207,6 +235,20 @@
       "anchor_rules": {"allowed": false},
       "veto_rules": ["insufficient_markouts", "negative_walk_forward_reward", "overfit"],
       "promotion_criteria": {"offline_only": true, "min_labeled_rows": 500, "walk_forward_required": true, "no_live_until_advisor_validated": true}
+    },
+    {
+      "agent_id": "research_scanner",
+      "display_name": "Strategy Research Queue",
+      "role": "research_intake",
+      "mode": "shadow",
+      "places_orders": false,
+      "markets": ["research"],
+      "owner_service": "research-queue",
+      "required_inputs": ["research_queue", "strategy_docs", "shadow_metrics"],
+      "signal_schema": "research_queue_v1",
+      "anchor_rules": {"allowed": false},
+      "veto_rules": ["no_replication_plan", "no_shadow_metric", "unsupported_live_claim"],
+      "promotion_criteria": {"docs_required": true, "shadow_first_required": true}
     },
     {
       "agent_id": "telegram_reporter",
