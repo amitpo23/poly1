@@ -132,6 +132,40 @@ class TestExecuteMarketOrderFAK(unittest.TestCase):
         self.assertEqual(result["order_id"], "obj-order")
         self.assertEqual(result["status"], "matched")
 
+    @patch.object(Polymarket, "__init__", lambda self, **kw: None)
+    def test_execute_market_order_reconciles_delayed_to_matched(self):
+        p = Polymarket()
+        p.client = MagicMock()
+        p._fillable_market_buy = MagicMock(return_value=(0.51, 5.0, 0.50))
+        p.client.create_and_post_market_order = MagicMock(
+            return_value={"status": "delayed", "orderID": "abc"}
+        )
+        p.client.get_order = MagicMock(return_value={"status": "MATCHED", "id": "abc"})
+        rec = TradeRecommendation(price=0.50, size_fraction=0.05, side="BUY",
+                                   confidence=0.7, amount_usdc=5.0)
+
+        result = p.execute_market_order(self._make_market(), rec)
+
+        self.assertEqual(result["order_id"], "abc")
+        self.assertEqual(result["status"], "matched")
+        p.client.get_order.assert_called_once_with("abc")
+
+    @patch.object(Polymarket, "__init__", lambda self, **kw: None)
+    def test_sell_shares_reconciles_delayed_to_matched(self):
+        p = Polymarket()
+        p.client = MagicMock()
+        p.client.create_and_post_order = MagicMock(
+            return_value={"status": "delayed", "orderID": "sell-abc"}
+        )
+        p.client.get_order = MagicMock(
+            return_value={"status": "MATCHED", "id": "sell-abc"}
+        )
+
+        result = p.sell_shares("tok", shares=2.0, limit_price=0.50)
+
+        self.assertEqual(result["status"], "MATCHED")
+        p.client.get_order.assert_called_once_with("sell-abc")
+
 
 if __name__ == "__main__":
     unittest.main()

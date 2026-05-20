@@ -586,7 +586,7 @@ class Polymarket:
         if order_type is None:
             order_type = OrderType.GTC
         with live_order_lock():
-            return self.client.create_and_post_order(
+            resp = self.client.create_and_post_order(
                 OrderArgs(
                     price=limit_price,
                     size=shares,
@@ -595,6 +595,44 @@ class Polymarket:
                 ),
                 order_type=order_type,
             )
+        return self._reconcile_delayed_order_response(resp)
+
+    def _reconcile_delayed_order_response(
+        self,
+        resp,
+        *,
+        attempts: int = 5,
+        delay_seconds: float = 0.25,
+    ):
+        """Refresh CLOB `delayed` responses before callers decide outcome.
+
+        Polymarket can return `{"status": "delayed", "success": true}` for
+        FOK/FAK orders that become MATCHED moments later. Treating the first
+        response as a hard failure leaves real positions unmanaged, so we query
+        the order endpoint briefly before returning the response.
+        """
+        normalized = _normalize_order_response(resp)
+        if normalized["status"] != "delayed" or not normalized["order_id"]:
+            return resp
+
+        last_error = None
+        for attempt in range(max(1, attempts)):
+            if attempt:
+                time.sleep(delay_seconds)
+            try:
+                refreshed = self.client.get_order(normalized["order_id"])
+            except Exception as exc:
+                last_error = exc
+                continue
+            refreshed_status = _normalize_order_response(refreshed)["status"]
+            if refreshed_status and refreshed_status != "unknown":
+                return refreshed
+        if last_error is not None:
+            logger.warning(
+                "order delayed reconciliation failed for %s: %s",
+                normalized["order_id"], last_error,
+            )
+        return resp
 
     def _book_entries(self, book, side: str) -> list:
         entries = getattr(book, side, None)
@@ -832,6 +870,7 @@ class Polymarket:
 
         with live_order_lock():
             resp = _post()
+        resp = self._reconcile_delayed_order_response(resp)
 
         normalized = _normalize_order_response(resp)
 
