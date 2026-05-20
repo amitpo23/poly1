@@ -69,6 +69,9 @@ Implemented after the negative micro proof:
   `SCANNER_MIN_LIQUIDITY_USDC=1000`, `SCANNER_MIN_VOLUME_USDC=500`. This
   increases candidate discovery while live orderbook, drift, net EV, RiskGate,
   and dedupe still decide execution.
+- Runtime live probes set `EXECUTION_QUALITY_MAX_SPREAD_PCT=0.08` instead of
+  `0.05`. This is a proof-mode loosened spread ceiling only; scanner-executor
+  still requires net EV and max entry drift before an order can fire.
 - Recent `closed_stop_loss` / `resolved_loss` rows apply a soft score penalty
   before a market is routed again.
 - `scanner_executor` revalidates live executable price against the scanner

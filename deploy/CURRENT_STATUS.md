@@ -73,6 +73,9 @@ Scanner-quality upgrade now implemented locally:
   `SCANNER_MARKET_LIMIT=300`, `SCANNER_MAX_CANDIDATES=60`,
   `SCANNER_MIN_LIQUIDITY_USDC=1000`, and `SCANNER_MIN_VOLUME_USDC=500`; the
   executor still requires live orderbook, drift, EV, RiskGate, and dedupe.
+- Runtime live probes now allow `EXECUTION_QUALITY_MAX_SPREAD_PCT=0.08`.
+  This is intentionally a proof-mode loosened spread ceiling; scanner-executor
+  still requires net EV, max entry drift, and live orderbook fillability.
 - Recent stop-losses/resolved losses apply a soft score penalty before routing.
 - `scanner_executor` rejects live fills if the executable entry price drifted
   too far from the scanner-approved price.
