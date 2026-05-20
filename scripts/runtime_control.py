@@ -132,6 +132,8 @@ BASE_ENV = {
     "SCANNER_EXECUTOR_MIN_SCORE": "0.80",
     "SCANNER_EXECUTOR_MIN_RAW_EV": "0.04",
     "SCANNER_EXECUTOR_REQUIRE_TIMING_NOW": "true",
+    "SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE": "false",
+    "SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE": "0.79",
     "SCANNER_EXECUTOR_MAX_OPEN": "4",
     "SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS": "12",
     "PREFLIGHT_MAX_DISK_USED_PCT": "85",
@@ -379,6 +381,9 @@ def live_hour(args: argparse.Namespace) -> int:
     env["MIN_USDC_FLOOR"] = f"{max(0.0, wallet_balance - (2 * budget)):.4f}"
     env["MAX_POSITION_FRACTION"] = args.max_position_fraction
     env["MAX_DAILY_TOKEN_USD"] = args.max_daily_token_usd
+    if args.scanner_allow_wait:
+        env["SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE"] = "true"
+        env["SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE"] = args.scanner_wait_min_score
     env["BTC_DAILY_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["BTC_5MIN_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["BTC_5MIN_STRADDLE_LEG_USDC"] = args.position_size_usdc
@@ -474,6 +479,8 @@ def main() -> int:
     p_live_hour.add_argument("--max-position-fraction", default="0.03")
     p_live_hour.add_argument("--max-daily-token-usd", default="10.0")
     p_live_hour.add_argument("--position-size-usdc", default="1.50")
+    p_live_hour.add_argument("--scanner-allow-wait", action="store_true")
+    p_live_hour.add_argument("--scanner-wait-min-score", default="0.79")
     p_live_hour.add_argument("--note", default="")
     p_live_hour.add_argument("--arm", action="store_true", help="remove HALT after writing live control")
     p_live_hour.set_defaults(func=live_hour)

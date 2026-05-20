@@ -53,6 +53,8 @@ class RuntimeControlTests(unittest.TestCase):
                 max_position_fraction="0.03",
                 max_daily_token_usd="10.0",
                 position_size_usdc="1.50",
+                scanner_allow_wait=True,
+                scanner_wait_min_score="0.79",
                 note="test",
                 arm=True,
             )
@@ -68,6 +70,8 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertIn('EXTERNAL_CONVICTION_POSITION_SIZE_USDC="1.50"', env_text)
             self.assertIn('BTC_DAILY_POSITION_SIZE_USDC="1.50"', env_text)
             self.assertIn('BTC_5MIN_POSITION_SIZE_USDC="1.50"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE="true"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE="0.79"', env_text)
             self.assertEqual(control["budget_usdc"], 15.0)
             self.assertEqual(control["wallet_balance_at_start_usdc"], 34.2452)
             self.assertEqual(control["equity_at_start_usdc"], 35.125)

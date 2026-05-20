@@ -39,7 +39,15 @@ class ScannerExecutorTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _engine(self, *, execute=True, price=0.50, fillable=1.0):
+    def _engine(
+        self,
+        *,
+        execute=True,
+        price=0.50,
+        fillable=1.0,
+        allow_wait_with_high_score=False,
+        wait_override_min_score=0.79,
+    ):
         pm = MagicMock()
         pm._fillable_market_buy.return_value = (price, fillable, price)
         pm.execute_market_order.return_value = {
@@ -57,6 +65,8 @@ class ScannerExecutorTests(unittest.TestCase):
             min_score=0.55,
             min_raw_ev=0.04,
             require_timing_now=True,
+            allow_wait_with_high_score=allow_wait_with_high_score,
+            wait_override_min_score=wait_override_min_score,
         )
         return ScannerExecutor(
             cfg=cfg,
@@ -158,6 +168,49 @@ class ScannerExecutorTests(unittest.TestCase):
         self.assertEqual(rows, [])
         raw_rows = self.log.count_recent(FILLED, hours=1)
         self.assertEqual(raw_rows, 1)
+
+    def test_wait_timing_can_execute_as_controlled_probe_when_score_is_high(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.792",
+            score=0.792,
+            market_type="general_binary",
+            features=_features(meta_timing="wait", estimated_win_probability=0.58),
+            action="BUY",
+        )
+        engine, pm = self._engine(execute=True, allow_wait_with_high_score=True)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["executed"], 1)
+        pm.execute_market_order.assert_called_once()
+        response = self.log.filled_positions_with_id()[0]["response_json"]
+        self.assertIn('"timing_override": true', response)
+
+    def test_wait_timing_still_rejects_when_override_score_is_low(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.780",
+            score=0.78,
+            market_type="general_binary",
+            features=_features(meta_timing="wait", estimated_win_probability=0.58),
+            action="BUY",
+        )
+        engine, pm = self._engine(execute=True, allow_wait_with_high_score=True)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(self.log.recent_brain_decisions(limit=1)[0]["reason"], "timing_not_now")
 
 
 if __name__ == "__main__":

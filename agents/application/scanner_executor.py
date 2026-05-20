@@ -65,6 +65,8 @@ class ScannerExecutorConfig:
     min_score: float = 0.80
     min_raw_ev: float = 0.04
     require_timing_now: bool = True
+    allow_wait_with_high_score: bool = False
+    wait_override_min_score: float = 0.79
     max_open_positions: int = 4
     reentry_cooldown_hours: int = 12
     heartbeat_path: str = "/app/data/scanner_executor_heartbeat"
@@ -80,6 +82,14 @@ class ScannerExecutorConfig:
             min_score=_env_float("SCANNER_EXECUTOR_MIN_SCORE", 0.80),
             min_raw_ev=_env_float("SCANNER_EXECUTOR_MIN_RAW_EV", 0.04),
             require_timing_now=_env_bool("SCANNER_EXECUTOR_REQUIRE_TIMING_NOW", True),
+            allow_wait_with_high_score=_env_bool(
+                "SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE",
+                False,
+            ),
+            wait_override_min_score=_env_float(
+                "SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE",
+                0.79,
+            ),
             max_open_positions=_env_int("SCANNER_EXECUTOR_MAX_OPEN", 4),
             reentry_cooldown_hours=_env_int("SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS", 12),
             heartbeat_path=os.getenv(
@@ -164,9 +174,17 @@ class ScannerExecutor:
         token_id = str(features.get("selected_token_id") or row.get("token_id") or "")
         question = str(features.get("question") or market_id)
 
-        if self.cfg.require_timing_now and features.get("meta_timing") != "now":
-            self._record_reject(row, "timing_not_now", {"meta_timing": features.get("meta_timing")})
-            return "skipped"
+        meta_timing = str(features.get("meta_timing") or "")
+        timing_override = False
+        if self.cfg.require_timing_now and meta_timing != "now":
+            timing_override = (
+                self.cfg.allow_wait_with_high_score
+                and meta_timing == "wait"
+                and score >= self.cfg.wait_override_min_score
+            )
+            if not timing_override:
+                self._record_reject(row, "timing_not_now", {"meta_timing": meta_timing})
+                return "skipped"
         if score < self.cfg.min_score:
             self._record_reject(row, "score_below_executor_min", {"score": score})
             return "skipped"
@@ -244,6 +262,11 @@ class ScannerExecutor:
         if amount_usdc <= 0:
             self._record_reject(row, "kelly_size_zero", sizing.features())
             return "skipped"
+        execution_features = {
+            "meta_timing": meta_timing,
+            "timing_override": timing_override,
+            **sizing.features(),
+        }
 
         anchor_price = live_price if side == "BUY" else 1.0 - live_price
         pending_id = self.trade_log.insert_pending(
@@ -273,13 +296,15 @@ class ScannerExecutor:
                     "source_decision_id": decision_id,
                     "entry_mode": "scanner_executor",
                     "raw_ev": round(raw_ev, 4),
+                    "meta_timing": meta_timing,
+                    "timing_override": timing_override,
                     **sizing.features(),
                 },
                 error="SHADOW: scanner_executor",
                 price=live_price,
                 size_usdc=amount_usdc,
             )
-            self._record_approval(row, "shadow_executed", live_price, amount_usdc, raw_ev, sizing.features())
+            self._record_approval(row, "shadow_executed", live_price, amount_usdc, raw_ev, execution_features)
             return "shadow"
 
         try:
@@ -304,12 +329,14 @@ class ScannerExecutor:
                 "source_decision_id": decision_id,
                 "entry_mode": "scanner_executor",
                 "raw_ev": round(raw_ev, 4),
+                "meta_timing": meta_timing,
+                "timing_override": timing_override,
                 **sizing.features(),
             },
             price=entry_price,
             size_usdc=entry_size,
         )
-        self._record_approval(row, "live_executed", entry_price, entry_size, raw_ev, sizing.features())
+        self._record_approval(row, "live_executed", entry_price, entry_size, raw_ev, execution_features)
         notify_trade(
             event="fill",
             agent="scanner_executor",

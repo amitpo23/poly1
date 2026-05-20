@@ -23,7 +23,8 @@ as execution candidates.
 3. `scanner_executor` consumes only fresh approved scanner decisions.
 4. It executes only if all gates pass:
    - decision age is within `SCANNER_EXECUTOR_MAX_DECISION_AGE_SEC`
-   - `meta_timing == now` when required
+   - `meta_timing == now` when required, unless controlled wait-probe mode is
+     enabled and the score is above `SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE`
    - score >= `SCANNER_EXECUTOR_MIN_SCORE`
    - execution metadata is complete
    - no active/recently closed duplicate position
@@ -46,6 +47,8 @@ SCANNER_EXECUTOR_POSITION_SIZE_USDC=1.0
 SCANNER_EXECUTOR_MIN_SCORE=0.80
 SCANNER_EXECUTOR_MIN_RAW_EV=0.04
 SCANNER_EXECUTOR_REQUIRE_TIMING_NOW=true
+SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE=false
+SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE=0.79
 SCANNER_EXECUTOR_MAX_OPEN=4
 SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS=12
 ```
