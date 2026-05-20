@@ -47,6 +47,58 @@ def _json(raw: str | None) -> dict:
         return {}
 
 
+def _entries(book, side: str) -> list:
+    rows = getattr(book, side, None)
+    if rows is None and isinstance(book, dict):
+        rows = book.get(side, [])
+    return rows or []
+
+
+def _price_size(row) -> tuple[float, float]:
+    if hasattr(row, "price"):
+        return float(row.price), float(row.size)
+    return float(row["price"]), float(row["size"])
+
+
+def _book_to_snapshot(book, token_id: str) -> dict:
+    bids = sorted((_price_size(x) for x in _entries(book, "bids")), reverse=True)
+    asks = sorted((_price_size(x) for x in _entries(book, "asks")))
+    best_bid = bids[0][0] if bids else None
+    best_ask = asks[0][0] if asks else None
+    return {
+        "token_id": token_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "source": "clob_live_fallback",
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "bid_depth_usdc": sum(p * s for p, s in bids),
+        "ask_depth_usdc": sum(p * s for p, s in asks),
+        "bid_levels": len(bids),
+        "ask_levels": len(asks),
+        "target_lag_seconds": None,
+        "fallback": "live_clob_latest",
+    }
+
+
+class LiveBookFallback:
+    def __init__(self, enabled: bool):
+        self.enabled = enabled
+        self._client = None
+
+    def get(self, token_id: str) -> dict | None:
+        if not self.enabled:
+            return None
+        try:
+            if self._client is None:
+                from py_clob_client_v2.client import ClobClient
+                from py_clob_client_v2.constants import POLYGON
+
+                self._client = ClobClient("https://clob.polymarket.com", chain_id=POLYGON)
+            return _book_to_snapshot(self._client.get_order_book(str(token_id)), str(token_id))
+        except Exception:
+            return None
+
+
 def _eligible_rows(db_path: str, minutes: int, limit: int) -> list[dict]:
     column = HORIZON_COLUMNS[int(minutes)]
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=int(minutes))).isoformat()
@@ -138,12 +190,19 @@ def update_markouts(
     horizons: list[int],
     limit: int,
     max_lag_seconds: float,
+    live_fallback: bool,
 ) -> dict:
     log = TradeLog(db_path=db_path)
-    summary = {"updated": 0, "missing_snapshot": 0, "by_horizon": {}}
+    fallback = LiveBookFallback(live_fallback)
+    summary = {"updated": 0, "missing_snapshot": 0, "live_fallback": 0, "by_horizon": {}}
     for minutes in horizons:
         rows = _eligible_rows(db_path, minutes, limit)
-        horizon_stats = {"eligible": len(rows), "updated": 0, "missing_snapshot": 0}
+        horizon_stats = {
+            "eligible": len(rows),
+            "updated": 0,
+            "missing_snapshot": 0,
+            "live_fallback": 0,
+        }
         for row in rows:
             ts = _parse_ts(row.get("ts"))
             if ts is None:
@@ -156,9 +215,13 @@ def update_markouts(
                 max_lag_seconds=max_lag_seconds,
             )
             if snapshot is None:
-                horizon_stats["missing_snapshot"] += 1
-                summary["missing_snapshot"] += 1
-                continue
+                snapshot = fallback.get(str(row["token_id"]))
+                if snapshot is None:
+                    horizon_stats["missing_snapshot"] += 1
+                    summary["missing_snapshot"] += 1
+                    continue
+                horizon_stats["live_fallback"] += 1
+                summary["live_fallback"] += 1
             payload = _markout_payload(row, snapshot, minutes)
             log.update_decision_journal_markout(int(row["id"]), minutes=minutes, payload=payload)
             horizon_stats["updated"] += 1
@@ -173,6 +236,11 @@ def main() -> int:
     parser.add_argument("--horizons", default="1,3,5,15")
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--max-lag-seconds", type=float, default=90.0)
+    parser.add_argument(
+        "--no-live-fallback",
+        action="store_true",
+        help="do not use current CLOB book when historical snapshots are missing",
+    )
     args = parser.parse_args()
     horizons = [int(x.strip()) for x in args.horizons.split(",") if x.strip()]
     payload = update_markouts(
@@ -180,6 +248,7 @@ def main() -> int:
         horizons=horizons,
         limit=args.limit,
         max_lag_seconds=args.max_lag_seconds,
+        live_fallback=not args.no_live_fallback,
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
