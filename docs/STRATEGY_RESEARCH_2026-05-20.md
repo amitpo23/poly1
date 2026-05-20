@@ -128,6 +128,13 @@ Test:
 - Need on-chain balance as source of truth, ghost-fill recovery, stuck-leg
   handling, and merge/redeem tests.
 
+Status:
+- Implemented first crypto 5m maker-shadow probe:
+  `agents.application.crypto_5m_market_maker_shadow`.
+- It reads `market_universe` + fresh `orderbook_latest`, simulates tiny maker
+  bid/ask quotes on UP/DOWN tokens, and records `SHADOW_QUOTE` rows.
+- It never writes live orders and is registered as a shadow research service.
+
 Risks:
 - One-sided fills create directional exposure.
 - Ghost fills / invalid txhash handling is critical.
@@ -239,3 +246,6 @@ must be external and measurable, not another generic LLM vote.
   and `scalper` does not visibly use the shared `RiskGate`.
 - `equity_options_fair_value` is registered as a shadow research service in
   `deploy/runtime_policy.json`; it is not a live entry agent.
+- `crypto_5m_market_maker_shadow` is registered as a second shadow research
+  service. It models spread capture only; live promotion requires hundreds of
+  shadow rows with positive post-entry markout and no stuck-book pattern.

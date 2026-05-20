@@ -1047,6 +1047,38 @@ services:
     stop_grace_period: 30s
     profiles: ["research", "scanner"]
 
+  crypto-5m-market-maker-shadow:
+    build: .
+    image: poly1:local
+    container_name: poly1-crypto-5m-market-maker-shadow
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: crypto_5m_market_maker_shadow
+    command: ["python", "-m", "agents.application.crypto_5m_market_maker_shadow"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/crypto_5m_market_maker_shadow_heartbeat') < 60\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 256m
+    cpus: "0.20"
+    stop_grace_period: 30s
+    profiles: ["research", "scanner"]
+
   telegram-reporter:
     build: .
     image: poly1:local

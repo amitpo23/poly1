@@ -85,6 +85,12 @@
       "compose_profile": "research",
       "execute_flag": null,
       "writes_live_orders": false
+    },
+    "crypto_5m_market_maker_shadow": {
+      "compose_service": "crypto-5m-market-maker-shadow",
+      "compose_profile": "research",
+      "execute_flag": null,
+      "writes_live_orders": false
     }
   },
   "freeze": {
