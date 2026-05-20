@@ -103,7 +103,7 @@ BASE_ENV = {
     "EXTERNAL_CONVICTION_MIN_CONFIDENCE": "0.65",
     "EXTERNAL_CONVICTION_PROVIDER": "aggregator",
     "EXTERNAL_CONVICTION_ALLOW_WEAK_PROVIDERS": "false",
-    "EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS": "manifold,metaculus,kalshi,technical_signal,clob_whale",
+    "EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS": "manifold,metaculus,kalshi,alpaca_market_data,openbb_market_data,crypto_exchange_tape,technical_signal,clob_whale",
     "PROVIDER_SCORECARD_PATH": "/app/data/provider_scorecard.json",
     "PROVIDER_SCORECARD_MIN_MATCHED": "10",
     "PROVIDER_SCORECARD_MIN_WINRATE": "0.55",
