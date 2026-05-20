@@ -46,6 +46,7 @@ class ScannerExecutorTests(unittest.TestCase):
         price=0.50,
         avg_price=None,
         fillable=1.0,
+        book_quality=None,
         allow_wait_with_high_score=False,
         wait_override_min_score=0.79,
         min_net_ev=0.03,
@@ -55,6 +56,23 @@ class ScannerExecutorTests(unittest.TestCase):
             price,
             fillable,
             price if avg_price is None else avg_price,
+        )
+        pm._fillable_market_buy_with_quality.return_value = (
+            price,
+            fillable,
+            price if avg_price is None else avg_price,
+            book_quality
+            if book_quality is not None
+            else {
+                "book_quality_score": 0.95,
+                "best_bid": price - 0.01,
+                "best_ask": price,
+                "spread_pct": 0.02,
+                "bid_depth_usdc": 50.0,
+                "ask_depth_usdc": 50.0,
+                "fillable_usdc": fillable,
+                "avg_entry_price": price if avg_price is None else avg_price,
+            },
         )
         pm.execute_market_order.return_value = {
             "status": "matched",
@@ -366,6 +384,72 @@ class ScannerExecutorTests(unittest.TestCase):
         self.assertEqual(stats["skipped"], 1)
         pm.execute_market_order.assert_not_called()
         self.assertEqual(self.log.recent_brain_decisions(limit=1)[0]["reason"], "timing_not_now")
+
+    def test_rejects_when_exit_book_is_too_thin(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(estimated_win_probability=0.70),
+            action="BUY",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            book_quality={
+                "book_quality_score": 0.90,
+                "best_bid": 0.49,
+                "best_ask": 0.50,
+                "spread_pct": 0.02,
+                "bid_depth_usdc": 3.0,
+                "ask_depth_usdc": 50.0,
+                "fillable_usdc": 1.0,
+            },
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        row = self.log.recent_brain_decisions(limit=1)[0]
+        self.assertEqual(row["reason"], "book_exit_depth_below_min")
+        self.assertIn('"decision_council_bid_depth_usdc": 3.0', row["features_json"])
+
+    def test_rejects_when_book_quality_score_is_low(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(estimated_win_probability=0.70),
+            action="BUY",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            book_quality={
+                "book_quality_score": 0.40,
+                "best_bid": 0.48,
+                "best_ask": 0.50,
+                "spread_pct": 0.04,
+                "bid_depth_usdc": 50.0,
+                "ask_depth_usdc": 50.0,
+                "fillable_usdc": 1.0,
+            },
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(self.log.recent_brain_decisions(limit=1)[0]["reason"], "book_quality_below_min")
 
 
 if __name__ == "__main__":

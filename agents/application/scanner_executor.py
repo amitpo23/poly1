@@ -236,10 +236,19 @@ class ScannerExecutor:
 
         estimated_prob = _safe_float(features.get("estimated_win_probability"), score)
         try:
-            live_price, fillable_usdc, avg_price = self.polymarket._fillable_market_buy(
-                token_id,
-                self.cfg.position_size_usdc,
-            )
+            if hasattr(self.polymarket, "_fillable_market_buy_with_quality"):
+                live_price, fillable_usdc, avg_price, book_quality = (
+                    self.polymarket._fillable_market_buy_with_quality(
+                        token_id,
+                        self.cfg.position_size_usdc,
+                    )
+                )
+            else:
+                live_price, fillable_usdc, avg_price = self.polymarket._fillable_market_buy(
+                    token_id,
+                    self.cfg.position_size_usdc,
+                )
+                book_quality = {}
         except Exception as exc:
             self._record_reject(row, "orderbook_not_executable", {"error": str(exc)[:240]})
             return "skipped"
@@ -258,6 +267,7 @@ class ScannerExecutor:
                         "avg_entry_price": round(executable_entry_price, 4),
                         "entry_drift": round(entry_drift, 4),
                         "max_entry_drift_pct": self.cfg.max_entry_drift_pct,
+                        **_round_float_payload(book_quality),
                     },
                 )
                 return "skipped"
@@ -268,6 +278,7 @@ class ScannerExecutor:
             live_entry_price=live_price,
             avg_entry_price=executable_entry_price,
             fillable_usdc=fillable_usdc,
+            book_quality=book_quality,
             signal_source=str(row.get("signal_source") or features.get("signal_source") or "market_scanner"),
         )
         estimated_prob = council.internal_probability or estimated_prob
@@ -282,6 +293,7 @@ class ScannerExecutor:
                     "live_entry_price": round(live_price, 4),
                     "avg_entry_price": round(executable_entry_price, 4),
                     "raw_ev": round(raw_ev, 4),
+                    **_round_float_payload(book_quality),
                     **council.features,
                 },
             )
@@ -297,6 +309,7 @@ class ScannerExecutor:
                     "raw_ev": round(raw_ev, 4),
                     "net_ev": round(net_ev, 4),
                     "round_trip_cost_pct": self.cfg.round_trip_cost_pct,
+                    **_round_float_payload(book_quality),
                     **council.features,
                 },
             )
@@ -330,6 +343,7 @@ class ScannerExecutor:
             "raw_ev": round(raw_ev, 4),
             "net_ev": round(net_ev, 4),
             "round_trip_cost_pct": self.cfg.round_trip_cost_pct,
+            **_round_float_payload(book_quality),
             **council.features,
             **sizing.features(),
         }
@@ -631,6 +645,13 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _round_float_payload(payload: dict) -> dict:
+    return {
+        key: round(value, 4) if isinstance(value, float) else value
+        for key, value in (payload or {}).items()
+    }
 
 
 def main() -> int:

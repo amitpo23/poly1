@@ -82,6 +82,23 @@ def _parse_timestamp(value: object) -> Optional[float]:
         return None
 
 
+def _seconds_since(value: object) -> float:
+    ts = _parse_timestamp(value)
+    if ts is None:
+        return float("inf")
+    return max(0.0, time.time() - ts)
+
+
+def _probability(value: object, default: float, *, clamp: bool = True) -> float:
+    try:
+        prob = float(value)
+    except (TypeError, ValueError):
+        return default
+    if clamp:
+        return max(0.0, min(1.0, prob))
+    return prob
+
+
 # ---------------------------------------------------------------------------
 # Output type
 # ---------------------------------------------------------------------------
@@ -611,6 +628,84 @@ class EvidenceRouter:
         c_lb = c_rel.wilson_lower or 0.0
         l_lb = l_rel.wilson_lower or 0.0
         return c_lb >= l_lb - _env_float("EXPERT_CONFLICT_WILSON_MARGIN", 0.03)
+
+
+@dataclass
+class EquityFairValueSignal:
+    direction: Optional[str]
+    probability: float
+    edge: float
+    selected_ticker: Optional[str]
+    selected_outcome: Optional[str]
+    age_seconds: float
+    features: dict = field(default_factory=dict)
+
+
+class EquityFairValueReader:
+    """Reads shadow fair-value signals produced by equity_options_fair_value."""
+
+    TICKER_ALIASES = {
+        "NVDA": ("nvda", "nvidia"),
+        "MSFT": ("msft", "microsoft"),
+        "AAPL": ("aapl", "apple"),
+        "GOOGL": ("googl", "goog", "google", "alphabet"),
+        "AMZN": ("amzn", "amazon"),
+        "META": ("meta", "facebook"),
+        "TSLA": ("tsla", "tesla"),
+    }
+
+    def query(self, *, db_path: str, market_id: str, question: str) -> EquityFairValueSignal:
+        if not db_path or not os.path.isfile(db_path):
+            return EquityFairValueSignal(None, 0.5, 0.0, None, None, float("inf"))
+        max_age = _env_int("EQUITY_FV_MAX_SIGNAL_AGE_SEC", 900)
+        try:
+            with sqlite3.connect(db_path, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    """
+                    SELECT ts, features_json
+                    FROM brain_decisions
+                    WHERE agent = 'equity_options_fair_value'
+                      AND market_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (market_id,),
+                ).fetchone()
+        except Exception as exc:
+            logger.debug("equity_fv_reader: sqlite error: %s", exc)
+            return EquityFairValueSignal(None, 0.5, 0.0, None, None, float("inf"))
+        if row is None:
+            return EquityFairValueSignal(None, 0.5, 0.0, None, None, float("inf"))
+        age = _seconds_since(row["ts"])
+        if age > max_age:
+            return EquityFairValueSignal(None, 0.5, 0.0, None, None, age)
+        try:
+            features = json.loads(row["features_json"] or "{}")
+        except Exception:
+            features = {}
+        ticker = features.get("selected_ticker")
+        fair_prob = _probability(features.get("fair_probability"), 0.5)
+        edge = _probability(features.get("edge"), 0.0, clamp=False)
+        selected_outcome = features.get("selected_outcome")
+        if ticker and self._question_mentions_ticker(question, str(ticker)):
+            return EquityFairValueSignal(
+                "yes",
+                fair_prob,
+                edge,
+                str(ticker),
+                None if selected_outcome is None else str(selected_outcome),
+                age,
+                features,
+            )
+        return EquityFairValueSignal(None, 0.5, edge, str(ticker) if ticker else None, selected_outcome, age, features)
+
+    def _question_mentions_ticker(self, question: str, ticker: str) -> bool:
+        text = str(question or "").lower()
+        for alias in self.TICKER_ALIASES.get(ticker.upper(), (ticker.lower(),)):
+            if alias in text:
+                return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1324,6 +1419,7 @@ class MetaBrain:
         self.velocity_detector = ProbVelocityDetector(window_minutes=velocity_window_min)
         self.whale_reader = WhaleSentimentReader()
         self.news_reader = BreakingNewsReader()
+        self.equity_fv_reader = EquityFairValueReader()
         self.execution_quality = ExecutionQualityAdvisor(db_path=self.db_path)
 
     def synthesize_crypto_straddle(
@@ -1800,7 +1896,28 @@ class MetaBrain:
         except Exception as exc:
             logger.debug("meta_brain: news reader failed: %s", exc)
 
-        # 7. Weighted score. Missing win-rate data gets a neutral prior, so new
+        # 7. Equity/options fair value — liquid external markets can price
+        #    stock/index outcomes faster than Polymarket.  Neutral unless the
+        #    binary question clearly references the same selected ticker.
+        equity_fv = EquityFairValueSignal(None, 0.5, 0.0, None, None, float("inf"))
+        try:
+            equity_fv = self.equity_fv_reader.query(
+                db_path=self.db_path,
+                market_id=market_id,
+                question=question,
+            )
+            features["equity_fv_direction"] = equity_fv.direction
+            features["equity_fv_probability"] = equity_fv.probability
+            features["equity_fv_edge"] = equity_fv.edge
+            features["equity_fv_selected_ticker"] = equity_fv.selected_ticker
+            features["equity_fv_selected_outcome"] = equity_fv.selected_outcome
+            features["equity_fv_age_sec"] = equity_fv.age_seconds
+            if equity_fv.direction:
+                signal_sources.append(f"equity_fv:{equity_fv.selected_ticker}")
+        except Exception as exc:
+            logger.debug("meta_brain: equity fair-value reader failed: %s", exc)
+
+        # 8. Weighted score. Missing win-rate data gets a neutral prior, so new
         # strategies can trade, but proven history improves the final score.
         winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.50)
         min_winrate_samples = _env_int("META_BRAIN_MIN_WINRATE_SAMPLES", 5)
@@ -1841,6 +1958,11 @@ class MetaBrain:
             news_component = 0.5 + news.confidence * 0.5
         elif news.direction == "bearish":
             news_component = 0.5 - news.confidence * 0.5
+        equity_fv_component = 0.5
+        if equity_fv.direction == "yes":
+            equity_fv_component = equity_fv.probability
+        elif equity_fv.direction == "no":
+            equity_fv_component = 1.0 - equity_fv.probability
 
         weights = {
             "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.25),
@@ -1848,6 +1970,7 @@ class MetaBrain:
             "conviction": _env_float("META_BRAIN_WEIGHT_CONVICTION", 0.15),
             "velocity": _env_float("META_BRAIN_WEIGHT_VELOCITY", 0.10),
             "cross_market": _env_float("META_BRAIN_WEIGHT_CROSS_MARKET", 0.10),
+            "equity_fv": _env_float("META_BRAIN_WEIGHT_EQUITY_FV", 0.12),
             "whale": _env_float("META_BRAIN_WEIGHT_WHALE", 0.10),
             "news": _env_float("META_BRAIN_WEIGHT_NEWS", 0.10),
             "liquidity": _env_float("META_BRAIN_WEIGHT_LIQUIDITY", 0.05),
@@ -1858,6 +1981,7 @@ class MetaBrain:
             "conviction": conviction_component,
             "velocity": velocity_component,
             "cross_market": cross_market_component,
+            "equity_fv": equity_fv_component,
             "whale": whale_component,
             "news": news_component,
             "liquidity": liquidity_component,
@@ -1973,6 +2097,28 @@ class MetaBrain:
                     confidence=float(news.confidence),
                     reliability=news_reliability if news_reliability.sample_size else None,
                     raw={"sources": news.sources},
+                )
+            )
+        if equity_fv.direction in ("yes", "no"):
+            equity_rel = self.source_reliability.best(
+                self.db_path,
+                ["equity_options_fair_value"],
+                hours=reliability_hours,
+            )
+            claims.append(
+                EvidenceClaim(
+                    source_id="equity_options_fair_value",
+                    source_type="equity_fv",
+                    direction=equity_fv.direction,
+                    probability=equity_fv.probability,
+                    confidence=max(0.0, min(1.0, abs(equity_fv.edge) * 4.0)),
+                    reliability=equity_rel if equity_rel.sample_size else None,
+                    freshness_sec=equity_fv.age_seconds,
+                    raw={
+                        "selected_ticker": equity_fv.selected_ticker,
+                        "selected_outcome": equity_fv.selected_outcome,
+                        "edge": equity_fv.edge,
+                    },
                 )
             )
         route = self.evidence_router.route(claims)

@@ -19,6 +19,7 @@ from agents.application.meta_brain import (
     WinRateAdvisor,
     WinRateStats,
     BreakingNewsReader,
+    EquityFairValueSignal,
     NewsSignal,
     WhaleSentimentSignal,
 )
@@ -520,6 +521,7 @@ class TestMetaBrain(unittest.TestCase):
         # Stub the news_reader so tests never make live HTTP requests.
         from agents.application.meta_brain import NewsSignal
         mb.news_reader.query = lambda question: NewsSignal(None, 0.0, 0, [], [])
+        mb.equity_fv_reader.query = lambda **kwargs: EquityFairValueSignal(None, 0.5, 0.0, None, None, float("inf"))
         return mb
 
     def test_blocked_by_brain_gate(self):
@@ -715,6 +717,41 @@ class TestMetaBrain(unittest.TestCase):
         self.assertEqual(decision.features["evidence_route"]["mode"], "solo")
         self.assertEqual(decision.features["evidence_route"]["leader"], "wallet:external")
         self.assertEqual(decision.features["internal_prob_source"], "expert_solo:wallet:external")
+
+    @patch.dict(os.environ, {
+        "META_BRAIN_WEIGHT_BRAIN": "0.0",
+        "META_BRAIN_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_WEIGHT_CROSS_MARKET": "0.0",
+        "META_BRAIN_WEIGHT_EQUITY_FV": "1.0",
+        "META_BRAIN_WEIGHT_WHALE": "0.0",
+        "META_BRAIN_WEIGHT_NEWS": "0.0",
+        "META_BRAIN_WEIGHT_LIQUIDITY": "0.0",
+        "META_BRAIN_MIN_EDGE_PCT": "0.0",
+        "META_BRAIN_MIN_RAW_EV": "0.0",
+    })
+    def test_equity_fair_value_component_can_drive_meta_score(self):
+        mb = self._make_meta_brain(approved=True, score=0.55)
+        mb.equity_fv_reader.query = lambda **kwargs: EquityFairValueSignal(
+            direction="yes",
+            probability=0.74,
+            edge=0.18,
+            selected_ticker="NVDA",
+            selected_outcome="Nvidia",
+            age_seconds=20.0,
+        )
+
+        decision = mb.synthesize(
+            market_id="m1",
+            question="Will Nvidia be the largest company by market cap?",
+            poly_prob=0.50,
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertAlmostEqual(decision.features["weighted_components"]["equity_fv"], 0.74)
+        self.assertEqual(decision.features["equity_fv_selected_ticker"], "NVDA")
+        self.assertIn("equity_fv:NVDA", decision.signal_sources)
 
     def test_summary_is_nonempty(self):
         mb = self._make_meta_brain(approved=True, score=0.65)

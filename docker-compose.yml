@@ -1022,6 +1022,31 @@ services:
     stop_grace_period: 30s
     profiles: ["scanner", "orderbook"]
 
+  equity-options-fair-value:
+    build: .
+    image: poly1:local
+    container_name: poly1-equity-options-fair-value
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: equity_options_fair_value
+    command: ["sh", "-c", "while true; do python -m agents.application.equity_options_fair_value --once; sleep $${EQUITY_FV_POLL_SEC:-300}; done"]
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["research", "scanner"]
+
   telegram-reporter:
     build: .
     image: poly1:local

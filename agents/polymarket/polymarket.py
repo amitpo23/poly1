@@ -79,6 +79,49 @@ def _response_value(resp, *names):
     return None
 
 
+def _book_quality_features(
+    *,
+    best_bid: float,
+    best_ask: float,
+    spread_pct: Optional[float],
+    bid_depth_usdc: float,
+    ask_depth_usdc: float,
+    fillable_usdc: float,
+    avg_entry_price: float,
+    worst_ask: float,
+    min_bid_depth_usdc: float,
+    max_spread_pct: float,
+) -> dict:
+    spread_score = 0.0
+    if spread_pct is not None and max_spread_pct > 0:
+        spread_score = max(0.0, min(1.0, 1.0 - (spread_pct / max_spread_pct)))
+    bid_depth_score = 1.0 if min_bid_depth_usdc <= 0 else max(
+        0.0,
+        min(1.0, bid_depth_usdc / min_bid_depth_usdc),
+    )
+    fill_score = max(0.0, min(1.0, fillable_usdc / max(MIN_MARKET_ORDER_USDC, 1e-9)))
+    ask_depth_score = max(0.0, min(1.0, ask_depth_usdc / max(MIN_MARKET_ORDER_USDC * 2.0, 1e-9)))
+    score = round(
+        0.40 * spread_score
+        + 0.35 * bid_depth_score
+        + 0.15 * fill_score
+        + 0.10 * ask_depth_score,
+        4,
+    )
+    return {
+        "book_quality_score": score,
+        "book_quality_reason": "book_quality_ok",
+        "best_bid": round(float(best_bid), 6),
+        "best_ask": round(float(best_ask), 6),
+        "spread_pct": None if spread_pct is None else round(float(spread_pct), 6),
+        "bid_depth_usdc": round(float(bid_depth_usdc), 4),
+        "ask_depth_usdc": round(float(ask_depth_usdc), 4),
+        "fillable_usdc": round(float(fillable_usdc), 4),
+        "avg_entry_price": round(float(avg_entry_price), 6),
+        "worst_ask": round(float(worst_ask), 6),
+    }
+
+
 def _normalize_order_response(resp) -> dict:
     order_id = _response_value(
         resp,
@@ -689,6 +732,59 @@ class Polymarket:
         )
 
         book = self.client.get_order_book(token_id)
+        limit_price, fillable_usdc, avg_price, _quality = self._fillable_market_buy_from_book(
+            book,
+            token_id,
+            amount_usdc,
+            entry_floor=entry_floor,
+            bid_depth_floor=bid_depth_floor,
+            spread_ceiling=spread_ceiling,
+        )
+        return limit_price, fillable_usdc, avg_price
+
+    def _fillable_market_buy_with_quality(
+        self,
+        token_id: str,
+        amount_usdc: float,
+        *,
+        min_entry_price: Optional[float] = None,
+        min_bid_depth_usdc: Optional[float] = None,
+        max_spread_pct: Optional[float] = None,
+    ) -> tuple[float, float, float, dict]:
+        """Return FOK buy parameters plus order-book diagnostics.
+
+        This is the scanner_executor path: the brain can be directionally right
+        and still lose money if the bid side is too thin to exit.  The returned
+        quality dict is fed into DecisionCouncil before any live order.
+        """
+        entry_floor = MIN_ENTRY_PRICE if min_entry_price is None else min_entry_price
+        bid_depth_floor = (
+            MIN_BID_DEPTH_USDC if min_bid_depth_usdc is None else min_bid_depth_usdc
+        )
+        spread_ceiling = (
+            MAX_ENTRY_SPREAD_PCT if max_spread_pct is None else max_spread_pct
+        )
+
+        book = self.client.get_order_book(token_id)
+        return self._fillable_market_buy_from_book(
+            book,
+            token_id,
+            amount_usdc,
+            entry_floor=entry_floor,
+            bid_depth_floor=bid_depth_floor,
+            spread_ceiling=spread_ceiling,
+        )
+
+    def _fillable_market_buy_from_book(
+        self,
+        book,
+        token_id: str,
+        amount_usdc: float,
+        *,
+        entry_floor: float,
+        bid_depth_floor: float,
+        spread_ceiling: float,
+    ) -> tuple[float, float, float, dict]:
         asks = sorted(
             (self._entry_price_size(a) for a in self._book_entries(book, "asks")),
             key=lambda item: item[0],
@@ -755,7 +851,22 @@ class Polymarket:
             tick_size = float(book.tick_size)
         limit_price = min(1.0 - tick_size, (worst_price or asks[0][0]) + tick_size)
         avg_price = spend / tokens if tokens else limit_price
-        return limit_price, min(amount_usdc, spend), avg_price
+        fillable_usdc = min(amount_usdc, spend)
+        spread_pct = (best_ask - best_bid) / best_ask if best_ask > 0 else None
+        ask_depth_usdc = sum(p * s for p, s in asks)
+        quality = _book_quality_features(
+            best_bid=best_bid,
+            best_ask=best_ask,
+            spread_pct=spread_pct,
+            bid_depth_usdc=total_bid_usdc,
+            ask_depth_usdc=ask_depth_usdc,
+            fillable_usdc=fillable_usdc,
+            avg_entry_price=avg_price,
+            worst_ask=worst_price or best_ask,
+            min_bid_depth_usdc=bid_depth_floor,
+            max_spread_pct=spread_ceiling,
+        )
+        return limit_price, fillable_usdc, avg_price, quality
 
     def execute_market_order(
         self, market, recommendation: TradeRecommendation, order_type=None

@@ -66,6 +66,15 @@ Test:
 - Record fair probability, Polymarket executable ask, net EV, and later
   5/15/60 minute PnL.
 
+Status:
+- Implemented first shadow module: `agents.application.equity_options_fair_value`.
+- Implemented first model: Monte-Carlo lognormal "largest company by market
+  cap by date" fair value, using stock price inputs and share-count/vol
+  assumptions.
+- Integrated MetaBrain reader: a fresh matching equity fair-value signal can
+  contribute as `equity_fv` and appear in signal provenance, but it does not
+  bypass DecisionCouncil or execute directly.
+
 Risks:
 - Model overconfidence.  Bivariate/lognormal assumptions must be calibrated.
 - Needs corporate-action and market-cap share-count correctness.
@@ -91,6 +100,11 @@ Test:
 - Add `book_quality_score`: top-of-book depth, spread, bid decay, ask decay,
   quote age, imbalance, recent drift, and exitability.
 - Require clean exit bid before any live entry.
+
+Status:
+- Implemented scanner path book diagnostics from the live CLOB book.
+- DecisionCouncil now receives `book_quality_score`, bid depth, spread, and
+  fillability and rejects no-exit or low-quality books before sizing/execution.
 
 Risks:
 - Public book feed can mislead; prefer CLOB plus on-chain fill reconciliation.
@@ -215,3 +229,13 @@ The 2026-05-20 shadow probe showed that execution plumbing works, but `meta_brai
 consensus overestimated probabilities.  Several shadow entries immediately
 looked like stop-loss or no-exit situations.  Therefore, the next edge source
 must be external and measurable, not another generic LLM vote.
+
+## Implementation Notes - 2026-05-20
+
+- Added static agent strategy audit:
+  `docs/AGENT_STRATEGY_AUDIT_2026-05-20.md`.
+- The audit currently flags two follow-up issues worth addressing before broad
+  live mode: `trader` does not visibly write `brain_decisions` on its own path,
+  and `scalper` does not visibly use the shared `RiskGate`.
+- `equity_options_fair_value` is registered as a shadow research service in
+  `deploy/runtime_policy.json`; it is not a live entry agent.

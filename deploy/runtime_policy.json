@@ -79,6 +79,14 @@
       "compose_profile": "monitoring"
     }
   },
+  "shadow_research_services": {
+    "equity_options_fair_value": {
+      "compose_service": "equity-options-fair-value",
+      "compose_profile": "research",
+      "execute_flag": null,
+      "writes_live_orders": false
+    }
+  },
   "freeze": {
     "allowed_live_agents": [],
     "requires_halt": true
