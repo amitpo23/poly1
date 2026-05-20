@@ -889,6 +889,14 @@ class TestMetaBrain(unittest.TestCase):
     })
     def test_raw_ev_gate_rejects_expensive_thin_edge(self):
         mb = self._make_meta_brain(approved=True, score=0.84)
+        mb.equity_fv_reader.query = lambda **kwargs: EquityFairValueSignal(
+            direction="yes",
+            probability=0.84,
+            edge=0.16,
+            selected_ticker="SPY",
+            selected_outcome="Yes",
+            age_seconds=5.0,
+        )
         decision = mb.synthesize(
             market_id="m1",
             question="Expensive edge?",
@@ -906,6 +914,14 @@ class TestMetaBrain(unittest.TestCase):
     })
     def test_execution_quality_blocks_when_token_book_missing(self):
         mb = self._make_meta_brain(approved=True, score=0.84)
+        mb.equity_fv_reader.query = lambda **kwargs: EquityFairValueSignal(
+            direction="yes",
+            probability=0.84,
+            edge=0.34,
+            selected_ticker="SPY",
+            selected_outcome="Yes",
+            age_seconds=5.0,
+        )
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         self.addCleanup(lambda: os.path.exists(db_path) and os.unlink(db_path))

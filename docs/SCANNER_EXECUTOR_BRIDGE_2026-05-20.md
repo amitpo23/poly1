@@ -29,6 +29,8 @@ as execution candidates.
    - `meta_timing == now` when required, unless controlled wait-probe mode is
      enabled and the score is above `SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE`
    - score >= `SCANNER_EXECUTOR_MIN_SCORE`
+   - `estimated_win_probability_calibrated=true`; MetaBrain score alone is
+     rank-only and cannot be used as EV-bearing probability
    - execution metadata is complete
    - no active/recently closed duplicate position
    - live order book is fillable and exitable
@@ -56,6 +58,7 @@ SCANNER_EXECUTOR_MIN_RAW_EV=0.04
 SCANNER_EXECUTOR_MIN_NET_EV=0.03
 SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT=0.04
 SCANNER_EXECUTOR_READ_ORDERBOOK_IN_SHADOW=true
+SCANNER_EXECUTOR_REQUIRE_CALIBRATED_PROBABILITY=true
 DECISION_COUNCIL_MIN_NET_EV=0.04
 DECISION_COUNCIL_EXPERT_MIN_NET_EV=0.025
 DECISION_COUNCIL_THIN_MIN_NET_EV=0.06
@@ -67,6 +70,9 @@ SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE=false
 SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE=0.79
 SCANNER_EXECUTOR_MAX_OPEN=4
 SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS=12
+EXPERT_EXTERNAL_SOLO_SOURCE_TYPES=cross_market,equity_fv,alpaca_market_data,crypto_exchange_tape
+EXPERT_EXTERNAL_SOLO_MIN_CONFIDENCE=0.60
+EXPERT_EXTERNAL_SOLO_MAX_AGE_SEC=300
 ```
 
 `scanner_executor` is registered in `deploy/runtime_policy.json`, so

@@ -23,6 +23,8 @@ def _features(**overrides):
         "selected_outcome": "Up",
         "selected_entry_price": 0.50,
         "estimated_win_probability": 0.58,
+        "estimated_win_probability_calibrated": True,
+        "estimated_win_probability_source": "test_calibrated_source",
         "scanner_raw_ev": 0.16,
         "meta_timing": "now",
     }
@@ -92,6 +94,7 @@ class ScannerExecutorTests(unittest.TestCase):
             round_trip_cost_pct=0.04,
             max_entry_drift_pct=0.04,
             require_timing_now=True,
+            require_calibrated_probability=True,
             allow_wait_with_high_score=allow_wait_with_high_score,
             wait_override_min_score=wait_override_min_score,
         )
@@ -128,6 +131,34 @@ class ScannerExecutorTests(unittest.TestCase):
         decisions = self.log.recent_brain_decisions(limit=2)
         self.assertEqual(decisions[0]["agent"], "scanner_executor")
         self.assertEqual(decisions[0]["approved"], 1)
+
+    def test_rejects_rank_only_probability(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(
+                estimated_win_probability=0.86,
+                estimated_win_probability_calibrated=False,
+                estimated_win_probability_source="rank_only",
+            ),
+            action="BUY",
+        )
+        engine, pm = self._engine(execute=True)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(
+            self.log.recent_brain_decisions(limit=1)[0]["reason"],
+            "probability_not_calibrated",
+        )
 
     def test_rejects_missing_execution_metadata(self):
         self.log.insert_brain_decision(

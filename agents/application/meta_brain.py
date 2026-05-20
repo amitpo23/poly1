@@ -73,6 +73,11 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _env_set(name: str, default: str) -> set[str]:
+    raw = os.getenv(name, default)
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
 def _parse_timestamp(value: object) -> Optional[float]:
     """Parse compact or ISO timestamps into epoch seconds."""
     if value is None:
@@ -580,6 +585,8 @@ class EvidenceRouter:
         min_prob = _env_float("EXPERT_SOLO_MIN_PROB", 0.65)
         if claim.source_type == "wallet" and self._has_external_wallet_proof(claim):
             return claim.probability >= min_prob
+        if self._is_external_solo_eligible(claim, min_prob=min_prob):
+            return True
         min_wr = _env_float("EXPERT_SOLO_MIN_WINRATE", 0.65)
         min_wilson = _env_float("EXPERT_SOLO_MIN_WILSON", 0.58)
         min_samples = _env_int("EXPERT_SOLO_MIN_SAMPLES", 30)
@@ -595,6 +602,44 @@ class EvidenceRouter:
             return False
         if rel.wilson_lower is None or rel.wilson_lower < min_wilson:
             return False
+        return True
+
+    def _is_external_solo_eligible(self, claim: EvidenceClaim, *, min_prob: float) -> bool:
+        """Allow strong, fresh external pricing/tape sources to lead alone.
+
+        Local win-rate is ideal, but some sources are themselves market data:
+        cross-venue prices, options fair value, Alpaca tape, and crypto tape.
+        Treat them as calibrated only when they explicitly provide direction,
+        probability, confidence, and freshness/liquidity conditions.
+        """
+        source_types = _env_set(
+            "EXPERT_EXTERNAL_SOLO_SOURCE_TYPES",
+            "cross_market,equity_fv,alpaca_market_data,crypto_exchange_tape",
+        )
+        if claim.source_type not in source_types:
+            return False
+        if claim.probability < min_prob:
+            return False
+        min_conf = _env_float("EXPERT_EXTERNAL_SOLO_MIN_CONFIDENCE", 0.60)
+        if claim.confidence < min_conf:
+            return False
+        max_age = _env_int("EXPERT_EXTERNAL_SOLO_MAX_AGE_SEC", 300)
+        if claim.freshness_sec is not None and claim.freshness_sec > max_age:
+            return False
+        raw = claim.raw or {}
+        if claim.source_type == "equity_fv":
+            return abs(float(raw.get("edge") or 0.0)) >= _env_float(
+                "EXPERT_EXTERNAL_SOLO_MIN_EQUITY_EDGE",
+                0.08,
+            )
+        if claim.source_type in {"alpaca_market_data", "crypto_exchange_tape"}:
+            spread = raw.get("spread_pct")
+            if spread is not None:
+                try:
+                    if float(spread) > _env_float("EXPERT_EXTERNAL_SOLO_MAX_SPREAD_PCT", 0.003):
+                        return False
+                except (TypeError, ValueError):
+                    return False
         return True
 
     def _has_external_wallet_proof(self, claim: EvidenceClaim) -> bool:
@@ -2456,24 +2501,46 @@ class MetaBrain:
             # probability, not a composite quality score.  Fall back to the
             # composite score only when no cross-market data is available.
             cross_prob = features.get("cross_market_prob")
+            probability_calibrated = False
             if route.mode == "solo" and route.probability is not None:
                 internal_probability = max(0.0, min(1.0, float(route.probability)))
                 internal_prob_source = route.reason
+                probability_calibrated = True
             elif cross_prob is not None:
                 internal_probability = max(0.0, min(1.0, float(cross_prob)))
                 internal_prob_source = "cross_market"
+                probability_calibrated = True
             else:
                 internal_probability = score
-                internal_prob_source = "meta_score"
+                internal_prob_source = "meta_score_rank_only"
             edge = internal_probability - market_price
             raw_ev = binary_raw_ev(internal_probability, market_price)
             features["internal_probability"] = round(internal_probability, 4)
             features["internal_prob_source"] = internal_prob_source
+            features["internal_probability_calibrated"] = probability_calibrated
             features["market_entry_price"] = round(market_price, 4)
             features["edge"] = round(edge, 4)
             features["raw_ev"] = round(raw_ev, 4)
             features["min_edge_pct"] = min_edge
             features["min_raw_ev"] = min_raw_ev
+            if not probability_calibrated:
+                return MetaDecision(
+                    approved=False,
+                    reason="rank_only_no_calibrated_probability",
+                    score=score,
+                    entry_timing="skip",
+                    winrate_estimate=win_stats.winrate,
+                    winrate_sample_size=win_stats.total_with_outcome,
+                    signal_sources=signal_sources,
+                    cross_market_prob=features.get("cross_market_prob"),
+                    cross_market_divergence=features.get("cross_market_divergence"),
+                    velocity_direction=velocity.direction,
+                    velocity_pct_per_hour=velocity.pct_per_hour,
+                    conviction_direction=conviction.direction,
+                    conviction_confidence=conviction.confidence,
+                    conviction_sources=conviction.sources,
+                    features=features,
+                )
             if edge < min_edge:
                 return MetaDecision(
                     approved=False,

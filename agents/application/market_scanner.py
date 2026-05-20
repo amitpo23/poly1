@@ -868,14 +868,28 @@ def _execution_metadata_for_market(
 
     route_probability = evidence_route.get("probability")
     internal_probability = meta_features.get("internal_probability")
+    internal_probability_calibrated = bool(
+        meta_features.get("internal_probability_calibrated")
+    )
+    estimated_source = "rank_only"
+    calibrated = False
     if route_probability is not None:
         estimated = _safe_float(route_probability, meta_score)
+        estimated_source = str(evidence_route.get("reason") or "evidence_route")
+        calibrated = True
     elif direction == "no" and meta_features.get("cross_market_prob") is not None:
         estimated = 1.0 - _safe_float(meta_features.get("cross_market_prob"), 0.5)
-    elif internal_probability is not None:
+        estimated_source = "cross_market"
+        calibrated = True
+    elif internal_probability is not None and internal_probability_calibrated:
         estimated = _safe_float(internal_probability, meta_score)
+        estimated_source = str(meta_features.get("internal_prob_source") or "internal_probability")
+        calibrated = True
     else:
-        estimated = float(meta_score)
+        # Meta score is a ranking/quality score, not a calibrated probability.
+        # Keep the scanner output auditable, but do not let executor treat it
+        # as EV-bearing without an external calibrated probability source.
+        estimated = 0.5
     estimated = max(0.0, min(1.0, estimated))
 
     entry = max(1e-9, float(selected_entry_price))
@@ -889,6 +903,8 @@ def _execution_metadata_for_market(
         "selected_outcome": selected_outcome,
         "selected_entry_price": round(entry, 4),
         "estimated_win_probability": round(estimated, 4),
+        "estimated_win_probability_calibrated": calibrated,
+        "estimated_win_probability_source": estimated_source,
         "scanner_raw_ev": round(raw_ev, 4),
     }
 

@@ -73,6 +73,7 @@ class ScannerExecutorConfig:
     maker_tick_size: float = 0.01
     maker_min_profit_cents: float = 0.01
     require_timing_now: bool = True
+    require_calibrated_probability: bool = True
     allow_wait_with_high_score: bool = False
     wait_override_min_score: float = 0.79
     max_open_positions: int = 4
@@ -104,6 +105,10 @@ class ScannerExecutorConfig:
             maker_tick_size=_env_float("SCANNER_EXECUTOR_MAKER_TICK_SIZE", 0.01),
             maker_min_profit_cents=_env_float("SCANNER_EXECUTOR_MAKER_MIN_PROFIT_CENTS", 0.01),
             require_timing_now=_env_bool("SCANNER_EXECUTOR_REQUIRE_TIMING_NOW", True),
+            require_calibrated_probability=_env_bool(
+                "SCANNER_EXECUTOR_REQUIRE_CALIBRATED_PROBABILITY",
+                True,
+            ),
             allow_wait_with_high_score=_env_bool(
                 "SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE",
                 False,
@@ -222,6 +227,22 @@ class ScannerExecutor:
                 return "skipped"
         if score < self.cfg.min_score:
             self._record_reject(row, "score_below_executor_min", {"score": score})
+            return "skipped"
+        if (
+            self.cfg.require_calibrated_probability
+            and not bool(features.get("estimated_win_probability_calibrated"))
+        ):
+            self._record_reject(
+                row,
+                "probability_not_calibrated",
+                {
+                    "estimated_win_probability": features.get("estimated_win_probability"),
+                    "estimated_win_probability_source": features.get(
+                        "estimated_win_probability_source",
+                        "missing",
+                    ),
+                },
+            )
             return "skipped"
         if side not in {"BUY", "SELL"} or not token_id:
             self._record_reject(row, "missing_execution_metadata", {"side": side, "token_id": bool(token_id)})
