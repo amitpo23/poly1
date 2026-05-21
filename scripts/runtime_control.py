@@ -487,6 +487,9 @@ def live_hour(args: argparse.Namespace) -> int:
     duration_minutes = int(args.minutes)
     if duration_minutes <= 0 or duration_minutes > 60:
         raise SystemExit("--minutes must be between 1 and 60")
+    max_hold_minutes = int(args.max_hold_minutes)
+    if max_hold_minutes <= 0 or max_hold_minutes > 360:
+        raise SystemExit("--max-hold-minutes must be between 1 and 360")
     budget = float(args.budget)
     if budget <= 0:
         raise SystemExit("--budget must be positive")
@@ -505,6 +508,8 @@ def live_hour(args: argparse.Namespace) -> int:
     env["RUNTIME_MODE"] = "live"
     env["EXECUTE"] = "true"
     env["MAX_OPEN_POSITIONS"] = str(int(args.max_open))
+    env["POLY1_MAX_HOLD_SECONDS"] = str(max_hold_minutes * 60)
+    env["MAINTAIN_MAX_HOLD_HOURS"] = f"{max_hold_minutes / 60:.4f}"
     env["STARTING_BALANCE_USDC"] = f"{wallet_balance:.4f}"
     # RiskGate subtracts strategy reserves before comparing to MIN_USDC_FLOOR.
     # To allow exactly `budget` of real spending while reserves sum to `budget`,
@@ -546,6 +551,7 @@ def live_hour(args: argparse.Namespace) -> int:
         "budget_usdc": budget,
         "wallet_balance_at_start_usdc": wallet_balance,
         "equity_at_start_usdc": equity_balance,
+        "max_hold_minutes": max_hold_minutes,
         "max_open_positions": int(args.max_open),
         "expires_at": expires_at.isoformat(),
         "requires_halt": False,
@@ -618,6 +624,7 @@ def main() -> int:
     p_live_hour.add_argument("--wallet-balance", type=float, required=True)
     p_live_hour.add_argument("--equity-balance", type=float, default=None)
     p_live_hour.add_argument("--minutes", type=int, default=60)
+    p_live_hour.add_argument("--max-hold-minutes", type=int, default=60)
     p_live_hour.add_argument("--max-open", type=int, default=100)
     p_live_hour.add_argument("--agents", default="")
     p_live_hour.add_argument("--max-position-fraction", default="0.03")

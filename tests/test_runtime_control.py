@@ -46,6 +46,7 @@ class RuntimeControlTests(unittest.TestCase):
             args = argparse.Namespace(
                 agents="near_resolution",
                 minutes=60,
+                max_hold_minutes=45,
                 budget=15.0,
                 wallet_balance=34.2452,
                 equity_balance=35.125,
@@ -77,9 +78,12 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertIn('MAINTAIN_MIN_EXIT_NOTIONAL_USDC="0.50"', env_text)
             self.assertIn('MAINTAIN_MIN_TAKE_PROFIT_NET_PCT="0.015"', env_text)
             self.assertIn('MAINTAIN_MIN_TAKE_PROFIT_USDC="0.01"', env_text)
+            self.assertIn('POLY1_MAX_HOLD_SECONDS="2700"', env_text)
+            self.assertIn('MAINTAIN_MAX_HOLD_HOURS="0.7500"', env_text)
             self.assertEqual(control["budget_usdc"], 15.0)
             self.assertEqual(control["wallet_balance_at_start_usdc"], 34.2452)
             self.assertEqual(control["equity_at_start_usdc"], 35.125)
+            self.assertEqual(control["max_hold_minutes"], 45)
             self.assertFalse(halt.exists())
 
     def test_shadow_probe_allows_riskgate_without_live_execute_flags(self):
