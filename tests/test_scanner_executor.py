@@ -52,6 +52,8 @@ class ScannerExecutorTests(unittest.TestCase):
         book_quality=None,
         allow_wait_with_high_score=False,
         wait_override_min_score=0.79,
+        min_score=0.55,
+        min_proven_calibrated_score=0.54,
         min_net_ev=0.03,
         require_promotable_strategy=False,
     ):
@@ -90,7 +92,8 @@ class ScannerExecutorTests(unittest.TestCase):
             poll_seconds=1,
             max_decision_age_seconds=180,
             position_size_usdc=1.0,
-            min_score=0.55,
+            min_score=min_score,
+            min_proven_calibrated_score=min_proven_calibrated_score,
             min_raw_ev=0.04,
             min_net_ev=min_net_ev,
             round_trip_cost_pct=0.04,
@@ -541,6 +544,36 @@ class ScannerExecutorTests(unittest.TestCase):
         row = self.log.recent_brain_decisions(limit=1)[0]
         self.assertEqual(row["signal_source"], "meta_brain,tavily")
         self.assertIn('"scanner_signal_source": "meta_brain,tavily"', row["features_json"])
+
+    def test_proven_calibrated_source_uses_dedicated_score_floor(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="opportunity_factory_alphainsider_tape prob=0.660",
+            score=0.66,
+            market_type="crypto_updown",
+            features=_features(
+                estimated_win_probability=0.66,
+                estimated_win_probability_source="alphainsider_proven_family_plus_crypto_tape",
+                signal_source="opportunity_factory,alphainsider_proven,crypto_tape",
+            ),
+            action="BUY",
+            signal_source="opportunity_factory,alphainsider_proven,crypto_tape",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            min_score=0.79,
+            min_proven_calibrated_score=0.54,
+            min_net_ev=0.005,
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["executed"], 1)
+        pm.execute_market_order.assert_called_once()
 
     def test_wait_timing_still_rejects_when_override_score_is_low(self):
         self.log.insert_brain_decision(

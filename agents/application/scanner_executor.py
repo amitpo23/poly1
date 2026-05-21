@@ -64,6 +64,7 @@ class ScannerExecutorConfig:
     position_size_usdc: float = 1.0
     reserve_usdc: float = 0.0
     min_score: float = 0.80
+    min_proven_calibrated_score: float = 0.54
     min_raw_ev: float = 0.04
     min_net_ev: float = 0.03
     round_trip_cost_pct: float = 0.04
@@ -93,6 +94,10 @@ class ScannerExecutorConfig:
             position_size_usdc=_env_float("SCANNER_EXECUTOR_POSITION_SIZE_USDC", 1.0),
             reserve_usdc=_env_float("SCANNER_EXECUTOR_RESERVE_USDC", 0.0),
             min_score=_env_float("SCANNER_EXECUTOR_MIN_SCORE", 0.80),
+            min_proven_calibrated_score=_env_float(
+                "SCANNER_EXECUTOR_MIN_PROVEN_CALIBRATED_SCORE",
+                0.54,
+            ),
             min_raw_ev=_env_float("SCANNER_EXECUTOR_MIN_RAW_EV", 0.04),
             min_net_ev=_env_float("SCANNER_EXECUTOR_MIN_NET_EV", 0.03),
             round_trip_cost_pct=_env_float("SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT", 0.04),
@@ -240,8 +245,13 @@ class ScannerExecutor:
             if not timing_override:
                 self._record_reject(row, "timing_not_now", {"meta_timing": meta_timing})
                 return "skipped"
-        if score < self.cfg.min_score:
-            self._record_reject(row, "score_below_executor_min", {"score": score})
+        min_score = self._min_score_for_decision(row, features)
+        if score < min_score:
+            self._record_reject(
+                row,
+                "score_below_executor_min",
+                {"score": score, "min_score": min_score},
+            )
             return "skipped"
         if (
             self.cfg.require_calibrated_probability
@@ -575,6 +585,23 @@ class ScannerExecutor:
             "outcome_prices": repr([str(x) for x in prices[:2]]),
         }
         return (_DocMarket(metadata), 0.0)
+
+    def _min_score_for_decision(self, row: dict, features: dict) -> float:
+        if not bool(features.get("estimated_win_probability_calibrated")):
+            return self.cfg.min_score
+        source = str(features.get("estimated_win_probability_source") or "")
+        signal_source = str(row.get("signal_source") or features.get("signal_source") or "")
+        proven_sources = (
+            "alphainsider_proven_family_plus_crypto_tape",
+            "wallet_external_winrate",
+        )
+        proven_markers = (
+            "alphainsider_proven",
+            "proven_wallet",
+        )
+        if source in proven_sources or any(marker in signal_source for marker in proven_markers):
+            return min(self.cfg.min_score, self.cfg.min_proven_calibrated_score)
+        return self.cfg.min_score
 
     def _record_reject(self, row: dict, reason: str, features: dict) -> None:
         row_features = _parse_features(row.get("features_json"))

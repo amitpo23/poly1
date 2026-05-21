@@ -192,6 +192,7 @@ class OpportunityFactoryTests(unittest.TestCase):
             features["estimated_win_probability_source"],
             "alphainsider_proven_family_plus_crypto_tape",
         )
+        self.assertEqual(features["meta_timing"], "now")
         self.assertEqual(features["selected_outcome"], "Up")
         self.assertEqual(rows[0]["signal_source"], "opportunity_factory,alphainsider_proven,crypto_tape")
 
