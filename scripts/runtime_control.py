@@ -109,6 +109,12 @@ BASE_ENV = {
     "PROVIDER_SCORECARD_MIN_WINRATE": "0.55",
     "STRATEGY_SCORECARD_PATH": "/app/data/strategy_scorecard.json",
     "SCALP_DISCOVER_EVERY_SEC": "1",
+    "SCANNER_POLL_SEC": "60",
+    "SCANNER_MARKET_LIMIT": "300",
+    "SCANNER_MAX_CANDIDATES": "60",
+    "SCANNER_MIN_LIQUIDITY_USDC": "1000",
+    "SCANNER_MIN_VOLUME_USDC": "500",
+    "SCANNER_TARGET_TRADE_DECISIONS": "4",
     "MAX_AGENT_ALLOCATION_FRACTION": "0.50",
     "META_BRAIN_MIN_WEIGHTED_SCORE": "0.50",
     "META_BRAIN_MIN_EDGE_PCT": "0.02",
@@ -527,6 +533,15 @@ def live_hour(args: argparse.Namespace) -> int:
         # Controlled live-test mode: loosen execution quality enough to measure
         # the live pipeline, while keeping calibrated probability, RiskGate,
         # max-open, drawdown guard, position manager, and auto-freeze intact.
+        # Also widen scanner throughput so duplicate-open protection does not
+        # leave the executor stuck replaying the same already-open markets.
+        env["SCANNER_MARKET_LIMIT"] = "500"
+        env["SCANNER_MAX_CANDIDATES"] = "160"
+        env["SCANNER_TARGET_TRADE_DECISIONS"] = "12"
+        env["SCANNER_EXECUTOR_BATCH_LIMIT"] = "200"
+        env["MARKET_UNIVERSE_TREND_LIMIT"] = "250"
+        env["ORDERBOOK_MONITOR_TOKEN_LIMIT"] = "180"
+        env["EXTERNAL_CONVICTION_POLL_SEC"] = "60"
         env["SCANNER_EXECUTOR_MAX_ENTRY_DRIFT_PCT"] = "0.10"
         env["SCANNER_EXECUTOR_MAX_IMMEDIATE_EXIT_LOSS_PCT"] = "0.10"
         env["SCANNER_EXECUTOR_MIN_RAW_EV"] = "0.015"

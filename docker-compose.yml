@@ -564,11 +564,6 @@ services:
       EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_api
       EXTERNAL_CONVICTION_STRATEGY_NAME: public_news_event_probability_scalping
       EXTERNAL_CONVICTION_PROVIDER: public_news
-      EXTERNAL_CONVICTION_POLL_SEC: "10800"
-      EXTERNAL_CONVICTION_MIN_CONFIDENCE: "0.72"
-      EXTERNAL_CONVICTION_POSITION_SIZE_USDC: "3.00"
-      EXTERNAL_CONVICTION_MAX_LIVE_TRADES_PER_CYCLE: "3"
-      EXTERNAL_CONVICTION_MAX_OPEN_POSITIONS: "10"
       EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_api.jsonl
       EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_api_heartbeat
     command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
@@ -1029,12 +1024,6 @@ services:
       - deploy/.env.runtime
     environment:
       RUNTIME_AGENT: market_scanner
-      SCANNER_POLL_SEC: "60"
-      SCANNER_MARKET_LIMIT: "300"
-      SCANNER_MAX_CANDIDATES: "60"
-      SCANNER_MIN_LIQUIDITY_USDC: "1000"
-      SCANNER_MIN_VOLUME_USDC: "500"
-      SCANNER_TARGET_TRADE_DECISIONS: "4"
     command: ["python", "-m", "agents.application.market_scanner"]
     restart: unless-stopped
     volumes:
