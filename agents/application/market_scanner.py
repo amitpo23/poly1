@@ -563,6 +563,12 @@ class MarketScanner:
             "selected_outcome": execution_meta.get("selected_outcome"),
             "selected_entry_price": execution_meta.get("selected_entry_price"),
             "estimated_win_probability": execution_meta.get("estimated_win_probability"),
+            "estimated_win_probability_calibrated": execution_meta.get(
+                "estimated_win_probability_calibrated"
+            ),
+            "estimated_win_probability_source": execution_meta.get(
+                "estimated_win_probability_source"
+            ),
             "scanner_raw_ev": execution_meta.get("scanner_raw_ev"),
             "evidence_route": meta.features.get("evidence_route"),
             "spread_pct": round(spread_pct, 4) if spread_pct else None,
