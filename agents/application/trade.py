@@ -14,6 +14,7 @@ from agents.utils.notify import notify_trade, _safe_balance
 from agents.application.trade_log import (
     FAILED,
     FILLED,
+    MAY_HAVE_FIRED,
     SKIPPED_DEDUPE,
     SKIPPED_DRY_RUN,
     SKIPPED_GATE,
@@ -591,6 +592,11 @@ class Trader:
         )
 
         try:
+            self.trade_log.mark(
+                trade_id,
+                MAY_HAVE_FIRED,
+                error="live order submission started; verify on-chain if process stops here",
+            )
             # Please refer to TOS before enabling live trading: polymarket.com/tos
             result = self.polymarket.execute_market_order(market, recommendation)
         except ValueError as e:

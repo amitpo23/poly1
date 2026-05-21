@@ -177,6 +177,14 @@ def check_freeze_config(env: dict[str, str], *, mode: str) -> list[CheckResult]:
             if starting_balance > 0
             else "STARTING_BALANCE_USDC must be > 0 for live entry mode",
         ))
+        total_reserves = sum(_as_float(env.get(key)) for key in ENTRY_RESERVE_FLAGS)
+        results.append(CheckResult(
+            "live_reserves_fit_starting_balance",
+            starting_balance <= 0 or total_reserves <= starting_balance,
+            f"total_reserves={total_reserves:g} <= STARTING_BALANCE_USDC={starting_balance:g}"
+            if starting_balance <= 0 or total_reserves <= starting_balance
+            else f"total_reserves={total_reserves:g} exceeds STARTING_BALANCE_USDC={starting_balance:g}",
+        ))
     max_trades = _as_float(env.get("MAX_TRADES_PER_HOUR"))
     results.append(CheckResult(
         "max_trades_per_hour_policy",

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from agents.application.sizing import kelly_size_usdc
-from agents.application.trade_log import TradeLog
+from agents.application.trade_log import MAY_HAVE_FIRED, TradeLog
 from agents.application.trading_policy import FAST_TAKE_PROFIT_PCT, STOP_LOSS_PCT
 from agents.utils.notify import notify_trade, _safe_balance
 from agents.application.alpaca_market_data import (
@@ -2513,6 +2513,11 @@ class ExternalConvictionAgent:
             confidence=plan.confidence,
         )
         try:
+            self.trade_log.mark(
+                pending_id,
+                MAY_HAVE_FIRED,
+                error="external_conviction live order submission started; verify on-chain if process stops here",
+            )
             response = self.polymarket.execute_market_order(
                 (market_doc["doc"], 0.0),
                 recommendation,
