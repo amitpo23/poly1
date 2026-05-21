@@ -9,6 +9,7 @@ from agents.application.strategy_catalog import (
     WindowResult,
     catalog_summary,
     evaluate_gate,
+    strategy_family,
 )
 from scripts.pre_live_strategy_matrix import build_matrix
 
@@ -40,6 +41,10 @@ class StrategyCatalogTests(unittest.TestCase):
         self.assertEqual(verdict.state, "shadow_or_research_only")
         self.assertIn("90d:insufficient_samples", verdict.blockers)
         self.assertIn("split_window_gate_failed", verdict.blockers)
+
+    def test_strategy_family_helper_returns_catalog_family(self):
+        self.assertEqual(strategy_family("crypto_5m_directional"), "trend_following")
+        self.assertEqual(strategy_family("unknown_strategy"), "other")
 
     def test_matrix_reads_market_sweep_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

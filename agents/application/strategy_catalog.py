@@ -189,6 +189,11 @@ def catalog_by_id() -> dict[str, StrategySpec]:
     return {spec.strategy_id: spec for spec in STRATEGY_CATALOG}
 
 
+def strategy_family(strategy_id: str, *, default: str = "other") -> str:
+    spec = catalog_by_id().get(str(strategy_id or ""))
+    return spec.family if spec else default
+
+
 def catalog_summary() -> dict[str, Any]:
     by_family: dict[str, int] = {}
     by_maturity: dict[str, int] = {}

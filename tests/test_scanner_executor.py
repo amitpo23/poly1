@@ -56,6 +56,7 @@ class ScannerExecutorTests(unittest.TestCase):
         min_proven_calibrated_score=0.54,
         min_net_ev=0.03,
         require_promotable_strategy=False,
+        enforce_regime_router=False,
     ):
         pm = MagicMock()
         pm._fillable_market_buy.return_value = (
@@ -103,6 +104,7 @@ class ScannerExecutorTests(unittest.TestCase):
             allow_wait_with_high_score=allow_wait_with_high_score,
             wait_override_min_score=wait_override_min_score,
             require_promotable_strategy=require_promotable_strategy,
+            enforce_regime_router=enforce_regime_router,
             strategy_scorecard_path=str(Path(self.tmp.name) / "strategy_scorecard.json"),
             provider_scorecard_path=str(Path(self.tmp.name) / "provider_scorecard.json"),
         )
@@ -544,6 +546,36 @@ class ScannerExecutorTests(unittest.TestCase):
         row = self.log.recent_brain_decisions(limit=1)[0]
         self.assertEqual(row["signal_source"], "meta_brain,tavily")
         self.assertIn('"scanner_signal_source": "meta_brain,tavily"', row["features_json"])
+        self.assertIn('"strategy_family": "news_sentiment_event_driven"', row["features_json"])
+        self.assertIn('"regime": "unknown"', row["features_json"])
+
+    def test_regime_router_can_hard_block_mismatched_family_when_enabled(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(
+                strategy_family="mean_reversion",
+                micro_regime="trending",
+                micro_regime_confidence=0.72,
+                estimated_win_probability=0.80,
+            ),
+            action="BUY",
+        )
+        engine, pm = self._engine(execute=True, enforce_regime_router=True)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        row = self.log.recent_brain_decisions(limit=1)[0]
+        self.assertEqual(row["reason"], "strategy_family_blocked_by_regime")
+        self.assertIn('"regime_family_allowed": false', row["features_json"])
 
     def test_proven_calibrated_source_uses_dedicated_score_floor(self):
         self.log.insert_brain_decision(

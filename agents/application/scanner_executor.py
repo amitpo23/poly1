@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from agents.application.decision_council import DecisionCouncil
+from agents.application.regime_router import family_from_signal, route_for_features
 from agents.application.risk_gate import RiskGate
 from agents.application.sizing import kelly_size_usdc
 from agents.application.trade_log import FILLED, TradeLog
@@ -84,6 +85,7 @@ class ScannerExecutorConfig:
     provider_scorecard_path: str = "./data/provider_scorecard.json"
     strategy_scorecard_path: str = "./data/strategy_scorecard.json"
     require_promotable_strategy: bool = False
+    enforce_regime_router: bool = False
 
     @classmethod
     def from_env(cls) -> "ScannerExecutorConfig":
@@ -145,6 +147,10 @@ class ScannerExecutorConfig:
             ),
             require_promotable_strategy=_env_bool(
                 "SCANNER_EXECUTOR_REQUIRE_PROMOTABLE_STRATEGY",
+                False,
+            ),
+            enforce_regime_router=_env_bool(
+                "SCANNER_EXECUTOR_ENFORCE_REGIME_ROUTER",
                 False,
             ),
         )
@@ -327,6 +333,10 @@ class ScannerExecutor:
             return "skipped"
 
         estimated_prob = _safe_float(features.get("estimated_win_probability"), score)
+        regime_features = self._regime_snapshot(row, features)
+        if self.cfg.enforce_regime_router and not bool(regime_features.get("regime_family_allowed", True)):
+            self._record_reject(row, "strategy_family_blocked_by_regime", regime_features)
+            return "skipped"
         try:
             if hasattr(self.polymarket, "_fillable_market_buy_with_quality"):
                 live_price, fillable_usdc, avg_price, book_quality = (
@@ -462,6 +472,7 @@ class ScannerExecutor:
             **council.features,
             **sizing.features(),
             **proof_features,
+            **regime_features,
         }
 
         if maker_shadow_candidate:
@@ -609,6 +620,7 @@ class ScannerExecutor:
         token_id = str((row_features.get("selected_token_id") or ""))
         action = str(row.get("action") or row_features.get("selected_side") or "")
         proof_features = self._proof_snapshot(row, row_features)
+        regime_features = self._regime_snapshot(row, row_features)
         self.trade_log.insert_brain_decision(
             agent="scanner_executor",
             strategy="execute_scanner_trade_opportunity",
@@ -623,6 +635,7 @@ class ScannerExecutor:
                 "source_decision_id": int(row["id"]),
                 "scanner_signal_source": signal_source,
                 **proof_features,
+                **regime_features,
                 **features,
             },
             action=action,
@@ -653,6 +666,7 @@ class ScannerExecutor:
                 "source_decision_id": int(row["id"]),
                 "question": row_features.get("question"),
                 **proof_features,
+                **regime_features,
                 **features,
             },
         )
@@ -676,6 +690,7 @@ class ScannerExecutor:
         token_id = str(features.get("selected_token_id") or "")
         action = str(features.get("selected_side") or row.get("action") or "")
         proof_features = self._proof_snapshot(row, features)
+        regime_features = self._regime_snapshot(row, features)
         self.trade_log.insert_brain_decision(
             agent="scanner_executor",
             strategy="execute_scanner_trade_opportunity",
@@ -694,6 +709,7 @@ class ScannerExecutor:
                 "net_ev": round(net_ev, 4),
                 "scanner_signal_source": signal_source,
                 **proof_features,
+                **regime_features,
                 **extra,
             },
             action=action,
@@ -725,6 +741,7 @@ class ScannerExecutor:
                 "question": features.get("question"),
                 "amount_usdc": round(amount_usdc, 4),
                 **proof_features,
+                **regime_features,
                 **extra,
             },
         )
@@ -769,12 +786,14 @@ class ScannerExecutor:
         token_id = str(features.get("selected_token_id") or "")
         action = str(features.get("selected_side") or row.get("action") or "")
         proof_features = self._proof_snapshot(row, features)
+        regime_features = self._regime_snapshot(row, features)
         payload = {
             "source_decision_id": int(row["id"]),
             "question": features.get("question"),
             "amount_usdc": round(amount_usdc, 4),
             "entry_style": "maker_first_shadow",
             **proof_features,
+            **regime_features,
             **extra,
         }
         self.trade_log.insert_brain_decision(
@@ -857,6 +876,15 @@ class ScannerExecutor:
         else:
             proof["proof_provider_source"] = "missing_scorecard_match"
         return proof
+
+    def _regime_snapshot(self, row: dict, features: dict) -> dict:
+        family = family_from_signal(
+            strategy_id=str(row.get("strategy") or ""),
+            agent=str(row.get("agent") or ""),
+            signal_source=str(row.get("signal_source") or features.get("signal_source") or ""),
+            features=features,
+        )
+        return route_for_features(features).features_for_family(family)
 
     def _strategy_score(self) -> Optional[dict]:
         payload = _read_json(Path(self.cfg.strategy_scorecard_path))
