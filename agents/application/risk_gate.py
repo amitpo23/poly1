@@ -16,6 +16,19 @@ from agents.application.trading_policy import (
 logger = logging.getLogger(__name__)
 
 
+ENTRY_EXECUTE_FLAGS = (
+    "EXECUTE",
+    "EXECUTE_SCALPER",
+    "EXECUTE_BTC_DAILY",
+    "EXECUTE_BTC_5MIN",
+    "EXECUTE_NEAR_RESOLUTION",
+    "EXECUTE_NEWS_SHOCK",
+    "EXECUTE_WALLET_FOLLOW",
+    "EXECUTE_EXTERNAL_CONVICTION",
+    "EXECUTE_SCANNER_EXECUTOR",
+)
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -36,6 +49,10 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         logger.warning("invalid int for %s=%r, using default %s", name, raw, default)
         return default
+
+
+def _env_true(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class RiskGate:
@@ -72,6 +89,14 @@ class RiskGate:
             if starting_balance_usdc is not None
             else _env_float("STARTING_BALANCE_USDC", 0.0)
         )
+        if (
+            starting_balance_usdc is None
+            and self.starting_balance <= 0
+            and any(_env_true(flag) for flag in ENTRY_EXECUTE_FLAGS)
+        ):
+            raise RuntimeError(
+                "STARTING_BALANCE_USDC must be > 0 when any live entry EXECUTE flag is true"
+            )
         self.max_daily_loss_pct = (
             max_daily_loss_pct
             if max_daily_loss_pct is not None
@@ -269,7 +294,18 @@ class RiskGate:
         if self.polymarket is None:
             return 0.0
         bal = self.polymarket.get_usdc_balance()
-        return max(0.0, bal - self.total_reserves)
+        available = bal - self.total_reserves
+        if available <= 0:
+            reserves_breakdown = ", ".join(
+                f"{name}={reserve:.2f}" for name, reserve in self.reserves.items() if reserve > 0
+            ) or "none"
+            logger.warning(
+                "available_for_trader <= 0: balance=%.4f total_reserves=%.4f reserves=[%s]",
+                bal,
+                self.total_reserves,
+                reserves_breakdown,
+            )
+        return max(0.0, available)
 
     def reason(self) -> Optional[str]:
         """Return None if all gates pass, else a short string describing the first failure."""

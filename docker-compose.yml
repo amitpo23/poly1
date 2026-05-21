@@ -18,6 +18,12 @@ services:
       - ./deploy/.env.runtime:/app/deploy/.env.runtime:ro
       - ./local_db_events:/app/local_db_events
       - ./local_db_markets:/app/local_db_markets
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/heartbeat') < 180"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
     logging:
       driver: json-file
       options:
@@ -162,7 +168,7 @@ services:
       - deploy/.env.runtime
     environment:
       TZ: UTC
-      RESOLUTION_SYNC_ENABLED: "false"
+      RESOLUTION_SYNC_ENABLED: "${RESOLUTION_SYNC_ENABLED:-true}"
       MAINTAIN_LLM_EXIT_INTERVAL_SEC: "60"
       RUNTIME_AGENT: position_manager
     command: ["python", "-m", "agents.application.position_manager"]
@@ -171,7 +177,7 @@ services:
       # Mount swarm DB read-write so resolution_sync can write
       # pnl_events when swarm-side markets resolve. Without this, the
       # swarm sub-agents can't be defunded by realized PnL.
-      - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/app/swarm/data
+      - ${SWARM_DATA_PATH:-/srv/swarm/data}:/app/swarm/data
     healthcheck:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/position_manager_heartbeat') < 120"]
@@ -270,7 +276,7 @@ services:
       RUNTIME_AGENT: dashboard
     volumes:
       - ./data:/app/data
-      - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/swarm/data:ro
+      - ${SWARM_DATA_PATH:-/srv/swarm/data}:/swarm/data:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8050/_stcore/health', timeout=5).read()"]
@@ -308,7 +314,7 @@ services:
       # swarm .env mounted read-write for cross-bot capital sync.
       - ${SWARM_ENV_PATH:-/Users/mymac/Desktop/poly/bot/.env}:/app/host/swarm.env
       # swarm DB read-write for resolution_sync pnl_events writes.
-      - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/app/swarm/data
+      - ${SWARM_DATA_PATH:-/srv/swarm/data}:/app/swarm/data
     logging:
       driver: json-file
       options:
@@ -1242,7 +1248,7 @@ services:
       - "3000:3000"
     volumes:
       - ./data:/app/data
-      - ${SWARM_DATA_PATH:-/Users/mymac/Desktop/poly/bot/data}:/swarm/data
+      - ${SWARM_DATA_PATH:-/srv/swarm/data}:/swarm/data
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
       - grafana_storage:/var/lib/grafana

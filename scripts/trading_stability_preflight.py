@@ -168,6 +168,15 @@ def check_freeze_config(env: dict[str, str], *, mode: str) -> list[CheckResult]:
         else f"POLY1_REQUIRE_BRAIN_APPROVAL={env.get('POLY1_REQUIRE_BRAIN_APPROVAL')} "
              f"MARKET_BRAIN_ENABLED={env.get('MARKET_BRAIN_ENABLED')}",
     ))
+    starting_balance = _as_float(env.get("STARTING_BALANCE_USDC"))
+    if mode != "freeze":
+        results.append(CheckResult(
+            "starting_balance_live_set",
+            starting_balance > 0,
+            f"STARTING_BALANCE_USDC={starting_balance:g}"
+            if starting_balance > 0
+            else "STARTING_BALANCE_USDC must be > 0 for live entry mode",
+        ))
     max_trades = _as_float(env.get("MAX_TRADES_PER_HOUR"))
     results.append(CheckResult(
         "max_trades_per_hour_policy",
