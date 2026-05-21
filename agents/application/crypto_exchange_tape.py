@@ -14,6 +14,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
+from agents.application.climax_volume_reversal import detect_climax_volume_reversal
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -187,9 +189,20 @@ class CryptoExchangeTapeClient:
                 {"bar_count": len(bars)},
             )
         closes = [self._float_idx(row, 4) for row in bars]
+        opens = [self._float_idx(row, 1) for row in bars]
         highs = [self._float_idx(row, 2) for row in bars]
         lows = [self._float_idx(row, 3) for row in bars]
         vols = [self._float_idx(row, 5) for row in bars]
+        climax_bars = [
+            {
+                "open": self._float_idx(row, 1),
+                "high": self._float_idx(row, 2),
+                "low": self._float_idx(row, 3),
+                "close": self._float_idx(row, 4),
+                "volume": self._float_idx(row, 5),
+            }
+            for row in bars
+        ]
         closes = [c for c in closes if c > 0]
         if len(closes) < min_bars:
             return CryptoExchangeSignal(None, 0.5, 0.0, asset, symbol, "crypto_tape: invalid closes")
@@ -246,7 +259,13 @@ class CryptoExchangeTapeClient:
             confidence = min(confidence, 0.55)
         if direction is None:
             confidence = min(confidence, 0.52)
-        probability = 0.5 if direction is None else min(0.82, 0.5 + max(0.0, confidence - 0.5))
+        climax = detect_climax_volume_reversal(climax_bars)
+        if climax.direction:
+            direction = climax.direction
+            confidence = max(confidence, climax.confidence)
+            probability = climax.probability
+        else:
+            probability = 0.5 if direction is None else min(0.82, 0.5 + max(0.0, confidence - 0.5))
         return CryptoExchangeSignal(
             direction,
             round(probability, 4),
@@ -265,11 +284,17 @@ class CryptoExchangeTapeClient:
                 "short_momentum_pct": round(short_momentum, 6),
                 "range_pct": round(range_pct, 6),
                 "volume_ratio": round(vol_ratio, 4),
+                "last_open": round(opens[-1], 6) if opens else None,
                 "bid": round(bid, 6),
                 "ask": round(ask, 6),
                 "spread_pct": None if spread_pct is None else round(spread_pct, 6),
                 "funding_rate": funding_rate,
                 "funding_note": funding_note,
+                "climax_volume_reversal_direction": climax.direction,
+                "climax_volume_reversal_probability": climax.probability,
+                "climax_volume_reversal_confidence": climax.confidence,
+                "climax_volume_reversal_reason": climax.reason,
+                **climax.features,
                 "exchange_sources": ["binance_spot", "okx_funding"],
             },
         )

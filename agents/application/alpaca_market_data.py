@@ -13,6 +13,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
+from agents.application.climax_volume_reversal import detect_climax_volume_reversal
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -208,6 +210,16 @@ class AlpacaMarketDataClient:
         highs = [self._bar_float(b, "h") for b in bars]
         lows = [self._bar_float(b, "l") for b in bars]
         volumes = [self._bar_float(b, "v") for b in bars]
+        climax_bars = [
+            {
+                "open": self._bar_float(b, "o"),
+                "high": self._bar_float(b, "h"),
+                "low": self._bar_float(b, "l"),
+                "close": self._bar_float(b, "c"),
+                "volume": self._bar_float(b, "v"),
+            }
+            for b in bars
+        ]
         closes = [c for c in closes if c > 0]
         if len(closes) < min_bars:
             return AlpacaMarketSignal(
@@ -241,7 +253,13 @@ class AlpacaMarketDataClient:
         confidence = min(0.78, 0.48 + 0.14 * strength + vol_boost + range_boost)
         if direction is None:
             confidence = min(confidence, 0.52)
-        probability = 0.5 if direction is None else min(0.78, 0.5 + (confidence - 0.5))
+        climax = detect_climax_volume_reversal(climax_bars)
+        if climax.direction:
+            direction = climax.direction
+            confidence = max(confidence, climax.confidence)
+            probability = climax.probability
+        else:
+            probability = 0.5 if direction is None else min(0.78, 0.5 + (confidence - 0.5))
         return AlpacaMarketSignal(
             direction,
             round(probability, 4),
@@ -260,6 +278,11 @@ class AlpacaMarketDataClient:
                 "range_pct": round(range_pct, 6),
                 "volume_ratio": round(vol_ratio, 4),
                 "timeframe": os.getenv("ALPACA_MARKET_DATA_TIMEFRAME", "1Min"),
+                "climax_volume_reversal_direction": climax.direction,
+                "climax_volume_reversal_probability": climax.probability,
+                "climax_volume_reversal_confidence": climax.confidence,
+                "climax_volume_reversal_reason": climax.reason,
+                **climax.features,
             },
         )
 

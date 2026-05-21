@@ -14,6 +14,7 @@ from typing import Optional
 
 import requests
 
+from agents.application.climax_volume_reversal import detect_climax_volume_reversal
 from agents.application.market_microstructure import feature_snapshot_from_bars
 
 
@@ -139,6 +140,7 @@ class OpenBBMarketDataClient:
             bars = [
                 {
                     "close": float(row.get("close", 0.0) or 0.0),
+                    "open": float(row.get("open", row.get("close", 0.0)) or 0.0),
                     "high": float(row.get("high", 0.0) or 0.0),
                     "low": float(row.get("low", 0.0) or 0.0),
                     "volume": float(row.get("volume", 0.0) or 0.0),
@@ -169,6 +171,7 @@ class OpenBBMarketDataClient:
         result = results[0]
         timestamps = result.get("timestamp") or []
         quote = (((result.get("indicators") or {}).get("quote") or [{}])[0]) or {}
+        opens = quote.get("open") or []
         closes = quote.get("close") or []
         highs = quote.get("high") or []
         lows = quote.get("low") or []
@@ -181,6 +184,7 @@ class OpenBBMarketDataClient:
                 continue
             bars.append(
                 {
+                    "open": _seq_float(opens, src_idx) or close,
                     "close": close,
                     "high": _seq_float(highs, src_idx),
                     "low": _seq_float(lows, src_idx),
@@ -212,6 +216,16 @@ class OpenBBMarketDataClient:
         highs = [_bar_float(b, "high", "h") for b in bars]
         lows = [_bar_float(b, "low", "l") for b in bars]
         volumes = [_bar_float(b, "volume", "v") for b in bars]
+        climax_bars = [
+            {
+                "open": _bar_float(b, "open", "o", "close", "c"),
+                "high": _bar_float(b, "high", "h"),
+                "low": _bar_float(b, "low", "l"),
+                "close": _bar_float(b, "close", "c"),
+                "volume": _bar_float(b, "volume", "v"),
+            }
+            for b in bars
+        ]
         closes = [c for c in closes if c > 0]
         if len(closes) < min_bars:
             return OpenBBMarketSignal(None, 0.5, 0.0, symbol, asset_class, "openbb: invalid close bars")
@@ -249,7 +263,13 @@ class OpenBBMarketDataClient:
         confidence = max(0.0, min(0.78, confidence + regime_boost))
         if direction is None:
             confidence = min(confidence, 0.52)
-        probability = 0.5 if direction is None else min(0.76, 0.5 + (confidence - 0.5))
+        climax = detect_climax_volume_reversal(climax_bars)
+        if climax.direction:
+            direction = climax.direction
+            confidence = max(confidence, climax.confidence)
+            probability = climax.probability
+        else:
+            probability = 0.5 if direction is None else min(0.76, 0.5 + (confidence - 0.5))
         return OpenBBMarketSignal(
             direction,
             round(probability, 4),
@@ -273,6 +293,11 @@ class OpenBBMarketDataClient:
                 "provider": self.provider,
                 "dependency": str(bars[-1].get("_dependency") or "openbb"),
                 "microstructure_adjustment": round(regime_boost, 4),
+                "climax_volume_reversal_direction": climax.direction,
+                "climax_volume_reversal_probability": climax.probability,
+                "climax_volume_reversal_confidence": climax.confidence,
+                "climax_volume_reversal_reason": climax.reason,
+                **climax.features,
                 **micro.features,
             },
         )

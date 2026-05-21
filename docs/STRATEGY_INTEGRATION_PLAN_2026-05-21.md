@@ -92,6 +92,36 @@ Queue status today:
 - `ssrn_research_ingestion` - queued.
 - `latent_regime_chaos_score` - deferred until reproducible.
 
+### 4. Climax Volume Reversal Shadow Signal
+
+Source ideas:
+
+- "Climax Volume Reversal" short-horizon exhaustion fade.
+- Volume spike / mean-reversion setups from the research queue.
+
+Implementation:
+
+- `agents/application/climax_volume_reversal.py`
+- `agents/application/alpaca_market_data.py`
+- `agents/application/openbb_market_data.py`
+- `agents/application/crypto_exchange_tape.py`
+
+The detector looks for:
+
+- a penultimate candle with volume above `CLIMAX_VOLUME_MULTIPLE` times the
+  prior `CLIMAX_VOLUME_WINDOW` average,
+- a range expansion above `CLIMAX_RANGE_MULTIPLE`,
+- a real body above `CLIMAX_MIN_BODY_FRACTION`,
+- a final confirmation candle closing in the opposite direction.
+
+Policy:
+
+- This is shadow evidence until markouts/backtests prove positive EV.
+- It can change an Alpaca/OpenBB/crypto-tape directional signal, but still
+  enters the normal MetaBrain, EV, RiskGate, and PositionManager path.
+- It is not allowed to place orders directly.
+- Useful defaults: 20-bar window, 3x volume, 1.2x range, 35% minimum body.
+
 ## Why This Is The Right Shape
 
 The system already has enough “agents”.  The missing piece was not another
@@ -116,13 +146,14 @@ flowchart LR
 - Every signal must be logged so later markout/backtest can judge it.
 - Arbitrage needs rule mapping, fresh quotes, depth, and fees.
 - VWAP/regime features are advisory until they show positive shadow markouts.
+- Climax-volume reversal is advisory until it shows positive shadow markouts.
 
 ## Next QA Before Live
 
 Run locally and on the server:
 
 ```bash
-python -m unittest tests.test_market_microstructure tests.test_arb_quality tests.test_research_queue tests.test_openbb_market_data tests.test_decision_governance
+python -m unittest tests.test_market_microstructure tests.test_arb_quality tests.test_research_queue tests.test_openbb_market_data tests.test_climax_volume_reversal tests.test_decision_governance
 python scripts/research_queue.py --json
 python scripts/validate_agent_registry.py --json
 ```
