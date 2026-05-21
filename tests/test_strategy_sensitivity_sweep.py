@@ -35,12 +35,14 @@ class StrategySensitivitySweepTests(unittest.TestCase):
                     decision TEXT,
                     market_id TEXT,
                     token_id TEXT,
-                    live_entry_price REAL,
-                    market_price REAL,
-                    raw_ev REAL,
-                    net_ev REAL,
-                    score REAL,
-                    outcome_1m_json TEXT,
+                   live_entry_price REAL,
+                   market_price REAL,
+                   raw_ev REAL,
+                   net_ev REAL,
+                   score REAL,
+                   signal_source TEXT,
+                   features_json TEXT,
+                   outcome_1m_json TEXT,
                     outcome_3m_json TEXT,
                     outcome_5m_json TEXT,
                     outcome_15m_json TEXT,
@@ -54,9 +56,10 @@ class StrategySensitivitySweepTests(unittest.TestCase):
                     INSERT INTO decision_journal (
                         id, ts, agent, strategy, decision, market_id, token_id,
                         live_entry_price, market_price, raw_ev, net_ev, score,
+                        signal_source, features_json,
                         outcome_1m_json, outcome_3m_json, outcome_5m_json,
                         outcome_15m_json, outcome_60m_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         idx,
@@ -71,6 +74,8 @@ class StrategySensitivitySweepTests(unittest.TestCase):
                         0.05,
                         0.04,
                         0.8,
+                        "scanner,unit",
+                        json.dumps({"strategy_family": "trend_following", "regime": "trending"}),
                         json.dumps({"pnl_pct": pnl}),
                         None,
                         None,
@@ -89,11 +94,14 @@ class StrategySensitivitySweepTests(unittest.TestCase):
                     SweepConfig(0.9, 0.0, 0.0, 0.8, 1, 0.05, 0.03, 0),
                 ],
                 min_trades=2,
+                group_by="strategy_family",
             )
 
         self.assertEqual(payload["configs_tested"], 2)
         self.assertEqual(payload["viable_count"], 1)
         self.assertEqual(payload["best_viable"][0]["candidates"], 4)
+        self.assertEqual(payload["best_viable"][0]["groups"], {"trend_following": 4})
+        self.assertEqual(payload["top_groups"][0]["group"], "trend_following")
 
 
 if __name__ == "__main__":

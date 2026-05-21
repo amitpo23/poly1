@@ -54,6 +54,7 @@ class SweepResult:
     winrate: Optional[float]
     agents: dict[str, int]
     strategies: dict[str, int]
+    groups: dict[str, int]
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -79,6 +80,7 @@ def load_rows(db_path: str, *, since: str = "", limit: int = 10000) -> list[dict
             f"""
             SELECT id, ts, agent, strategy, decision, market_id, token_id,
                    live_entry_price, market_price, raw_ev, net_ev, score,
+                   signal_source, features_json,
                    outcome_1m_json, outcome_3m_json, outcome_5m_json,
                    outcome_15m_json, outcome_60m_json
             FROM decision_journal
@@ -124,8 +126,14 @@ def default_configs(limit: int) -> list[SweepConfig]:
     return configs
 
 
-def run_sweep(rows: list[dict[str, Any]], configs: list[SweepConfig], *, min_trades: int) -> dict[str, Any]:
-    results = [_evaluate(rows, cfg) for cfg in configs]
+def run_sweep(
+    rows: list[dict[str, Any]],
+    configs: list[SweepConfig],
+    *,
+    min_trades: int,
+    group_by: str = "",
+) -> dict[str, Any]:
+    results = [_evaluate(rows, cfg, group_by=group_by) for cfg in configs]
     ranked = sorted(
         results,
         key=lambda r: (
@@ -141,17 +149,20 @@ def run_sweep(rows: list[dict[str, Any]], configs: list[SweepConfig], *, min_tra
         "rows_loaded": len(rows),
         "configs_tested": len(configs),
         "min_trades": min_trades,
+        "group_by": group_by or None,
         "viable_count": len(viable),
         "top": [r.to_dict() for r in ranked[:25]],
         "best_viable": [r.to_dict() for r in viable[:10]],
+        "top_groups": _top_groups(ranked[:25]),
     }
 
 
-def _evaluate(rows: list[dict[str, Any]], cfg: SweepConfig) -> SweepResult:
+def _evaluate(rows: list[dict[str, Any]], cfg: SweepConfig, *, group_by: str = "") -> SweepResult:
     pnl_values: list[float] = []
     wins = losses = stopped = take_profit = 0
     agents: dict[str, int] = {}
     strategies: dict[str, int] = {}
+    groups: dict[str, int] = {}
     for row in rows:
         if not _passes_entry(row, cfg):
             continue
@@ -175,6 +186,9 @@ def _evaluate(rows: list[dict[str, Any]], cfg: SweepConfig) -> SweepResult:
         strategy = str(row.get("strategy") or "unknown")
         agents[agent] = agents.get(agent, 0) + 1
         strategies[strategy] = strategies.get(strategy, 0) + 1
+        if group_by:
+            group = _group_value(row, group_by)
+            groups[group] = groups.get(group, 0) + 1
         if cfg.max_samples and len(pnl_values) >= cfg.max_samples:
             break
     total = len(pnl_values)
@@ -195,6 +209,7 @@ def _evaluate(rows: list[dict[str, Any]], cfg: SweepConfig) -> SweepResult:
         winrate=None if winrate is None else round(winrate, 4),
         agents=dict(sorted(agents.items())),
         strategies=dict(sorted(strategies.items())),
+        groups=dict(sorted(groups.items())),
     )
 
 
@@ -233,6 +248,53 @@ def _json(raw: Any) -> dict[str, Any]:
         return {}
 
 
+def _group_value(row: dict[str, Any], group_by: str) -> str:
+    key = str(group_by or "").strip()
+    if key in {"agent", "strategy", "signal_source"}:
+        return str(row.get(key) or "unknown")
+    features = _json(row.get("features_json"))
+    if key in {"strategy_family", "family"}:
+        return str(features.get("strategy_family") or features.get("alphainsider_family") or "unknown")
+    if key in {"regime", "market_regime"}:
+        return str(features.get("regime") or features.get("micro_regime") or "unknown")
+    if key:
+        return str(features.get(key) or row.get(key) or "unknown")
+    return "all"
+
+
+def _top_groups(results: list[SweepResult]) -> list[dict[str, Any]]:
+    totals: dict[str, dict[str, Any]] = {}
+    for result in results:
+        for group, count in result.groups.items():
+            item = totals.setdefault(
+                group,
+                {
+                    "group": group,
+                    "appearances": 0,
+                    "candidate_count": 0,
+                    "best_total_pnl_per_100": None,
+                    "best_winrate": None,
+                },
+            )
+            item["appearances"] += 1
+            item["candidate_count"] += count
+            pnl = result.total_pnl_per_100
+            if pnl is not None and (
+                item["best_total_pnl_per_100"] is None
+                or pnl > item["best_total_pnl_per_100"]
+            ):
+                item["best_total_pnl_per_100"] = pnl
+                item["best_winrate"] = result.winrate
+    return sorted(
+        totals.values(),
+        key=lambda x: (
+            x["best_total_pnl_per_100"] if x["best_total_pnl_per_100"] is not None else -10**9,
+            x["candidate_count"],
+        ),
+        reverse=True,
+    )[:20]
+
+
 def _float(value: Any) -> Optional[float]:
     try:
         if value in (None, ""):
@@ -249,12 +311,18 @@ def main() -> int:
     parser.add_argument("--rows-limit", type=int, default=10000)
     parser.add_argument("--configs", type=int, default=1000)
     parser.add_argument("--min-trades", type=int, default=20)
+    parser.add_argument(
+        "--group-by",
+        default="",
+        choices=["", "agent", "strategy", "strategy_family", "regime", "signal_source"],
+        help="Optional segment to summarize inside top configs.",
+    )
     parser.add_argument("--out", default="")
     args = parser.parse_args()
 
     rows = load_rows(args.db, since=args.since, limit=args.rows_limit)
     configs = default_configs(args.configs)
-    payload = run_sweep(rows, configs, min_trades=args.min_trades)
+    payload = run_sweep(rows, configs, min_trades=args.min_trades, group_by=args.group_by)
     text = json.dumps(payload, indent=2, sort_keys=True)
     if args.out:
         path = Path(args.out)
