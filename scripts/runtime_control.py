@@ -523,6 +523,19 @@ def live_hour(args: argparse.Namespace) -> int:
         # The executor applies the general score gate before the timing override
         # can help. Keep both thresholds aligned for controlled wait probes.
         env["SCANNER_EXECUTOR_MIN_SCORE"] = args.scanner_wait_min_score
+    if args.aggressive_execution:
+        # Controlled live-test mode: loosen execution quality enough to measure
+        # the live pipeline, while keeping calibrated probability, RiskGate,
+        # max-open, drawdown guard, position manager, and auto-freeze intact.
+        env["SCANNER_EXECUTOR_MAX_ENTRY_DRIFT_PCT"] = "0.10"
+        env["SCANNER_EXECUTOR_MAX_IMMEDIATE_EXIT_LOSS_PCT"] = "0.10"
+        env["SCANNER_EXECUTOR_MIN_RAW_EV"] = "0.015"
+        env["SCANNER_EXECUTOR_MIN_NET_EV"] = "0.005"
+        env["META_BRAIN_MIN_RAW_EV"] = "0.015"
+        env["META_BRAIN_MIN_EDGE_PCT"] = "0.005"
+        env["DECISION_COUNCIL_MIN_NET_EV"] = "0.005"
+        env["DECISION_COUNCIL_EXPERT_MIN_NET_EV"] = "0.0"
+        env["DECISION_COUNCIL_THIN_MIN_NET_EV"] = "0.015"
     env["BTC_DAILY_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["BTC_5MIN_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["BTC_5MIN_STRADDLE_LEG_USDC"] = args.position_size_usdc
@@ -553,6 +566,7 @@ def live_hour(args: argparse.Namespace) -> int:
         "equity_at_start_usdc": equity_balance,
         "max_hold_minutes": max_hold_minutes,
         "max_open_positions": int(args.max_open),
+        "aggressive_execution": bool(args.aggressive_execution),
         "expires_at": expires_at.isoformat(),
         "requires_halt": False,
     }
@@ -632,6 +646,7 @@ def main() -> int:
     p_live_hour.add_argument("--position-size-usdc", default="1.50")
     p_live_hour.add_argument("--scanner-allow-wait", action="store_true")
     p_live_hour.add_argument("--scanner-wait-min-score", default="0.79")
+    p_live_hour.add_argument("--aggressive-execution", action="store_true")
     p_live_hour.add_argument("--note", default="")
     p_live_hour.add_argument("--arm", action="store_true", help="remove HALT after writing live control")
     p_live_hour.set_defaults(func=live_hour)

@@ -56,6 +56,7 @@ class RuntimeControlTests(unittest.TestCase):
                 position_size_usdc="1.50",
                 scanner_allow_wait=True,
                 scanner_wait_min_score="0.79",
+                aggressive_execution=True,
                 note="test",
                 arm=True,
             )
@@ -75,6 +76,11 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertIn('SCANNER_EXECUTOR_REQUIRE_CALIBRATED_PROBABILITY="true"', env_text)
             self.assertIn('SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE="0.79"', env_text)
             self.assertIn('SCANNER_EXECUTOR_MIN_SCORE="0.79"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_MAX_ENTRY_DRIFT_PCT="0.10"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_MAX_IMMEDIATE_EXIT_LOSS_PCT="0.10"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_MIN_RAW_EV="0.015"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_MIN_NET_EV="0.005"', env_text)
+            self.assertIn('DECISION_COUNCIL_MIN_NET_EV="0.005"', env_text)
             self.assertIn('MAINTAIN_MIN_EXIT_NOTIONAL_USDC="0.50"', env_text)
             self.assertIn('MAINTAIN_MIN_TAKE_PROFIT_NET_PCT="0.015"', env_text)
             self.assertIn('MAINTAIN_MIN_TAKE_PROFIT_USDC="0.01"', env_text)
@@ -84,6 +90,7 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertEqual(control["wallet_balance_at_start_usdc"], 34.2452)
             self.assertEqual(control["equity_at_start_usdc"], 35.125)
             self.assertEqual(control["max_hold_minutes"], 45)
+            self.assertTrue(control["aggressive_execution"])
             self.assertFalse(halt.exists())
 
     def test_shadow_probe_allows_riskgate_without_live_execute_flags(self):
