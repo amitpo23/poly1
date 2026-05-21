@@ -50,6 +50,24 @@
       "compose_service": "external-conviction-api",
       "compose_profile": "external_conviction"
     },
+    "external_conviction_crypto_tape": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-crypto-tape",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_alpaca": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-alpaca",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_openbb": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-openbb",
+      "compose_profile": "external_conviction"
+    },
     "scanner_executor": {
       "execute_flag": "EXECUTE_SCANNER_EXECUTOR",
       "reserve_flag": "SCANNER_EXECUTOR_RESERVE_USDC",
