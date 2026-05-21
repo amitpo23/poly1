@@ -1,6 +1,7 @@
 import functools
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,19 @@ class TestExecuteMarketOrderFAK(unittest.TestCase):
             },
         )
         return (doc, 0.0)
+
+    def test_retry_predicate_excludes_non_network_errors(self):
+        source = (Path(__file__).resolve().parents[1] / "agents/polymarket/polymarket.py").read_text()
+        start = source.index("@retry(", source.index("def execute_market_order"))
+        end = source.index("def _post", start)
+        retry_block = source[start:end]
+        self.assertIn("httpx.TimeoutException", retry_block)
+        self.assertIn("httpx.NetworkError", retry_block)
+        self.assertIn("requests.Timeout", retry_block)
+        self.assertIn("requests.ConnectionError", retry_block)
+        self.assertNotIn("requests.HTTPError", retry_block)
+        self.assertNotIn("httpx.HTTPError", retry_block)
+        self.assertNotIn("retry_if_exception_type(Exception", retry_block)
 
     @patch.object(Polymarket, "__init__", lambda self, **kw: None)
     def test_execute_market_order_passes_fak_when_requested(self):

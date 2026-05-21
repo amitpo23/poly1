@@ -87,8 +87,33 @@ class TempDataMixin:
         self.db_path = str(self.tmp_path / "trade_log.db")
         self.kill_path = str(self.tmp_path / "HALT")
         self.usage_path = str(self.tmp_path / "llm_usage.jsonl")
+        self._saved_execute_env = {
+            key: os.environ.get(key)
+            for key in (
+                "EXECUTE",
+                "EXECUTE_SCALPER",
+                "EXECUTE_BTC_DAILY",
+                "EXECUTE_BTC_5MIN",
+                "EXECUTE_NEAR_RESOLUTION",
+                "EXECUTE_NEWS_SHOCK",
+                "EXECUTE_WALLET_FOLLOW",
+                "EXECUTE_EXTERNAL_CONVICTION",
+                "EXECUTE_SCANNER_EXECUTOR",
+                "EXECUTE_MAINTAIN",
+                "MAINTAIN_HEARTBEAT_PATH",
+                "POSITION_MANAGER_HEARTBEAT_PATH",
+                "POSITION_MANAGER_ENTRY_MAX_HEARTBEAT_AGE_SEC",
+            )
+        }
+        for key in self._saved_execute_env:
+            os.environ.pop(key, None)
 
     def tearDown(self):
+        for key, value in self._saved_execute_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self._tmp.cleanup()
 
 
@@ -104,6 +129,20 @@ class TestTradeLog(TempDataMixin, unittest.TestCase):
 
         tl2 = TradeLog(self.db_path)
         self.assertTrue(tl2.has_active_trade_for_market("42", hours=6))
+
+    def test_init_does_not_recover_stranded_pendings_by_default(self):
+        from agents.application.trade_log import PENDING
+
+        tl = TradeLog(self.db_path)
+        cycle = tl.new_cycle_id()
+        tl.insert_pending(
+            cycle_id=cycle, market_id="init-no-recover", token_id="tok",
+            side="BUY", price=0.5, size_usdc=2.0, confidence=0.7,
+        )
+
+        TradeLog(self.db_path)
+        rows = tl.recent(limit=1)
+        self.assertEqual(rows[0]["status"], PENDING)
 
     def test_pending_marked_may_have_fired_on_recovery(self):
         from agents.application.trade_log import MAY_HAVE_FIRED
@@ -658,6 +697,48 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
                          min_usdc_floor=10.0)
         # available = 25 - 20 = 5 < 10 → block
         self.assertIsNotNone(gate.reason())
+
+    def test_live_entry_requires_execute_maintain(self):
+        log = TradeLog(db_path=self.db_path)
+        poly = MagicMock()
+        poly.get_usdc_balance = MagicMock(return_value=80.0)
+        with patch.dict(os.environ, {
+            "EXECUTE_BTC_DAILY": "true",
+            "EXECUTE_MAINTAIN": "false",
+        }, clear=False):
+            gate = RiskGate(
+                trade_log=log,
+                polymarket=poly,
+                starting_balance_usdc=80.0,
+                min_usdc_floor=0.0,
+                kill_switch_file=self.kill_path,
+                llm_usage_file=self.usage_path,
+            )
+            self.assertIn("EXECUTE_MAINTAIN", gate.reason())
+
+    def test_live_entry_requires_fresh_position_manager_heartbeat(self):
+        log = TradeLog(db_path=self.db_path)
+        poly = MagicMock()
+        poly.get_usdc_balance = MagicMock(return_value=80.0)
+        hb = self.tmp_path / "position_manager_heartbeat"
+        with patch.dict(os.environ, {
+            "EXECUTE_BTC_DAILY": "true",
+            "EXECUTE_MAINTAIN": "true",
+            "MAINTAIN_HEARTBEAT_PATH": str(hb),
+            "POSITION_MANAGER_ENTRY_MAX_HEARTBEAT_AGE_SEC": "180",
+        }, clear=False):
+            gate = RiskGate(
+                trade_log=log,
+                polymarket=poly,
+                starting_balance_usdc=80.0,
+                min_usdc_floor=0.0,
+                kill_switch_file=self.kill_path,
+                llm_usage_file=self.usage_path,
+            )
+            self.assertIn("heartbeat missing", gate.reason())
+
+            hb.touch()
+            self.assertIsNone(gate.reason())
 
     def _insert_filled(self, log, market_id, token_id, side, price, size_usdc):
         log.insert_terminal(

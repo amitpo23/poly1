@@ -316,6 +316,10 @@ class RiskGate:
         if self.kill_switch_file.exists():
             return f"kill switch file present: {self.kill_switch_file}"
 
+        pm_reason = self.position_manager_guard_reason()
+        if pm_reason:
+            return pm_reason
+
         if self.polymarket is not None:
             try:
                 bal = self.polymarket.get_usdc_balance()
@@ -427,6 +431,32 @@ class RiskGate:
                 f"container={actual_hash or '<unset>'} control={expected_hash}"
             )
 
+        return None
+
+    def position_manager_guard_reason(self) -> Optional[str]:
+        """Block live entries when the exit manager is disabled or stale."""
+        if not any(_env_true(flag) for flag in ENTRY_EXECUTE_FLAGS):
+            return None
+        if not _env_true("EXECUTE_MAINTAIN"):
+            return "EXECUTE_MAINTAIN must be true before live entries are allowed"
+        heartbeat_path = Path(
+            os.getenv(
+                "MAINTAIN_HEARTBEAT_PATH",
+                os.getenv("POSITION_MANAGER_HEARTBEAT_PATH", "./data/position_manager_heartbeat"),
+            )
+        )
+        max_age = _env_float("POSITION_MANAGER_ENTRY_MAX_HEARTBEAT_AGE_SEC", 180.0)
+        try:
+            age = time.time() - heartbeat_path.stat().st_mtime
+        except FileNotFoundError:
+            return f"position_manager heartbeat missing: {heartbeat_path}"
+        except OSError as exc:
+            return f"position_manager heartbeat unreadable: {exc}"
+        if age > max_age:
+            return (
+                f"position_manager heartbeat stale: age={age:.1f}s "
+                f"max={max_age:.1f}s path={heartbeat_path}"
+            )
         return None
 
     def ok(self) -> bool:

@@ -423,7 +423,7 @@ def _trade_agent_filter(agent: Optional[str]) -> tuple[str, list]:
 
 
 class TradeLog:
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, recover_on_init: Optional[bool] = None):
         self.db_path = db_path or os.getenv("TRADE_LOG_DB", "./data/trade_log.db")
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -450,7 +450,15 @@ class TradeLog:
                 "CREATE INDEX IF NOT EXISTS idx_brain_decisions_signal_source_ts "
                 "ON brain_decisions(signal_source, ts)"
             )
-        self.recover_stranded_pendings()
+        if recover_on_init is None:
+            recover_on_init = os.getenv("TRADE_LOG_RECOVER_ON_INIT", "false").lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        if recover_on_init:
+            self.recover_stranded_pendings()
 
     @contextmanager
     def _connect(self):
