@@ -64,6 +64,17 @@ class BrainIndicatorConfig:
     scanner_max_candidates: int = 12
     scanner_target_trade_decisions: int = 4
     tavily_daily_limit: int = 3
+    enable_tavily: bool = False
+    enable_llm: bool = False
+    market_universe_interval_sec: int = 300
+    alphainsider_interval_sec: int = 900
+    markouts_interval_sec: int = 60
+    provider_scorecard_interval_sec: int = 300
+    strategy_scorecard_interval_sec: int = 300
+    opportunity_factory_interval_sec: int = 60
+    market_scanner_interval_sec: int = 60
+    scanner_executor_interval_sec: int = 60
+    state_path: str = "./data/brain_indicator_cycle_state.json"
     heartbeat_path: str = "./data/brain_indicator_cycle_heartbeat"
     report_path: str = "./data/brain_indicator_cycle_latest.json"
 
@@ -93,6 +104,20 @@ class BrainIndicatorConfig:
             scanner_max_candidates=_env_int("BRAIN_INDICATOR_SCANNER_MAX_CANDIDATES", 12),
             scanner_target_trade_decisions=_env_int("BRAIN_INDICATOR_SCANNER_TARGET_TRADE_DECISIONS", 4),
             tavily_daily_limit=_env_int("BRAIN_INDICATOR_TAVILY_DAILY_LIMIT", 3),
+            enable_tavily=_env_bool("BRAIN_INDICATOR_ENABLE_TAVILY", False),
+            enable_llm=_env_bool("BRAIN_INDICATOR_ENABLE_LLM", False),
+            market_universe_interval_sec=_env_int("BRAIN_INDICATOR_MARKET_UNIVERSE_INTERVAL_SEC", 300),
+            alphainsider_interval_sec=_env_int("BRAIN_INDICATOR_ALPHAINSIDER_INTERVAL_SEC", 900),
+            markouts_interval_sec=_env_int("BRAIN_INDICATOR_MARKOUTS_INTERVAL_SEC", 60),
+            provider_scorecard_interval_sec=_env_int("BRAIN_INDICATOR_PROVIDER_SCORECARD_INTERVAL_SEC", 300),
+            strategy_scorecard_interval_sec=_env_int("BRAIN_INDICATOR_STRATEGY_SCORECARD_INTERVAL_SEC", 300),
+            opportunity_factory_interval_sec=_env_int("BRAIN_INDICATOR_OPPORTUNITY_FACTORY_INTERVAL_SEC", 60),
+            market_scanner_interval_sec=_env_int("BRAIN_INDICATOR_MARKET_SCANNER_INTERVAL_SEC", 60),
+            scanner_executor_interval_sec=_env_int("BRAIN_INDICATOR_SCANNER_EXECUTOR_INTERVAL_SEC", 60),
+            state_path=os.getenv(
+                "BRAIN_INDICATOR_STATE_PATH",
+                f"{data_dir}/brain_indicator_cycle_state.json",
+            ),
             heartbeat_path=os.getenv(
                 "BRAIN_INDICATOR_HEARTBEAT_PATH",
                 f"{data_dir}/brain_indicator_cycle_heartbeat",
@@ -224,7 +249,10 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
             {
                 "SCANNER_MAX_CANDIDATES": str(cfg.scanner_max_candidates),
                 "SCANNER_TARGET_TRADE_DECISIONS": str(cfg.scanner_target_trade_decisions),
+                "TAVILY_ENABLED": "true" if cfg.enable_tavily else "false",
                 "TAVILY_DAILY_LIMIT": str(cfg.tavily_daily_limit),
+                "META_BRAIN_STRADDLE_TAVILY_ENABLED": "true" if cfg.enable_tavily else "false",
+                "META_BRAIN_STRADDLE_LLM_ENABLED": "true" if cfg.enable_llm else "false",
             },
         ))
     if cfg.dispatch_scanner_executor:
@@ -240,6 +268,19 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
             env,
         ))
     return steps
+
+
+def step_intervals(cfg: BrainIndicatorConfig) -> dict[str, int]:
+    return {
+        "market_universe": cfg.market_universe_interval_sec,
+        "alphainsider_rankings": cfg.alphainsider_interval_sec,
+        "shadow_markouts": cfg.markouts_interval_sec,
+        "provider_scorecard": cfg.provider_scorecard_interval_sec,
+        "strategy_scorecard": cfg.strategy_scorecard_interval_sec,
+        "opportunity_factory": cfg.opportunity_factory_interval_sec,
+        "market_scanner": cfg.market_scanner_interval_sec,
+        "scanner_executor_dispatch": cfg.scanner_executor_interval_sec,
+    }
 
 
 def run_once(
@@ -258,9 +299,29 @@ def run_once(
         "steps": [],
         "blockers": [],
     }
+    state_path = Path(cfg.state_path)
+    state = _read_json(state_path)
+    last_run = state.get("last_run_ts") if isinstance(state.get("last_run_ts"), dict) else {}
+    now_ts = time.time()
+    intervals = step_intervals(cfg)
     if cfg.allow_live_dispatch and cfg.no_trade_guard:
         report["blockers"].append("allow_live_dispatch_ignored_by_no_trade_guard")
     for name, cmd, env_overrides in build_steps(cfg):
+        interval = max(0, int(intervals.get(name, 0)))
+        previous = float(last_run.get(name) or 0.0)
+        elapsed = now_ts - previous if previous else None
+        if interval and previous and elapsed is not None and elapsed < interval:
+            report["steps"].append({
+                "name": name,
+                "ok": True,
+                "returncode": 0,
+                "duration_sec": 0.0,
+                "skipped": True,
+                "skip_reason": "cadence",
+                "interval_sec": interval,
+                "next_due_in_sec": round(interval - elapsed, 3),
+            })
+            continue
         if dry_run:
             report["steps"].append({
                 "name": name,
@@ -270,6 +331,7 @@ def run_once(
                 "command": cmd,
                 "env_overrides": env_overrides,
                 "skipped": True,
+                "skip_reason": "dry_run",
             })
             continue
         env = os.environ.copy()
@@ -300,8 +362,13 @@ def run_once(
         report["steps"].append(asdict(step))
         if not step.ok:
             report["blockers"].append(f"{name}_failed")
+        else:
+            last_run[name] = time.time()
     report["completed_at"] = datetime.now(timezone.utc).isoformat()
     report["ok"] = not report["blockers"]
+    state["last_run_ts"] = last_run
+    state["updated_at"] = report["completed_at"]
+    _write_json(state_path, state)
     _write_json(Path(cfg.report_path), report)
     _touch(Path(cfg.heartbeat_path))
     return report
@@ -329,6 +396,16 @@ def _write_json(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        if path.exists():
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+    return {}
 
 
 def _touch(path: Path) -> None:

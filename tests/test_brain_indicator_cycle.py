@@ -87,6 +87,64 @@ class BrainIndicatorCycleTests(unittest.TestCase):
                 self.assertEqual(env["EXECUTE"], "false")
                 self.assertEqual(env["EXECUTE_SCANNER_EXECUTOR"], "false")
 
+    def test_market_scanner_disables_expensive_providers_by_default(self):
+        cfg = BrainIndicatorConfig(
+            run_market_universe=False,
+            run_alphainsider=False,
+            run_markouts=False,
+            run_provider_scorecard=False,
+            run_strategy_scorecard=False,
+            run_opportunity_factory=False,
+            run_market_scanner=True,
+            dispatch_scanner_executor=False,
+            enable_tavily=False,
+            enable_llm=False,
+            tavily_daily_limit=1,
+        )
+
+        steps = build_steps(cfg)
+
+        self.assertEqual(steps[0][0], "market_scanner")
+        env = steps[0][2]
+        self.assertEqual(env["TAVILY_ENABLED"], "false")
+        self.assertEqual(env["TAVILY_DAILY_LIMIT"], "1")
+        self.assertEqual(env["META_BRAIN_STRADDLE_TAVILY_ENABLED"], "false")
+        self.assertEqual(env["META_BRAIN_STRADDLE_LLM_ENABLED"], "false")
+
+    def test_run_once_skips_steps_until_their_cadence_is_due(self):
+        calls = []
+
+        def runner(cmd, env, timeout):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = BrainIndicatorConfig(
+                data_dir=tmp,
+                state_path=str(Path(tmp) / "state.json"),
+                report_path=str(Path(tmp) / "report.json"),
+                heartbeat_path=str(Path(tmp) / "heartbeat"),
+                run_market_universe=False,
+                run_alphainsider=True,
+                run_markouts=False,
+                run_provider_scorecard=False,
+                run_strategy_scorecard=False,
+                run_opportunity_factory=False,
+                run_market_scanner=True,
+                dispatch_scanner_executor=False,
+                alphainsider_interval_sec=900,
+                market_scanner_interval_sec=60,
+            )
+
+            first = run_once(cfg, runner=runner)
+            second = run_once(cfg, runner=runner)
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(step.get("skipped") for step in second["steps"]))
+        self.assertTrue(all(step.get("skip_reason") == "cadence" for step in second["steps"]))
+
     def test_allow_live_is_blocked_when_no_trade_guard_is_on(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = BrainIndicatorConfig(

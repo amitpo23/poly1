@@ -34,6 +34,7 @@ brain indicator guards and the normal execution flags.
 ## Outputs
 
 - `data/brain_indicator_cycle_latest.json` — latest cycle report.
+- `data/brain_indicator_cycle_state.json` — per-step cadence state.
 - `data/brain_indicator_cycle_heartbeat` — healthcheck heartbeat.
 - `data/alphainsider_strategy_rankings_latest.json` — ranked external strategy feed.
 - `data/provider_scorecard.json` — resolved provider reliability feed.
@@ -53,6 +54,26 @@ This service should run beside `market_scanner`, `scanner-executor`,
 the money-moving gates remain in `scanner_executor`, `RiskGate`, `DecisionCouncil`,
 and `TradeLog`.
 
+## Cadence
+
+The daemon wakes every minute, but individual steps have their own cadence so
+we do not waste API calls or re-score slow-changing data unnecessarily:
+
+| Step | Default cadence | Reason |
+| --- | ---: | --- |
+| `market_universe` | 5m | Polymarket trends/liquidity move, but not every second. |
+| `alphainsider_rankings` | 15m | Strategy leaderboards are slow-moving external data. |
+| `shadow_markouts` | 1m | 1/3/5/15m markouts mature continuously. |
+| `provider_scorecard` | 5m | Reliability changes after markouts/outcomes, not every loop. |
+| `strategy_scorecard` | 5m | Same as provider scorecard. |
+| `opportunity_factory` | 1m | Converts proven fresh signals into candidates/attention. |
+| `market_scanner` | 1m | Cheap scanner pass for current candidates. |
+| `scanner_executor_dispatch` | 1m | Shadow proof/audit pass; live remains disabled by guard. |
+
+Override with `BRAIN_INDICATOR_*_INTERVAL_SEC` only when intentionally running
+an experiment. A skipped step is recorded in the latest report with
+`skip_reason="cadence"`.
+
 ## Indicator Authority
 
 The factory separates two cases:
@@ -68,13 +89,16 @@ Only executable candidates are written in the scanner opportunity shape that
 `scanner_executor` consumes. Attention decisions are visible to audits and the
 brain, but cannot place orders by themselves.
 
-## Tavily Budget
+## Tavily / OpenAI Budget
 
 The cycle sets a conservative default:
 
-- `BRAIN_INDICATOR_TAVILY_DAILY_LIMIT=3`
-- existing Tavily cache and critical-only filters still apply.
+- `BRAIN_INDICATOR_ENABLE_TAVILY=false`
+- `BRAIN_INDICATOR_TAVILY_DAILY_LIMIT=1`
+- `BRAIN_INDICATOR_ENABLE_LLM=false`
 
-If Tavily quota is closed or expensive, leave `TAVILY_ENABLED=false`; the cycle
-will still refresh AlphaInsider, market universe, scorecards, markouts, and
-scanner/executor shadow rows.
+That means the control-room cycle uses cheap/local feeds by default:
+AlphaInsider, market universe, markouts, scorecards, OpportunityFactory, and
+scanner/executor shadow rows. Tavily/OpenAI are opt-in for a controlled run only.
+When Tavily is enabled, the shared cache, daily limit, max-results cap,
+minimum-query interval, and critical-only filters still apply.
