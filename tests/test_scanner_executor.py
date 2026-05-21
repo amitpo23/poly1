@@ -57,6 +57,12 @@ class ScannerExecutorTests(unittest.TestCase):
         min_net_ev=0.03,
         require_promotable_strategy=False,
         enforce_regime_router=False,
+        learning_guard_enabled=False,
+        learning_preferred_side="BUY",
+        learning_min_entry_price=0.40,
+        learning_max_entry_price=0.50,
+        learning_allow_proven_side_override=False,
+        learning_allow_proven_price_override=False,
     ):
         pm = MagicMock()
         pm._fillable_market_buy.return_value = (
@@ -105,6 +111,12 @@ class ScannerExecutorTests(unittest.TestCase):
             wait_override_min_score=wait_override_min_score,
             require_promotable_strategy=require_promotable_strategy,
             enforce_regime_router=enforce_regime_router,
+            learning_guard_enabled=learning_guard_enabled,
+            learning_preferred_side=learning_preferred_side,
+            learning_min_entry_price=learning_min_entry_price,
+            learning_max_entry_price=learning_max_entry_price,
+            learning_allow_proven_side_override=learning_allow_proven_side_override,
+            learning_allow_proven_price_override=learning_allow_proven_price_override,
             strategy_scorecard_path=str(Path(self.tmp.name) / "strategy_scorecard.json"),
             provider_scorecard_path=str(Path(self.tmp.name) / "provider_scorecard.json"),
         )
@@ -212,6 +224,86 @@ class ScannerExecutorTests(unittest.TestCase):
         self.assertEqual(row["reason"], "strategy_scorecard_not_promotable")
         self.assertIn('"proof_strategy_state": "shadow_only"', row["features_json"])
         self.assertIn('"proof_strategy_avg_markout_pct": -0.02', row["features_json"])
+
+    def test_learning_guard_blocks_sell_after_buy_outperformance_day(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(
+                selected_side="SELL",
+                selected_token_id="tok_down",
+                selected_outcome="Down",
+            ),
+            action="SELL",
+        )
+        engine, pm = self._engine(execute=True, learning_guard_enabled=True)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(
+            self.log.recent_brain_decisions(limit=1)[0]["reason"],
+            "today_lesson_side_blocked",
+        )
+
+    def test_learning_guard_blocks_prices_outside_observed_good_band(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(selected_entry_price=0.55),
+            action="BUY",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            price=0.55,
+            learning_guard_enabled=True,
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(
+            self.log.recent_brain_decisions(limit=1)[0]["reason"],
+            "today_lesson_price_band_blocked",
+        )
+
+    def test_learning_guard_allows_buy_inside_observed_good_band(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(selected_entry_price=0.46),
+            action="BUY",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            price=0.46,
+            learning_guard_enabled=True,
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["executed"], 1)
+        pm.execute_market_order.assert_called_once()
 
     def test_rejects_missing_execution_metadata(self):
         self.log.insert_brain_decision(

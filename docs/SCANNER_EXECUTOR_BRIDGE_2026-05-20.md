@@ -73,6 +73,12 @@ SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE=false
 SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE=0.79
 SCANNER_EXECUTOR_MAX_OPEN=4
 SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS=12
+SCANNER_EXECUTOR_LEARNING_GUARD_ENABLED=true
+SCANNER_EXECUTOR_LEARNING_PREFERRED_SIDE=BUY
+SCANNER_EXECUTOR_LEARNING_MIN_ENTRY_PRICE=0.40
+SCANNER_EXECUTOR_LEARNING_MAX_ENTRY_PRICE=0.50
+SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_SIDE_OVERRIDE=false
+SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_PRICE_OVERRIDE=false
 EXPERT_EXTERNAL_SOLO_SOURCE_TYPES=cross_market,equity_fv,alpaca_market_data,crypto_exchange_tape
 EXPERT_EXTERNAL_SOLO_MIN_CONFIDENCE=0.60
 EXPERT_EXTERNAL_SOLO_MAX_AGE_SEC=300
@@ -87,6 +93,23 @@ For controlled wait-probe runs, `scripts/runtime_control.py live-hour
 `SCANNER_EXECUTOR_MIN_SCORE` to the wait threshold. Otherwise a 0.79+ wait
 candidate can pass the timing override and still be blocked by the default 0.80
 executor score gate.
+
+## Live Learning Guard
+
+The 2026-05-21 controlled live probes produced a clear first lesson: `BUY`/Up
+entries in the executable `0.40-0.50` price band were the only slice with a
+positive signal. `SELL`/Down and `0.50-0.60` entries underperformed.
+
+`scanner_executor` can now enforce that lesson before live execution:
+
+- `today_lesson_side_blocked` rejects non-preferred sides.
+- `today_lesson_price_band_blocked` rejects live executable prices outside the
+  measured profitable band.
+
+The guard is deliberately narrow. It does not replace the brain, DecisionCouncil,
+orderbook, RiskGate, Kelly sizing, or journal idempotency. It simply prevents the
+next probe from repeating the day's worst slices until shadow/backtest evidence
+promotes them again.
 
 ## Safety Notes
 

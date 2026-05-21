@@ -86,6 +86,12 @@ class ScannerExecutorConfig:
     strategy_scorecard_path: str = "./data/strategy_scorecard.json"
     require_promotable_strategy: bool = False
     enforce_regime_router: bool = False
+    learning_guard_enabled: bool = False
+    learning_preferred_side: str = "BUY"
+    learning_min_entry_price: float = 0.40
+    learning_max_entry_price: float = 0.50
+    learning_allow_proven_side_override: bool = False
+    learning_allow_proven_price_override: bool = False
 
     @classmethod
     def from_env(cls) -> "ScannerExecutorConfig":
@@ -151,6 +157,30 @@ class ScannerExecutorConfig:
             ),
             enforce_regime_router=_env_bool(
                 "SCANNER_EXECUTOR_ENFORCE_REGIME_ROUTER",
+                False,
+            ),
+            learning_guard_enabled=_env_bool(
+                "SCANNER_EXECUTOR_LEARNING_GUARD_ENABLED",
+                False,
+            ),
+            learning_preferred_side=os.getenv(
+                "SCANNER_EXECUTOR_LEARNING_PREFERRED_SIDE",
+                "BUY",
+            ).strip().upper(),
+            learning_min_entry_price=_env_float(
+                "SCANNER_EXECUTOR_LEARNING_MIN_ENTRY_PRICE",
+                0.40,
+            ),
+            learning_max_entry_price=_env_float(
+                "SCANNER_EXECUTOR_LEARNING_MAX_ENTRY_PRICE",
+                0.50,
+            ),
+            learning_allow_proven_side_override=_env_bool(
+                "SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_SIDE_OVERRIDE",
+                False,
+            ),
+            learning_allow_proven_price_override=_env_bool(
+                "SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_PRICE_OVERRIDE",
                 False,
             ),
         )
@@ -289,6 +319,25 @@ class ScannerExecutor:
         if side not in {"BUY", "SELL"} or not token_id:
             self._record_reject(row, "missing_execution_metadata", {"side": side, "token_id": bool(token_id)})
             return "skipped"
+        if (
+            self.cfg.learning_guard_enabled
+            and self.cfg.learning_preferred_side in {"BUY", "SELL"}
+            and side != self.cfg.learning_preferred_side
+            and not (
+                self.cfg.learning_allow_proven_side_override
+                and self._has_proven_override(row, features)
+            )
+        ):
+            self._record_reject(
+                row,
+                "today_lesson_side_blocked",
+                {
+                    "side": side,
+                    "preferred_side": self.cfg.learning_preferred_side,
+                    "lesson": "2026-05-21_live_buy_up_outperformed_sell_down",
+                },
+            )
+            return "skipped"
 
         outcomes = _as_list(features.get("outcomes")) or ["Yes", "No"]
         token_ids = _as_list(features.get("clob_token_ids"))
@@ -356,6 +405,31 @@ class ScannerExecutor:
             return "skipped"
 
         executable_entry_price = _safe_float(avg_price, live_price) or live_price
+        if (
+            self.cfg.learning_guard_enabled
+            and not (
+                self.cfg.learning_min_entry_price
+                <= executable_entry_price
+                < self.cfg.learning_max_entry_price
+            )
+            and not (
+                self.cfg.learning_allow_proven_price_override
+                and self._has_proven_override(row, features)
+            )
+        ):
+            self._record_reject(
+                row,
+                "today_lesson_price_band_blocked",
+                {
+                    "live_entry_price": round(live_price, 4),
+                    "avg_entry_price": round(executable_entry_price, 4),
+                    "min_entry_price": self.cfg.learning_min_entry_price,
+                    "max_entry_price": self.cfg.learning_max_entry_price,
+                    "lesson": "2026-05-21_live_best_band_0.40_0.50",
+                    **_round_float_payload(book_quality),
+                },
+            )
+            return "skipped"
         scanner_entry_price = _safe_float(features.get("selected_entry_price"), 0.0)
         if scanner_entry_price > 0:
             entry_drift = (executable_entry_price - scanner_entry_price) / scanner_entry_price
@@ -473,6 +547,10 @@ class ScannerExecutor:
             **sizing.features(),
             **proof_features,
             **regime_features,
+            "learning_guard_enabled": self.cfg.learning_guard_enabled,
+            "learning_preferred_side": self.cfg.learning_preferred_side,
+            "learning_min_entry_price": self.cfg.learning_min_entry_price,
+            "learning_max_entry_price": self.cfg.learning_max_entry_price,
         }
 
         if maker_shadow_candidate:
@@ -613,6 +691,18 @@ class ScannerExecutor:
         if source in proven_sources or any(marker in signal_source for marker in proven_markers):
             return min(self.cfg.min_score, self.cfg.min_proven_calibrated_score)
         return self.cfg.min_score
+
+    def _has_proven_override(self, row: dict, features: dict) -> bool:
+        source = str(features.get("estimated_win_probability_source") or "")
+        signal_source = str(row.get("signal_source") or features.get("signal_source") or "")
+        return (
+            source in {
+                "alphainsider_proven_family_plus_crypto_tape",
+                "wallet_external_winrate",
+            }
+            or "alphainsider_proven" in signal_source
+            or "proven_wallet" in signal_source
+        )
 
     def _record_reject(self, row: dict, reason: str, features: dict) -> None:
         row_features = _parse_features(row.get("features_json"))
