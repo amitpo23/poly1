@@ -259,9 +259,10 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
         env = {
             "EXECUTE_SCANNER_EXECUTOR": "false",
             "EXECUTE": "false",
+            "RUNTIME_AGENT": "scanner_executor",
         }
         if cfg.allow_live_dispatch and not cfg.no_trade_guard:
-            env = {}
+            env = {"RUNTIME_AGENT": "scanner_executor"}
         steps.append((
             "scanner_executor_dispatch",
             [py, "-m", "agents.application.scanner_executor", "--once", "--db", cfg.db_path],

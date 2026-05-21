@@ -29,6 +29,27 @@ class BrainIndicatorCycleTests(unittest.TestCase):
         self.assertEqual(steps[0][0], "scanner_executor_dispatch")
         self.assertEqual(steps[0][2]["EXECUTE_SCANNER_EXECUTOR"], "false")
         self.assertEqual(steps[0][2]["EXECUTE"], "false")
+        self.assertEqual(steps[0][2]["RUNTIME_AGENT"], "scanner_executor")
+
+    def test_live_dispatch_uses_scanner_executor_runtime_agent(self):
+        cfg = BrainIndicatorConfig(
+            run_market_universe=False,
+            run_alphainsider=False,
+            run_markouts=False,
+            run_provider_scorecard=False,
+            run_strategy_scorecard=False,
+            run_opportunity_factory=False,
+            run_market_scanner=False,
+            dispatch_scanner_executor=True,
+            no_trade_guard=False,
+            allow_live_dispatch=True,
+        )
+
+        steps = build_steps(cfg)
+
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0][0], "scanner_executor_dispatch")
+        self.assertEqual(steps[0][2], {"RUNTIME_AGENT": "scanner_executor"})
 
     def test_market_universe_paths_follow_cycle_data_dir(self):
         cfg = BrainIndicatorConfig(
