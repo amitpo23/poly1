@@ -14,6 +14,9 @@ class ResearchQueueTests(unittest.TestCase):
         item_ids = {item["id"] for item in queue["items"]}
         self.assertIn("vwap_microstructure_signal", item_ids)
         self.assertIn("oddpool_style_cross_venue_arb", item_ids)
+        self.assertIn("sports_cheap_hold_sweep", item_ids)
+        self.assertIn("crypto_orderflow_footprint", item_ids)
+        self.assertIn("volatility_relative_value", item_ids)
 
     def test_validation_rejects_missing_required_fields(self):
         queue = {"version": 1, "items": [{"id": "x"}]}

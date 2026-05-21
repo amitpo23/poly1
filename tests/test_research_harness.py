@@ -15,9 +15,10 @@ class ResearchHarnessTests(unittest.TestCase):
         plans = build_run_plans(queue, cfg)
         summary = summarize_harness(cfg, plans)
 
-        self.assertEqual(summary["skill_count"], 5)
-        self.assertEqual(summary["plan_count"], 5)
+        self.assertEqual(summary["skill_count"], 9)
+        self.assertEqual(summary["plan_count"], 9)
         self.assertIn("vwap_microstructure_signal", summary["ready_plan_ids"])
+        self.assertIn("sports_cheap_hold_sweep", summary["ready_plan_ids"])
         self.assertIn("latent_regime_chaos_score", summary["blocked_plan_ids"])
 
     def test_harness_rejects_unknown_guardrail(self):

@@ -47,6 +47,42 @@
       "expected_value_hypothesis": "Latent regime models may add value only after a reproducible benchmark beats simple VWAP/regime features.",
       "required_evidence": ["open_methodology", "reproducible_backtest", "walk_forward_benchmark"],
       "live_policy": "do_not_integrate_until_reproduced"
+    },
+    {
+      "id": "sports_cheap_hold_sweep",
+      "source": "30/60/90 day market_sweep backtests",
+      "status": "queued",
+      "owner_agent": "market_sweep",
+      "expected_value_hypothesis": "Cheap sports outcomes may contain a resolved-market relative-value edge, but must pass lookahead-bias and split-stability audits before live use.",
+      "required_evidence": ["split_30_60_90_backtest", "lookahead_bias_audit", "shadow_markout"],
+      "live_policy": "research_only_until_bias_audit_passes"
+    },
+    {
+      "id": "crypto_orderflow_footprint",
+      "source": "Order flow / footprint strategy family",
+      "status": "queued",
+      "owner_agent": "crypto_exchange_tape",
+      "expected_value_hypothesis": "CVD, open interest, funding, liquidation and depth imbalance features can improve crypto 5m direction decisions only if they beat raw momentum in shadow markouts.",
+      "required_evidence": ["cvd_or_orderflow_features", "shadow_markout", "provider_scorecard"],
+      "live_policy": "feature_only_until_positive_shadow_markouts"
+    },
+    {
+      "id": "volatility_relative_value",
+      "source": "Options / implied-vs-realized volatility strategies",
+      "status": "queued",
+      "owner_agent": "equity_options_fair_value",
+      "expected_value_hypothesis": "Equity and index event markets can be priced from implied volatility and live underlying moves when quote freshness and rule mapping are reliable.",
+      "required_evidence": ["implied_vs_realized_backtest", "quote_freshness", "rule_mapping"],
+      "live_policy": "shadow_only_until_resolved_equity_event_backtest"
+    },
+    {
+      "id": "rl_reward_policy_lab",
+      "source": "TensorTrade / RL research workflow",
+      "status": "queued",
+      "owner_agent": "rl_reward_lab",
+      "expected_value_hypothesis": "Offline reward rows can help rank actions, but RL output must never trade directly without a deterministic gate and walk-forward validation.",
+      "required_evidence": ["reward_dataset", "walk_forward_validation", "deterministic_gate"],
+      "live_policy": "offline_research_only"
     }
   ]
 }

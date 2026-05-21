@@ -20,6 +20,9 @@ ALLOWED_GUARDRAILS = {
     "requires_markout",
     "requires_rule_mapping",
     "requires_human_approval",
+    "requires_bias_audit",
+    "requires_walk_forward",
+    "offline_only",
 }
 
 
@@ -177,6 +180,14 @@ def _skills_for_item(item: dict[str, Any]) -> list[str]:
     item_id = str(item.get("id") or "")
     if item_id in {"vwap_microstructure_signal", "mean_reversion_regime_filter"}:
         return ["market_microstructure_review", "shadow_markout_backtest"]
+    if item_id == "sports_cheap_hold_sweep":
+        return ["market_sweep_bias_audit", "shadow_markout_backtest"]
+    if item_id == "crypto_orderflow_footprint":
+        return ["orderflow_footprint_review", "shadow_markout_backtest"]
+    if item_id == "volatility_relative_value":
+        return ["volatility_relative_value_review", "shadow_markout_backtest"]
+    if item_id == "rl_reward_policy_lab":
+        return ["reward_policy_lab", "shadow_markout_backtest"]
     if item_id == "oddpool_style_cross_venue_arb":
         return ["cross_venue_arb_review", "shadow_markout_backtest"]
     if item_id == "ssrn_research_ingestion":

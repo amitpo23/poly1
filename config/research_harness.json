@@ -50,6 +50,38 @@
       "outputs": ["shadow_spec", "required_tests", "live_blockers", "owner_agent"],
       "guardrails": ["shadow_only", "no_live_trading", "requires_human_approval"],
       "max_parallel_tasks": 1
+    },
+    {
+      "skill_id": "market_sweep_bias_audit",
+      "purpose": "Audit market-sweep candidates for lookahead bias, resolved-market survivorship bias, split-window stability, and daily budget normalization.",
+      "inputs": ["market_sweep_backtest", "gamma_market_metadata", "price_history"],
+      "outputs": ["bias_risks", "split_stability", "daily_budget_pnl", "live_blockers"],
+      "guardrails": ["read_only", "no_live_trading", "requires_backtest", "requires_bias_audit"],
+      "max_parallel_tasks": 2
+    },
+    {
+      "skill_id": "orderflow_footprint_review",
+      "purpose": "Evaluate CVD, open interest, funding, liquidation, whale, depth imbalance, and tape features before they influence crypto 5m decisions.",
+      "inputs": ["crypto_exchange_tape", "orderbook_latest", "external_convictions_crypto_tape", "shadow_markouts"],
+      "outputs": ["feature_quality", "provider_scorecard", "signal_adjustment", "live_blockers"],
+      "guardrails": ["shadow_only", "no_live_trading", "requires_markout"],
+      "max_parallel_tasks": 2
+    },
+    {
+      "skill_id": "volatility_relative_value_review",
+      "purpose": "Validate implied-vs-realized volatility and options fair-value signals for equity-linked prediction markets.",
+      "inputs": ["equity_options_fair_value", "alpaca_market_data", "openbb_market_data", "tradingview_options_snapshot"],
+      "outputs": ["implied_realized_gap", "quote_freshness", "rule_mapping", "shadow_metric"],
+      "guardrails": ["shadow_only", "no_live_trading", "requires_rule_mapping"],
+      "max_parallel_tasks": 2
+    },
+    {
+      "skill_id": "reward_policy_lab",
+      "purpose": "Build offline reward datasets from shadow markouts and validate policy-learning ideas without touching live execution.",
+      "inputs": ["decision_journal", "shadow_markouts", "rl_reward_lab"],
+      "outputs": ["reward_dataset", "walk_forward_validation_plan", "live_blockers"],
+      "guardrails": ["read_only", "no_live_trading", "offline_only", "requires_walk_forward"],
+      "max_parallel_tasks": 1
     }
   ]
 }
