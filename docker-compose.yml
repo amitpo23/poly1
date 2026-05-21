@@ -1088,6 +1088,42 @@ services:
     stop_grace_period: 30s
     profiles: ["scanner"]
 
+  brain-indicator-cycle:
+    build: .
+    image: poly1:local
+    container_name: poly1-brain-indicator-cycle
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: brain_indicator_cycle
+      BRAIN_INDICATOR_NO_TRADE_GUARD: "true"
+      BRAIN_INDICATOR_ALLOW_LIVE_DISPATCH: "false"
+      EXECUTE: "false"
+      EXECUTE_SCANNER_EXECUTOR: "false"
+    command: ["python", "scripts/brain_indicator_cycle.py", "--daemon"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL",
+             "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/brain_indicator_cycle_heartbeat') < 180\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 384m
+    cpus: "0.35"
+    stop_grace_period: 30s
+    profiles: ["scanner", "research"]
+
   market_universe:
     build: .
     image: poly1:local

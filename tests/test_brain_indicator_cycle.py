@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from scripts.brain_indicator_cycle import BrainIndicatorConfig, build_steps, run_once
+
+
+class BrainIndicatorCycleTests(unittest.TestCase):
+    def test_build_steps_includes_shadow_dispatch_guard(self):
+        cfg = BrainIndicatorConfig(
+            run_market_universe=False,
+            run_alphainsider=False,
+            run_markouts=False,
+            run_provider_scorecard=False,
+            run_strategy_scorecard=False,
+            run_market_scanner=False,
+            dispatch_scanner_executor=True,
+            no_trade_guard=True,
+            allow_live_dispatch=False,
+        )
+
+        steps = build_steps(cfg)
+
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0][0], "scanner_executor_dispatch")
+        self.assertEqual(steps[0][2]["EXECUTE_SCANNER_EXECUTOR"], "false")
+        self.assertEqual(steps[0][2]["EXECUTE"], "false")
+
+    def test_market_universe_paths_follow_cycle_data_dir(self):
+        cfg = BrainIndicatorConfig(
+            data_dir="/tmp/poly1-cycle",
+            run_market_universe=True,
+            run_alphainsider=False,
+            run_markouts=False,
+            run_provider_scorecard=False,
+            run_strategy_scorecard=False,
+            run_market_scanner=False,
+            dispatch_scanner_executor=False,
+        )
+
+        steps = build_steps(cfg)
+
+        self.assertEqual(steps[0][0], "market_universe")
+        self.assertEqual(
+            steps[0][2]["MARKET_UNIVERSE_OUTPUT_PATH"],
+            "/tmp/poly1-cycle/market_universe.json",
+        )
+        self.assertEqual(
+            steps[0][2]["MARKET_UNIVERSE_HEARTBEAT_PATH"],
+            "/tmp/poly1-cycle/market_universe_heartbeat",
+        )
+
+    def test_run_once_applies_no_trade_env_to_every_step(self):
+        seen_envs = []
+
+        def runner(cmd, env, timeout):
+            seen_envs.append((cmd, env, timeout))
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"ok": true}', stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = BrainIndicatorConfig(
+                db_path=str(Path(tmp) / "trade_log.db"),
+                data_dir=tmp,
+                report_path=str(Path(tmp) / "report.json"),
+                heartbeat_path=str(Path(tmp) / "heartbeat"),
+                run_market_universe=False,
+                run_alphainsider=False,
+                run_markouts=False,
+                run_provider_scorecard=False,
+                run_strategy_scorecard=False,
+                run_market_scanner=True,
+                dispatch_scanner_executor=True,
+                no_trade_guard=True,
+            )
+            report = run_once(cfg, runner=runner)
+
+            self.assertTrue(report["ok"])
+            self.assertTrue(Path(cfg.report_path).exists())
+            self.assertTrue(Path(cfg.heartbeat_path).exists())
+            self.assertEqual(len(seen_envs), 2)
+            for _, env, _ in seen_envs:
+                self.assertEqual(env["EXECUTE"], "false")
+                self.assertEqual(env["EXECUTE_SCANNER_EXECUTOR"], "false")
+
+    def test_allow_live_is_blocked_when_no_trade_guard_is_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = BrainIndicatorConfig(
+                data_dir=tmp,
+                report_path=str(Path(tmp) / "report.json"),
+                heartbeat_path=str(Path(tmp) / "heartbeat"),
+                run_market_universe=False,
+                run_alphainsider=False,
+                run_markouts=False,
+                run_provider_scorecard=False,
+                run_strategy_scorecard=False,
+                run_market_scanner=False,
+                dispatch_scanner_executor=False,
+                no_trade_guard=True,
+                allow_live_dispatch=True,
+            )
+
+            report = run_once(cfg, runner=lambda cmd, env, timeout: subprocess.CompletedProcess(cmd, 0))
+
+        self.assertFalse(report["ok"])
+        self.assertIn("allow_live_dispatch_ignored_by_no_trade_guard", report["blockers"])
+
+
+if __name__ == "__main__":
+    unittest.main()
