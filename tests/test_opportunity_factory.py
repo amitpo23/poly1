@@ -14,6 +14,18 @@ from agents.application.opportunity_factory import (
 from agents.application.trade_log import TradeLog
 
 
+class FakeCryptoTape:
+    def __init__(self, direction="bullish", probability=0.62, confidence=0.61):
+        self.direction = direction
+        self.probability = probability
+        self.confidence = confidence
+        self.reason = "fake_tape"
+        self.features = {"source": "fake"}
+
+    def analyze_question(self, _question):
+        return self
+
+
 class OpportunityFactoryTests(unittest.TestCase):
     def test_proven_wallet_signal_becomes_calibrated_scanner_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,6 +107,7 @@ class OpportunityFactoryTests(unittest.TestCase):
                 market_universe_path=str(universe_path),
                 report_path=str(Path(tmp) / "report.json"),
                 heartbeat_path=str(Path(tmp) / "heartbeat"),
+                enable_alphainsider_directional=False,
             )
 
             stats = OpportunityFactory(cfg=cfg, trade_log=log).run_once()
@@ -104,6 +117,83 @@ class OpportunityFactoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["agent"], "opportunity_factory")
         self.assertEqual(rows[0]["approved"], 0)
         self.assertEqual(rows[0]["reason"], "proven_indicator_without_market_direction")
+
+    def test_alphainsider_with_crypto_tape_direction_becomes_scanner_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = str(Path(tmp) / "trade_log.db")
+            log = TradeLog(db_path=db_path)
+            alpha_path = Path(tmp) / "alpha.json"
+            universe_path = Path(tmp) / "universe.json"
+            alpha_path.write_text(json.dumps({
+                "timeframes": {
+                    "month": {
+                        "top": [{
+                            "family": "trend_momentum",
+                            "strategy_id": "s-alpha",
+                            "name": "Trend",
+                            "return_pct": 0.50,
+                            "max_drawdown": 0.10,
+                            "rank_performance": 2,
+                            "rank_top": 1,
+                            "quality_score": 1.2,
+                        }]
+                    }
+                }
+            }))
+            universe_path.write_text(json.dumps({
+                "candidates": [{
+                    "eligible": True,
+                    "market_id": "123",
+                    "question": "Bitcoin Up or Down",
+                    "slug": "btc-updown-5m-x",
+                    "route_agent": "btc_5min",
+                    "asset": "btc",
+                    "horizon": "5m",
+                    "liquidity_usdc": 10000,
+                    "up_token": "up",
+                    "down_token": "down",
+                }]
+            }))
+            cfg = OpportunityFactoryConfig(
+                db_path=db_path,
+                data_dir=tmp,
+                alphainsider_path=str(alpha_path),
+                market_universe_path=str(universe_path),
+                report_path=str(Path(tmp) / "report.json"),
+                heartbeat_path=str(Path(tmp) / "heartbeat"),
+            )
+            factory = OpportunityFactory(
+                cfg=cfg,
+                trade_log=log,
+                crypto_tape=FakeCryptoTape(direction="bullish", probability=0.62, confidence=0.61),
+            )
+            factory._gamma_market = lambda _market_id: {
+                "id": "123",
+                "conditionId": "cond123",
+                "question": "Bitcoin Up or Down",
+                "slug": "btc-updown-5m-x",
+                "outcomes": '["Up","Down"]',
+                "outcomePrices": '["0.50","0.50"]',
+                "clobTokenIds": '["up-token","down-token"]',
+            }
+
+            stats = factory.run_once()
+            rows = log.recent_brain_decisions(limit=3)
+
+        self.assertEqual(stats["alphainsider_directional_candidates"], 1)
+        self.assertEqual(stats["attention_decisions"], 0)
+        self.assertEqual(rows[0]["agent"], "market_scanner")
+        self.assertEqual(rows[0]["strategy"], "scanner_trade_opportunity")
+        self.assertEqual(rows[0]["approved"], 1)
+        self.assertEqual(rows[0]["token_id"], "up-token")
+        features = json.loads(rows[0]["features_json"])
+        self.assertTrue(features["estimated_win_probability_calibrated"])
+        self.assertEqual(
+            features["estimated_win_probability_source"],
+            "alphainsider_proven_family_plus_crypto_tape",
+        )
+        self.assertEqual(features["selected_outcome"], "Up")
+        self.assertEqual(rows[0]["signal_source"], "opportunity_factory,alphainsider_proven,crypto_tape")
 
     def _insert_wallet_signal(self, log: TradeLog) -> None:
         with log._lock, log._connect() as conn:

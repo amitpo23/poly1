@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from agents.application.crypto_exchange_tape import CryptoExchangeTapeClient
 from agents.application.trade_log import TradeLog
 
 
@@ -53,6 +54,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class OpportunityFactoryConfig:
     db_path: str = "./data/trade_log.db"
@@ -70,6 +78,10 @@ class OpportunityFactoryConfig:
     min_alphainsider_return_pct: float = 0.10
     max_alphainsider_drawdown: float = 0.35
     max_alphainsider_rank: int = 25
+    enable_alphainsider_directional: bool = True
+    min_alphainsider_directional_probability: float = 0.54
+    min_alphainsider_directional_confidence: float = 0.54
+    max_alphainsider_directional_candidates: int = 6
     max_attention_decisions: int = 8
 
     @classmethod
@@ -112,6 +124,22 @@ class OpportunityFactoryConfig:
                 0.35,
             ),
             max_alphainsider_rank=_env_int("OPPORTUNITY_FACTORY_MAX_ALPHAINSIDER_RANK", 25),
+            enable_alphainsider_directional=_env_bool(
+                "OPPORTUNITY_FACTORY_ENABLE_ALPHAINSIDER_DIRECTIONAL",
+                True,
+            ),
+            min_alphainsider_directional_probability=_env_float(
+                "OPPORTUNITY_FACTORY_MIN_ALPHAINSIDER_DIRECTIONAL_PROBABILITY",
+                0.54,
+            ),
+            min_alphainsider_directional_confidence=_env_float(
+                "OPPORTUNITY_FACTORY_MIN_ALPHAINSIDER_DIRECTIONAL_CONFIDENCE",
+                0.54,
+            ),
+            max_alphainsider_directional_candidates=_env_int(
+                "OPPORTUNITY_FACTORY_MAX_ALPHAINSIDER_DIRECTIONAL_CANDIDATES",
+                6,
+            ),
             max_attention_decisions=_env_int("OPPORTUNITY_FACTORY_MAX_ATTENTION_DECISIONS", 8),
         )
 
@@ -122,21 +150,27 @@ class OpportunityFactory:
         *,
         cfg: Optional[OpportunityFactoryConfig] = None,
         trade_log: Optional[TradeLog] = None,
+        crypto_tape: Optional[CryptoExchangeTapeClient] = None,
     ) -> None:
         self.cfg = cfg or OpportunityFactoryConfig.from_env()
         self.trade_log = trade_log or TradeLog(db_path=self.cfg.db_path)
+        self.crypto_tape = crypto_tape or CryptoExchangeTapeClient()
 
     def run_once(self) -> dict:
         stats = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "wallet_candidates": 0,
+            "alphainsider_directional_candidates": 0,
             "attention_decisions": 0,
             "wallet_skipped": {},
             "proven_alphainsider_families": [],
         }
         proven = self._proven_alphainsider()
         stats["proven_alphainsider_families"] = sorted(proven.keys())
-        stats["attention_decisions"] = self._write_attention_decisions(proven)
+        (
+            stats["alphainsider_directional_candidates"],
+            stats["attention_decisions"],
+        ) = self._write_alphainsider_opportunities(proven)
         wallet_rows = self._fresh_wallet_signals()
         for row in wallet_rows:
             if stats["wallet_candidates"] >= self.cfg.max_wallet_candidates:
@@ -174,20 +208,33 @@ class OpportunityFactory:
                         proven[family] = {**row, "matched_timeframe": timeframe}
         return proven
 
-    def _write_attention_decisions(self, proven: dict[str, dict]) -> int:
+    def _write_alphainsider_opportunities(self, proven: dict[str, dict]) -> tuple[int, int]:
         if not proven:
-            return 0
+            return 0, 0
         universe = _read_json(Path(self.cfg.market_universe_path))
         candidates = universe.get("candidates") or []
-        count = 0
+        directional_count = 0
+        attention_count = 0
         for cand in candidates:
-            if count >= self.cfg.max_attention_decisions:
+            if (
+                attention_count >= self.cfg.max_attention_decisions
+                and directional_count >= self.cfg.max_alphainsider_directional_candidates
+            ):
                 break
             if not bool(cand.get("eligible")):
                 continue
             family = _family_for_candidate(cand)
             source = proven.get(family)
             if not source:
+                continue
+            if (
+                self.cfg.enable_alphainsider_directional
+                and directional_count < self.cfg.max_alphainsider_directional_candidates
+                and self._write_alphainsider_directional_candidate(cand, source, family)
+            ):
+                directional_count += 1
+                continue
+            if attention_count >= self.cfg.max_attention_decisions:
                 continue
             features = {
                 "question": cand.get("question"),
@@ -222,8 +269,108 @@ class OpportunityFactory:
                 action="WATCH",
                 signal_source=f"alphainsider_strategy:{family}",
             )
-            count += 1
-        return count
+            attention_count += 1
+        return directional_count, attention_count
+
+    def _write_alphainsider_directional_candidate(
+        self,
+        cand: dict,
+        source: dict,
+        family: str,
+    ) -> bool:
+        if family != "trend_momentum":
+            return False
+        asset = str(cand.get("asset") or "").lower()
+        horizon = str(cand.get("horizon") or "").lower()
+        if asset not in {"btc", "eth", "sol", "xrp", "doge", "bnb"}:
+            return False
+        if horizon not in {"5m", "15m"}:
+            return False
+        market_key = str(cand.get("market_id") or "")
+        if market_key and self.trade_log.has_active_trade_for_market(market_key):
+            return False
+        signal = self.crypto_tape.analyze_question(str(cand.get("question") or cand.get("slug") or asset))
+        if signal.direction not in {"bullish", "bearish"}:
+            return False
+        if signal.probability < self.cfg.min_alphainsider_directional_probability:
+            return False
+        if signal.confidence < self.cfg.min_alphainsider_directional_confidence:
+            return False
+        market = self._gamma_market(market_key)
+        if not market:
+            return False
+        tokens = _json_list(market.get("clobTokenIds"))
+        outcomes = _json_list(market.get("outcomes")) or ["Up", "Down"]
+        prices = [_float(x, 0.5) for x in _json_list(market.get("outcomePrices"))[:2]]
+        if len(tokens) < 2:
+            return False
+        selected_index = 0 if signal.direction == "bullish" else 1
+        selected_price = prices[selected_index] if len(prices) > selected_index else 0.5
+        if selected_price <= 0:
+            return False
+        prob = max(0.0, min(1.0, float(signal.probability)))
+        raw_ev = (prob - selected_price) / selected_price
+        if raw_ev <= 0:
+            return False
+        side = "BUY" if selected_index == 0 else "SELL"
+        condition_id = str(market.get("conditionId") or cand.get("condition_id") or market_key)
+        features = {
+            "question": market.get("question") or cand.get("question"),
+            "condition_id": condition_id,
+            "gamma_market_id": str(market.get("id") or market_key),
+            "slug": market.get("slug") or cand.get("slug"),
+            "route_agent": cand.get("route_agent"),
+            "asset": asset,
+            "horizon": horizon,
+            "outcomes": outcomes,
+            "outcome_prices": [round(x, 4) for x in prices[:2]],
+            "clob_token_ids": [str(x) for x in tokens[:2]],
+            "selected_side": side,
+            "selected_token_id": str(tokens[selected_index]),
+            "selected_outcome": outcomes[selected_index] if len(outcomes) > selected_index else signal.direction,
+            "selected_entry_price": round(selected_price, 4),
+            "estimated_win_probability": round(prob, 4),
+            "estimated_win_probability_calibrated": True,
+            "estimated_win_probability_source": "alphainsider_proven_family_plus_crypto_tape",
+            "scanner_raw_ev": round(raw_ev, 4),
+            "evidence_route": {
+                "mode": "solo",
+                "leader": f"alphainsider:{source.get('strategy_id') or family}",
+                "provider": "alphainsider_plus_crypto_tape",
+                "direction": "yes" if selected_index == 0 else "no",
+                "probability": round(prob, 4),
+                "reason": signal.reason,
+            },
+            "alphainsider_family": family,
+            "alphainsider_strategy_id": source.get("strategy_id"),
+            "alphainsider_strategy_name": source.get("name"),
+            "alphainsider_return_pct": source.get("return_pct"),
+            "alphainsider_max_drawdown": source.get("max_drawdown"),
+            "alphainsider_rank_performance": source.get("rank_performance"),
+            "alphainsider_rank_top": source.get("rank_top"),
+            "external_direction": signal.direction,
+            "external_probability": signal.probability,
+            "external_confidence": signal.confidence,
+            "external_reason": signal.reason,
+            **{f"crypto_tape_{k}": v for k, v in (signal.features or {}).items()},
+            "market_cluster": str(market.get("slug") or cand.get("slug") or market_key)[:64],
+        }
+        self.trade_log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id=condition_id,
+            token_id=str(tokens[selected_index]),
+            approved=True,
+            reason=f"opportunity_factory_alphainsider_tape prob={prob:.3f} ev={raw_ev:.3f}",
+            score=prob,
+            market_type="crypto_updown",
+            asset=asset,
+            features=features,
+            action=side,
+            signal_source="opportunity_factory,alphainsider_proven,crypto_tape",
+        )
+        return True
 
     def _fresh_wallet_signals(self) -> list[dict]:
         cutoff = (
