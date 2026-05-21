@@ -301,7 +301,8 @@ Time held: {hold_hours:.1f} hours
 {f"External signals: {conviction_context}" if conviction_context else "External signals: none available"}
 {f"Exit policy: {exit_policy_context}" if exit_policy_context else ""}
 
-Assess whether this position should be held or exited NOW.
+Assess whether this position should be held, exited NOW, or allowed to keep
+running under the brain's authority.
 Consider:
 - Is the price moving against your thesis?
 - Would you enter this same position again at the current price?
@@ -310,9 +311,19 @@ Consider:
 - Is the market approaching resolution with the wrong outcome?
 
 Respond with valid JSON only:
-{{"action": "HOLD" or "EXIT", "reason": "one sentence", "confidence": 0.0-1.0}}
+{{
+  "action": "HOLD" | "EXTEND_HOLD" | "TAKE_PROFIT" | "EXIT_NOW" | "TIGHTEN_STOP",
+  "reason": "one sentence",
+  "confidence": 0.0-1.0,
+  "target_exit_price": optional_number_or_null,
+  "max_hold_seconds": optional_integer_or_null
+}}
 
-Example: {{"action": "EXIT", "reason": "Price moved against thesis and news confirms negative outcome", "confidence": 0.78}}
+Use TAKE_PROFIT when profit should be taken now. Use EXTEND_HOLD only when
+you would still enter this same side at the current price and the remaining
+EV justifies staying in. Use EXIT_NOW for invalidated thesis or downside risk.
+
+Example: {{"action": "TAKE_PROFIT", "reason": "The edge faded and current profit is enough", "confidence": 0.78, "target_exit_price": null, "max_hold_seconds": null}}
 """
 
     def binary_market_direction(

@@ -346,9 +346,14 @@ Chroma persistent stores. Refreshed once per 24 h or on `--refresh-dbs`.
 | `MIN_BID_DEPTH_USDC` | `20.0` | Require at least this much bid-side USDC depth before entering. Ensures exit liquidity exists. |
 | `MAX_ENTRY_SPREAD_PCT` | `0.05` | Reject market entry when bid-ask spread exceeds this fraction (5%). |
 | `POLYGON_RPC` | `https://polygon.drpc.org` | Polygon RPC endpoint. Override with paid Alchemy/Infura key for production. |
-| `MAINTAIN_TAKE_PROFIT_PCT` | `0.05` | Position manager: exit when position gains this fraction above entry price. |
-| `MAINTAIN_STOP_LOSS_PCT` | `0.03` | Position manager: exit when position drops this fraction below entry price. Tightened 2026-05-12 from 0.07 to reduce per-trade loss. |
-| `MAINTAIN_MAX_HOLD_HOURS` | `24` | Position manager: force-close after this many hours regardless of P&L. |
+| `MAINTAIN_TAKE_PROFIT_PCT` | `0.25` | Hard profit cap. The brain may exit earlier but may not hold past this cap. |
+| `MAINTAIN_SOFT_STOP_LOSS_PCT` | `0.03` | Soft stop: force immediate brain review, not blind selling. |
+| `MAINTAIN_STOP_LOSS_PCT` | `0.06` | Hard stop guardrail. |
+| `MAINTAIN_MAX_HOLD_HOURS` | `6` | Safety ceiling. Brain may extend only within bounded extension controls. |
+| `MAINTAIN_BRAIN_EXIT_AUTHORITY_ENABLED` | `true` | Allows the brain to hold through regular TP/timeout when confidence is strong. |
+| `MAINTAIN_BRAIN_HOLD_OVERRIDE_CONFIDENCE` | `0.65` | Confidence needed to hold through regular profit-taking. |
+| `MAINTAIN_BRAIN_EXTEND_HOLD_CONFIDENCE` | `0.75` | Confidence needed to extend an ordinary timeout. |
+| `MAINTAIN_BRAIN_MAX_HOLD_EXTENSION_HOURS` | `1.0` | Maximum additional hold time beyond `MAINTAIN_MAX_HOLD_HOURS`. |
 | `BTC_DAILY_MAX_SLIPPAGE_SKIPS` | `3` | btc_daily: give up on a market after N consecutive slippage failures in one daemon run. Reset on successful entry. Prevents the 58-attempt tight-loop seen on market 2214715 (2026-05-11). |
 | `MIN_ENTRY_PRICE` | `0.10` | Skip penny tokens with best ask below this price. Prevents high round-trip spread losses. |
 | `MIN_BID_DEPTH_USDC` | `20.0` | Require at least this much bid-side USDC depth before entering. Ensures exit liquidity exists. |
@@ -899,10 +904,10 @@ PositionManagerDaemon → PositionManager.run_once()
   1. filled_positions_with_id()  → all open fills, all entry agents
   2. for each position:
      a. Gamma current price
-     b. TP check  → close if gain ≥ MAINTAIN_TAKE_PROFIT_PCT
-     c. SL check  → close if loss ≥ MAINTAIN_STOP_LOSS_PCT
-     d. timeout   → close if age  ≥ MAINTAIN_MAX_HOLD_HOURS
-     e. LLM exit check (optional) + Tavily context
+     b. TP review → close only if hard cap or brain does not justify hold
+     c. SL check  → soft stop forces review; hard stop exits
+     d. timeout   → close unless brain extends within bounded guardrail
+     e. LLM/brain exit authority check + optional Tavily context
      f. write position_mark + brain_decision
   3. heartbeat
 ```
@@ -912,7 +917,8 @@ PositionManagerDaemon → PositionManager.run_once()
 | Error | Response |
 |---|---|
 | Gamma price unavailable | Skip position this cycle |
-| CLOB sell fails | Write `close_failed`; supervisor counts; N=3 in 15 min → HALT |
+| CLOB FAK sell has no immediate match | Write `exit_deferred`; keep position managed |
+| CLOB sell fails for non-liquidity reason | Write `close_failed`; supervisor counts; N threshold in window → HALT |
 | LLM exit fails | Fails open; hold decision unchanged |
 
 Env vars: `MAINTAIN_*`.

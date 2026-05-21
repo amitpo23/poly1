@@ -68,6 +68,7 @@ CLOSED_SL = "closed_stop_loss"
 CLOSED_TIMEOUT = "closed_timeout"
 CLOSED_DUST = "closed_dust"
 CLOSE_FAILED = "close_failed"
+CLOSE_DEFERRED = "exit_deferred"
 
 
 def _env_float(name: str, default: float) -> float:
@@ -132,6 +133,13 @@ class PositionManagerConfig:
     # just midpoint MTM, is truly profitable after the configured sell slippage.
     min_take_profit_net_pct: float = PROFIT_TAKE_ALLOWED_PCT
     min_take_profit_usdc: float = 0.01
+    # Brain Exit Authority: fixed TP/timeout are advisory unless the brain
+    # still wants to hold with high confidence. Hard stops, hard profit cap,
+    # HALT, liquidity, and supervisor safety remain non-overridable.
+    brain_exit_authority_enabled: bool = False
+    brain_hold_override_confidence: float = 0.65
+    brain_extend_hold_confidence: float = 0.75
+    brain_max_hold_extension_hours: float = 1.0
     # Heartbeat path for healthcheck.
     heartbeat_path: str = "/app/data/position_manager_heartbeat"
     # When False, log decisions but don't actually post SELL orders.
@@ -176,6 +184,18 @@ class PositionManagerConfig:
                 "MAINTAIN_MIN_TAKE_PROFIT_NET_PCT", PROFIT_TAKE_ALLOWED_PCT
             ),
             min_take_profit_usdc=_env_float("MAINTAIN_MIN_TAKE_PROFIT_USDC", 0.01),
+            brain_exit_authority_enabled=os.getenv(
+                "MAINTAIN_BRAIN_EXIT_AUTHORITY_ENABLED", "true"
+            ).lower() in {"1", "true", "yes", "on"},
+            brain_hold_override_confidence=_env_float(
+                "MAINTAIN_BRAIN_HOLD_OVERRIDE_CONFIDENCE", 0.65
+            ),
+            brain_extend_hold_confidence=_env_float(
+                "MAINTAIN_BRAIN_EXTEND_HOLD_CONFIDENCE", 0.75
+            ),
+            brain_max_hold_extension_hours=_env_float(
+                "MAINTAIN_BRAIN_MAX_HOLD_EXTENSION_HOURS", 1.0
+            ),
             heartbeat_path=os.getenv(
                 "MAINTAIN_HEARTBEAT_PATH",
                 "/app/data/position_manager_heartbeat",
@@ -206,6 +226,15 @@ class AggregatedPosition:
     # leg exits at TP, the partner leg's stop-loss is removed so it can
     # run freely to its own TP (its cost is already covered by the TP exit).
     straddle_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ExitAuthorityDecision:
+    action: str
+    confidence: float
+    reason: str
+    target_exit_price: Optional[float] = None
+    max_hold_seconds: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +329,10 @@ class PositionManager:
                 )
                 if reason is None:
                     continue
+            else:
+                reason = self._brain_exit_authority(pos, reason, mid)
+                if reason is None:
+                    continue
             close_result = self._close_position(pos, reason, mid)
             if close_result == "deferred":
                 result["deferred"] += 1
@@ -313,6 +346,70 @@ class PositionManager:
             else:
                 result["errors"] += 1
         return result
+
+    def _brain_exit_authority(
+        self,
+        pos: AggregatedPosition,
+        reason: str,
+        mid: float,
+    ) -> Optional[str]:
+        """Allow the brain to keep a winner running within hard guardrails.
+
+        This is intentionally narrow: the brain may override regular
+        take-profit and ordinary timeout exits, but it may not override hard
+        stop-loss, the hard +25% profit cap, or the absolute max-hold
+        extension. Technical safety remains outside the brain's authority.
+        """
+        if not self.cfg.brain_exit_authority_enabled:
+            return reason
+
+        pnl_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
+        held_seconds = max(0.0, time.time() - pos.earliest_ts)
+        hard_cap = pnl_pct >= self.cfg.take_profit_pct
+        hard_stop = reason == "stop_loss" and pnl_pct <= -self.cfg.stop_loss_pct
+        absolute_hold_seconds = (
+            self.cfg.max_hold_hours + max(0.0, self.cfg.brain_max_hold_extension_hours)
+        ) * 3600
+
+        if hard_stop or hard_cap:
+            return reason
+        if reason == "timeout" and held_seconds >= absolute_hold_seconds:
+            return reason
+        if reason not in {"take_profit", "timeout"}:
+            return reason
+
+        decision = self._llm_exit_decision(pos, mid, force=True)
+        if decision is None:
+            return reason
+
+        action = decision.action.upper()
+        if action in {"HOLD", "EXTEND_HOLD"}:
+            threshold = (
+                self.cfg.brain_extend_hold_confidence
+                if reason == "timeout"
+                else self.cfg.brain_hold_override_confidence
+            )
+            if decision.confidence >= threshold:
+                self._record_brain_exit_override(
+                    pos=pos,
+                    source_reason=reason,
+                    mid=mid,
+                    decision=decision,
+                    pnl_pct=pnl_pct,
+                    held_seconds=held_seconds,
+                )
+                logger.info(
+                    "brain_exit_authority HOLD: token=%s source=%s action=%s "
+                    "confidence=%.2f pnl=%.2f%%",
+                    pos.token_id[:18],
+                    reason,
+                    action,
+                    decision.confidence,
+                    pnl_pct * 100.0,
+                )
+                return None
+        mapped = self._exit_action_to_reason(action, pos, mid)
+        return mapped or reason
 
     # --------------------------------------------------------- aggregation
 
@@ -549,6 +646,19 @@ class PositionManager:
         LLM recommends exit, or None to hold.  Never raises — errors are
         logged and treated as HOLD.
         """
+        decision = self._llm_exit_decision(pos, mid, force=force)
+        if decision is None:
+            return None
+        return self._exit_action_to_reason(decision.action, pos, mid)
+
+    def _llm_exit_decision(
+        self,
+        pos: AggregatedPosition,
+        mid: float,
+        *,
+        force: bool = False,
+    ) -> Optional[ExitAuthorityDecision]:
+        """Ask the LLM/brain for a structured exit authority decision."""
         now = time.time()
         last = self._last_llm_exit_check.get(pos.token_id, 0.0)
         if not force and now - last < self._llm_exit_interval:
@@ -650,6 +760,24 @@ class PositionManager:
             action = data.get("action", "HOLD").upper()
             reason_text = data.get("reason", "LLM exit")
             confidence = float(data.get("confidence", 0.5))
+            target_exit_price = data.get("target_exit_price")
+            max_hold_seconds = data.get("max_hold_seconds")
+            try:
+                target_exit_price = (
+                    float(target_exit_price)
+                    if target_exit_price is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                target_exit_price = None
+            try:
+                max_hold_seconds = (
+                    int(max_hold_seconds)
+                    if max_hold_seconds is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                max_hold_seconds = None
 
             logger.info(
                 "llm_exit_check: token=%s action=%s confidence=%.2f reason=%s",
@@ -666,19 +794,51 @@ class PositionManager:
                 reason=reason_text,
                 score=confidence,
                 action=action,
+                features={
+                    "entry_price": pos.avg_entry_price,
+                    "current_price": mid,
+                    "pnl_pct": (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9),
+                    "target_exit_price": target_exit_price,
+                    "max_hold_seconds": max_hold_seconds,
+                },
             )
 
-            if action == "EXIT":
-                pnl_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
-                if pnl_pct >= 0 and self._is_executable_take_profit(pos, mid):
-                    return "take_profit"
-                return "stop_loss"
+            return ExitAuthorityDecision(
+                action=action,
+                confidence=confidence,
+                reason=reason_text,
+                target_exit_price=target_exit_price,
+                max_hold_seconds=max_hold_seconds,
+            )
 
         except Exception:
             logger.exception(
                 "llm_exit_check failed for token %s (non-fatal, holding)",
                 pos.token_id[:18],
             )
+        return None
+
+    def _exit_action_to_reason(
+        self,
+        action: str,
+        pos: AggregatedPosition,
+        mid: float,
+    ) -> Optional[str]:
+        action = (action or "HOLD").upper()
+        if action in {"HOLD", "EXTEND_HOLD", "TIGHTEN_STOP"}:
+            return None
+        if action in {"TAKE_PROFIT", "EXIT_TP"}:
+            if self._is_executable_take_profit(pos, mid):
+                return "take_profit"
+            self._record_unexecutable_take_profit(pos, action.lower(), mid)
+            return None
+        if action in {"EXIT", "EXIT_NOW", "SELL"}:
+            pnl_pct = (mid - pos.avg_entry_price) / max(pos.avg_entry_price, 1e-9)
+            if pnl_pct >= 0 and self._is_executable_take_profit(pos, mid):
+                return "take_profit"
+            return "stop_loss"
+        if action in {"STOP_LOSS", "CUT_LOSS"}:
+            return "stop_loss"
         return None
 
     def _exit_policy_context(self) -> str:
@@ -758,6 +918,44 @@ class PositionManager:
             )
         except Exception:
             logger.exception("position_manager brain decision journal write failed")
+
+    def _record_brain_exit_override(
+        self,
+        *,
+        pos: AggregatedPosition,
+        source_reason: str,
+        mid: float,
+        decision: ExitAuthorityDecision,
+        pnl_pct: float,
+        held_seconds: float,
+    ) -> None:
+        try:
+            self.trade_log.insert_brain_decision(
+                agent="position_manager",
+                strategy="brain_exit_authority",
+                decision_type="exit",
+                market_id=pos.market_id,
+                token_id=pos.token_id,
+                approved=False,
+                reason="brain_hold_override",
+                score=decision.confidence,
+                features={
+                    "source_reason": source_reason,
+                    "brain_action": decision.action,
+                    "brain_reason": decision.reason,
+                    "entry_price": pos.avg_entry_price,
+                    "current_price": mid,
+                    "pnl_pct": pnl_pct,
+                    "held_seconds": held_seconds,
+                    "target_exit_price": decision.target_exit_price,
+                    "max_hold_seconds": decision.max_hold_seconds,
+                    "hold_override_confidence": self.cfg.brain_hold_override_confidence,
+                    "extend_hold_confidence": self.cfg.brain_extend_hold_confidence,
+                },
+                action="HOLD",
+            )
+        except Exception:
+            logger.exception("position_manager brain override journal write failed")
 
     # ----------------------------------------------------------- closing
 
@@ -1061,10 +1259,56 @@ class PositionManager:
             self.trade_log.mark_position_closed(pos.token_id, status=RESOLVED_LOSS)
             return True  # treat as "handled" so errors counter stays clean
 
-        # Escalate to resolved_loss when FAK keeps bouncing for too many
-        # cycles (e.g., illiquid market: 400 "no orders found to match").
-        # On-chain tokens remain redeemable via CTF; further CLOB retries
-        # are pointless and spam the journal.
+        # A 400 "no orders found to match" means the FAK did not find
+        # immediate liquidity at our limit price. That is an execution-quality
+        # problem, not proof that the market resolved against us. Keep the
+        # position open, record a non-critical deferral, and let the next
+        # cycle re-evaluate with fresh book/brain context.
+        if "no orders found to match" in err_str:
+            self.trade_log.insert_terminal(
+                cycle_id=cycle_id,
+                market_id=pos.market_id,
+                status=CLOSE_DEFERRED,
+                token_id=pos.token_id,
+                side="SELL",
+                price=sell_price,
+                size_usdc=0,
+                response=response,
+                error=err_str,
+            )
+            try:
+                self.trade_log.insert_brain_decision(
+                    agent="position_manager",
+                    strategy="execution_quality",
+                    decision_type="exit",
+                    market_id=pos.market_id,
+                    token_id=pos.token_id,
+                    approved=False,
+                    reason="exit_not_matched_deferred",
+                    score=0.0,
+                    features={
+                        "source_reason": reason,
+                        "mid": mid,
+                        "limit_price": sell_price,
+                        "error": err_str,
+                    },
+                    action="HOLD",
+                )
+            except Exception:
+                logger.exception("position_manager exit deferral journal write failed")
+            logger.info(
+                "position_manager deferred [%s]: token=%s FAK found no "
+                "immediate match at %.4f; position remains managed",
+                reason,
+                pos.token_id[:18],
+                sell_price,
+            )
+            return "deferred"
+
+        # Escalate non-liquidity close failures to resolved_loss when they keep
+        # bouncing for too many cycles. The no-match FAK case above is
+        # intentionally excluded because it is transient liquidity, not
+        # settlement proof.
         failed_count = self.trade_log.count_close_failed_for_token(pos.token_id)
         if failed_count >= self.cfg.max_close_failures:
             logger.error(

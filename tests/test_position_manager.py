@@ -10,8 +10,9 @@ from unittest.mock import MagicMock
 from agents.application.position_manager import (
     PositionManager, PositionManagerConfig, AggregatedPosition,
     CLOSED_TP, CLOSED_PARTIAL_TP, CLOSED_SL, CLOSED_TIMEOUT, CLOSED_DUST,
-    CLOSE_FAILED,
+    CLOSE_FAILED, CLOSE_DEFERRED,
 )
+from agents.application.market_brain import BrainDecision, MarketProfile
 from agents.application.trade_log import TradeLog, BTC_DAILY_OPEN, FILLED
 
 
@@ -283,6 +284,27 @@ class TestClosing(_TmpDB, unittest.TestCase):
         def invoke(self, _prompt):
             return self._Response()
 
+    class _HoldLLM:
+        class _Response:
+            content = (
+                '{"action":"EXTEND_HOLD","confidence":0.82,'
+                '"reason":"edge remains positive","target_exit_price":0.62,'
+                '"max_hold_seconds":600}'
+            )
+
+        def invoke(self, _prompt):
+            return self._Response()
+
+    class _TakeProfitBrain:
+        def evaluate_exit(self, *_args, **_kwargs):
+            return BrainDecision(
+                approved=True,
+                reason="take_profit",
+                score=0.72,
+                profile=MarketProfile("test_market"),
+                features={"test": True},
+            )
+
     def test_shadow_mode_logs_decision_no_sell_call(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)  # 10 shares
         pm = self._polymarket({"TOK": 0.55})  # +10%
@@ -405,6 +427,70 @@ class TestClosing(_TmpDB, unittest.TestCase):
         rows = self.tl.recent(limit=5)
         statuses = [r["status"] for r in rows]
         self.assertIn(CLOSE_FAILED, statuses)
+
+    def test_no_match_fak_is_deferred_not_close_failed(self):
+        self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
+        pm = self._polymarket({"TOK": 0.55})
+        pm.sell_shares = MagicMock(
+            side_effect=RuntimeError(
+                "PolyApiException[status_code=400, error_message={'error': "
+                "'no orders found to match with FAK order.'}]"
+            )
+        )
+        mgr = PositionManager(polymarket=pm, trade_log=self.tl,
+                              cfg=self._config(execute=True))
+        result = mgr.check_and_close_positions()
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(result["deferred"], 1)
+        rows = self.tl.recent(limit=5)
+        statuses = [r["status"] for r in rows]
+        self.assertIn(CLOSE_DEFERRED, statuses)
+        self.assertNotIn(CLOSE_FAILED, statuses)
+
+    def test_brain_exit_authority_can_hold_regular_take_profit(self):
+        self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
+        pm = self._polymarket({"TOK": 0.55})
+        mgr = PositionManager(
+            polymarket=pm,
+            trade_log=self.tl,
+            cfg=self._config(
+                execute=True,
+                brain_exit_authority_enabled=True,
+                brain_hold_override_confidence=0.65,
+            ),
+            brain=self._TakeProfitBrain(),
+        )
+        mgr._get_prompter = MagicMock(return_value=self._ExitPrompter())
+        mgr._get_llm = MagicMock(return_value=self._HoldLLM())
+
+        result = mgr.check_and_close_positions()
+
+        self.assertEqual(result["closed_tp"], 0)
+        self.assertEqual(result["errors"], 0)
+        pm.sell_shares.assert_not_called()
+        rows = self.tl.recent_brain_decisions(limit=5)
+        self.assertTrue(any(r["strategy"] == "brain_exit_authority" for r in rows))
+
+    def test_brain_exit_authority_cannot_override_hard_profit_cap(self):
+        self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
+        pm = self._polymarket({"TOK": 0.65})  # +30%, beyond hard cap 25%
+        mgr = PositionManager(
+            polymarket=pm,
+            trade_log=self.tl,
+            cfg=self._config(
+                execute=True,
+                brain_exit_authority_enabled=True,
+                brain_hold_override_confidence=0.65,
+            ),
+            brain=self._TakeProfitBrain(),
+        )
+        mgr._get_prompter = MagicMock(return_value=self._ExitPrompter())
+        mgr._get_llm = MagicMock(return_value=self._HoldLLM())
+
+        result = mgr.check_and_close_positions()
+
+        self.assertEqual(result["closed_tp"], 1)
+        pm.sell_shares.assert_called_once()
 
     def test_dust_exit_is_deferred_and_kept_open(self):
         self._insert_filled("M1", "TOK", "BUY", 0.50, 5.0)
