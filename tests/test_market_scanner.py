@@ -96,6 +96,67 @@ class MarketScannerTests(unittest.TestCase):
             "expert_solo:cross_market",
         )
 
+    def test_scanner_skips_active_markets_before_spending_candidate_budget(self):
+        active_market = {
+            "id": "gamma-active",
+            "conditionId": "0xactive",
+            "question": "Will active market resolve yes?",
+            "slug": "active-market",
+            "active": True,
+            "closed": False,
+            "outcomePrices": json.dumps(["0.50", "0.50"]),
+            "outcomes": json.dumps(["Yes", "No"]),
+            "clobTokenIds": json.dumps(["active_yes", "active_no"]),
+            "liquidityClob": 10000,
+            "volume24hr": 10000,
+            "endDate": (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(),
+        }
+        fresh_market = {
+            **active_market,
+            "id": "gamma-fresh",
+            "conditionId": "0xfresh",
+            "question": "Will fresh market resolve yes?",
+            "slug": "fresh-market",
+            "clobTokenIds": json.dumps(["fresh_yes", "fresh_no"]),
+        }
+        trade_id = self.log.insert_pending(
+            cycle_id="active-cycle",
+            market_id="0xactive",
+            token_id="active_yes",
+            side="BUY",
+            price=0.5,
+            size_usdc=1.0,
+            confidence=0.8,
+        )
+        self.log.mark(
+            trade_id,
+            "filled",
+            response={"shares": 2.0, "order_id": "filled-active"},
+        )
+        scanner = MarketScanner(
+            cfg=ScannerConfig(
+                market_limit=2,
+                max_candidates=1,
+                target_trade_decisions=1,
+                min_liquidity_usdc=10.0,
+                min_volume_usdc=10.0,
+                min_trade_score=0.55,
+                manifold_enabled=False,
+                skip_active_markets=True,
+            ),
+            trade_log=self.log,
+            meta_brain=_FakeMetaBrain(),
+        )
+        scanner._fetch_markets = lambda: [active_market, fresh_market]
+
+        result = scanner.scan_once()
+
+        self.assertEqual(result["skipped_active_market"], 1)
+        self.assertEqual(result["scored"], 1)
+        self.assertEqual(result["dispatched_trade"], 1)
+        row = self.log.recent_brain_decisions(limit=1)[0]
+        self.assertEqual(row["market_id"], "0xfresh")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -220,6 +220,7 @@ class ScannerConfig:
     near_res_confidence: float = 0.60
     news_shock_materiality: float = 0.40  # Tavily confidence to write news_signal
     recent_close_skip_hours: int = 12
+    skip_active_markets: bool = True
     recent_stop_penalty_hours: int = 12
     recent_stop_penalty_score: float = 0.12
     # Manifold divergence gate: only worth calling if spread exists.
@@ -252,6 +253,7 @@ class ScannerConfig:
             near_res_confidence=_env_float("SCANNER_NEAR_RES_CONFIDENCE", 0.60),
             news_shock_materiality=_env_float("SCANNER_NEWS_SHOCK_MATERIALITY", 0.40),
             recent_close_skip_hours=_env_int("SCANNER_RECENT_CLOSE_SKIP_HOURS", 12),
+            skip_active_markets=_env_bool("SCANNER_SKIP_ACTIVE_MARKETS", True),
             recent_stop_penalty_hours=_env_int("SCANNER_RECENT_STOP_PENALTY_HOURS", 12),
             recent_stop_penalty_score=_env_float("SCANNER_RECENT_STOP_PENALTY_SCORE", 0.12),
             manifold_min_divergence=_env_float("SCANNER_MANIFOLD_MIN_DIVERGENCE", 0.07),
@@ -334,6 +336,16 @@ class MarketScanner:
                 and result["dispatched_trade"] >= self.cfg.target_trade_decisions
             ):
                 break
+            market_id = str(
+                mkt.get("conditionId") or mkt.get("condition_id") or mkt.get("id") or ""
+            )
+            if (
+                self.cfg.skip_active_markets
+                and market_id
+                and self.trade_log.has_active_trade_for_market(market_id)
+            ):
+                result["skipped_active_market"] = result.get("skipped_active_market", 0) + 1
+                continue
             result["scored"] += 1
             try:
                 self._process_market(mkt, now, result, trade_clusters)
