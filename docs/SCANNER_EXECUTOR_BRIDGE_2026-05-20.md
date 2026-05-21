@@ -31,6 +31,8 @@ as execution candidates.
    - score >= `SCANNER_EXECUTOR_MIN_SCORE`
    - `estimated_win_probability_calibrated=true`; MetaBrain score alone is
      rank-only and cannot be used as EV-bearing probability
+   - if `SCANNER_EXECUTOR_REQUIRE_PROMOTABLE_STRATEGY=true`, the matching
+     `strategy_scorecard` row must be `promotion_state=promotable`
    - execution metadata is complete
    - no active/recently closed duplicate position
    - live order book is fillable and exitable
@@ -59,6 +61,7 @@ SCANNER_EXECUTOR_MIN_NET_EV=0.03
 SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT=0.04
 SCANNER_EXECUTOR_READ_ORDERBOOK_IN_SHADOW=true
 SCANNER_EXECUTOR_REQUIRE_CALIBRATED_PROBABILITY=true
+SCANNER_EXECUTOR_REQUIRE_PROMOTABLE_STRATEGY=false
 DECISION_COUNCIL_MIN_NET_EV=0.04
 DECISION_COUNCIL_EXPERT_MIN_NET_EV=0.025
 DECISION_COUNCIL_THIN_MIN_NET_EV=0.06
@@ -114,3 +117,28 @@ python scripts/provider_scorecard.py --db data/trade_log.db --out data/provider_
 MetaBrain's `SourceReliabilityAdvisor` can consume that file through
 `PROVIDER_SCORECARD_PATH`. This gives the brain a measured reliability fallback
 for providers before they have enough locally resolved live rows.
+
+## Backtest / Shadow Proof
+
+`scanner_executor` now attaches proof fields to every reject, shadow entry, and
+live entry:
+
+- `proof_strategy_state`
+- `proof_strategy_avg_markout_pct`
+- `proof_strategy_markout_samples`
+- `proof_strategy_blockers`
+- `proof_provider_source`
+- `proof_provider_winrate`
+- `proof_provider_wilson_lower`
+
+By default these fields are observability only, so a fresh high-quality external
+indicator can still lead after calibration, EV, orderbook and RiskGate checks.
+For a stricter live run, set:
+
+```env
+SCANNER_EXECUTOR_REQUIRE_PROMOTABLE_STRATEGY=true
+STRATEGY_SCORECARD_PATH=/app/data/strategy_scorecard.json
+```
+
+Then backtest/shadow evidence becomes a hard gate: a strategy with negative or
+missing markouts stays shadow-only until the scorecard promotes it.

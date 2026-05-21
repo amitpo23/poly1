@@ -80,6 +80,9 @@ class ScannerExecutorConfig:
     reentry_cooldown_hours: int = 12
     shadow_entry_cooldown_minutes: int = 10
     heartbeat_path: str = "/app/data/scanner_executor_heartbeat"
+    provider_scorecard_path: str = "./data/provider_scorecard.json"
+    strategy_scorecard_path: str = "./data/strategy_scorecard.json"
+    require_promotable_strategy: bool = False
 
     @classmethod
     def from_env(cls) -> "ScannerExecutorConfig":
@@ -126,6 +129,18 @@ class ScannerExecutorConfig:
             heartbeat_path=os.getenv(
                 "SCANNER_EXECUTOR_HEARTBEAT_PATH",
                 "/app/data/scanner_executor_heartbeat",
+            ),
+            provider_scorecard_path=os.getenv(
+                "PROVIDER_SCORECARD_PATH",
+                "./data/provider_scorecard.json",
+            ),
+            strategy_scorecard_path=os.getenv(
+                "STRATEGY_SCORECARD_PATH",
+                "./data/strategy_scorecard.json",
+            ),
+            require_promotable_strategy=_env_bool(
+                "SCANNER_EXECUTOR_REQUIRE_PROMOTABLE_STRATEGY",
+                False,
             ),
         )
 
@@ -242,6 +257,17 @@ class ScannerExecutor:
                         "missing",
                     ),
                 },
+            )
+            return "skipped"
+        proof_features = self._proof_snapshot(row, features)
+        if (
+            self.cfg.require_promotable_strategy
+            and proof_features.get("proof_strategy_state") != "promotable"
+        ):
+            self._record_reject(
+                row,
+                "strategy_scorecard_not_promotable",
+                proof_features,
             )
             return "skipped"
         if side not in {"BUY", "SELL"} or not token_id:
@@ -425,6 +451,7 @@ class ScannerExecutor:
             **_round_float_payload(book_quality),
             **council.features,
             **sizing.features(),
+            **proof_features,
         }
 
         if maker_shadow_candidate:
@@ -554,6 +581,7 @@ class ScannerExecutor:
         signal_source = str(row.get("signal_source") or row_features.get("signal_source") or "market_scanner")
         token_id = str((row_features.get("selected_token_id") or ""))
         action = str(row.get("action") or row_features.get("selected_side") or "")
+        proof_features = self._proof_snapshot(row, row_features)
         self.trade_log.insert_brain_decision(
             agent="scanner_executor",
             strategy="execute_scanner_trade_opportunity",
@@ -567,6 +595,7 @@ class ScannerExecutor:
             features={
                 "source_decision_id": int(row["id"]),
                 "scanner_signal_source": signal_source,
+                **proof_features,
                 **features,
             },
             action=action,
@@ -596,6 +625,7 @@ class ScannerExecutor:
             features={
                 "source_decision_id": int(row["id"]),
                 "question": row_features.get("question"),
+                **proof_features,
                 **features,
             },
         )
@@ -618,6 +648,7 @@ class ScannerExecutor:
         signal_source = str(row.get("signal_source") or features.get("signal_source") or "market_scanner")
         token_id = str(features.get("selected_token_id") or "")
         action = str(features.get("selected_side") or row.get("action") or "")
+        proof_features = self._proof_snapshot(row, features)
         self.trade_log.insert_brain_decision(
             agent="scanner_executor",
             strategy="execute_scanner_trade_opportunity",
@@ -635,6 +666,7 @@ class ScannerExecutor:
                 "raw_ev": round(raw_ev, 4),
                 "net_ev": round(net_ev, 4),
                 "scanner_signal_source": signal_source,
+                **proof_features,
                 **extra,
             },
             action=action,
@@ -665,6 +697,7 @@ class ScannerExecutor:
                 "source_decision_id": int(row["id"]),
                 "question": features.get("question"),
                 "amount_usdc": round(amount_usdc, 4),
+                **proof_features,
                 **extra,
             },
         )
@@ -708,11 +741,13 @@ class ScannerExecutor:
         signal_source = str(row.get("signal_source") or features.get("signal_source") or "market_scanner")
         token_id = str(features.get("selected_token_id") or "")
         action = str(features.get("selected_side") or row.get("action") or "")
+        proof_features = self._proof_snapshot(row, features)
         payload = {
             "source_decision_id": int(row["id"]),
             "question": features.get("question"),
             "amount_usdc": round(amount_usdc, 4),
             "entry_style": "maker_first_shadow",
+            **proof_features,
             **extra,
         }
         self.trade_log.insert_brain_decision(
@@ -756,6 +791,70 @@ class ScannerExecutor:
             "scanner_executor shadow_maker_quoted: decision=%s market=%s bid=%.4f ask=%.4f ev=%.4f",
             row["id"], str(row["market_id"])[:20], maker_bid, maker_ask, raw_ev,
         )
+
+    def _proof_snapshot(self, row: dict, features: dict) -> dict:
+        """Attach local proof state from backtest/shadow scorecards.
+
+        Calibrated external evidence can lead a trade, but every executor
+        decision should still say whether our own shadow/backtest loop has
+        promoted that strategy/source.  Operators can keep this as observability
+        or enable ``SCANNER_EXECUTOR_REQUIRE_PROMOTABLE_STRATEGY`` as a hard
+        live gate.
+        """
+        proof: dict = {}
+        strategy = self._strategy_score()
+        if strategy:
+            proof.update(
+                {
+                    "proof_strategy_state": strategy.get("promotion_state"),
+                    "proof_strategy_decisions": strategy.get("decisions"),
+                    "proof_strategy_approvals": strategy.get("approvals"),
+                    "proof_strategy_markout_samples": strategy.get("markout_samples"),
+                    "proof_strategy_avg_markout_pct": strategy.get("avg_markout_pct"),
+                    "proof_strategy_blockers": strategy.get("blockers") or [],
+                }
+            )
+        else:
+            proof["proof_strategy_state"] = "missing_scorecard"
+
+        provider = self._provider_score(features, str(row.get("signal_source") or ""))
+        if provider:
+            proof.update(
+                {
+                    "proof_provider_source": provider.get("source"),
+                    "proof_provider_matched": provider.get("matched"),
+                    "proof_provider_winrate": provider.get("winrate"),
+                    "proof_provider_wilson_lower": provider.get("wilson_lower"),
+                }
+            )
+        else:
+            proof["proof_provider_source"] = "missing_scorecard_match"
+        return proof
+
+    def _strategy_score(self) -> Optional[dict]:
+        payload = _read_json(Path(self.cfg.strategy_scorecard_path))
+        for row in payload.get("strategies") or []:
+            if (
+                str(row.get("agent")) == "scanner_executor"
+                and str(row.get("strategy")) == "execute_scanner_trade_opportunity"
+            ):
+                return row
+        return None
+
+    def _provider_score(self, features: dict, signal_source: str) -> Optional[dict]:
+        payload = _read_json(Path(self.cfg.provider_scorecard_path))
+        providers = payload.get("providers") or []
+        if not providers:
+            return None
+        wanted = _source_candidates(
+            features.get("estimated_win_probability_source"),
+            signal_source,
+            features.get("evidence_route"),
+        )
+        for provider in providers:
+            if str(provider.get("source")) in wanted:
+                return provider
+        return None
 
     def _heartbeat(self) -> None:
         try:
@@ -854,6 +953,39 @@ def _round_float_payload(payload: dict) -> dict:
         key: round(value, 4) if isinstance(value, float) else value
         for key, value in (payload or {}).items()
     }
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _source_candidates(*values) -> set[str]:
+    candidates: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        if isinstance(value, dict):
+            for key in ("reason", "leader", "provider", "source", "source_id"):
+                item = value.get(key)
+                if item:
+                    candidates.update(_source_candidates(item))
+            continue
+        for chunk in str(value).replace(";", ",").split(","):
+            item = chunk.strip()
+            if not item:
+                continue
+            candidates.add(item)
+            if item.startswith("expert_solo:"):
+                candidates.add(item.split("expert_solo:", 1)[1])
+            if item.startswith("expert_conflict:"):
+                candidates.add(item.split("expert_conflict:", 1)[1])
+    return candidates
 
 
 def main() -> int:

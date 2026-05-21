@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +53,7 @@ class ScannerExecutorTests(unittest.TestCase):
         allow_wait_with_high_score=False,
         wait_override_min_score=0.79,
         min_net_ev=0.03,
+        require_promotable_strategy=False,
     ):
         pm = MagicMock()
         pm._fillable_market_buy.return_value = (
@@ -97,6 +99,9 @@ class ScannerExecutorTests(unittest.TestCase):
             require_calibrated_probability=True,
             allow_wait_with_high_score=allow_wait_with_high_score,
             wait_override_min_score=wait_override_min_score,
+            require_promotable_strategy=require_promotable_strategy,
+            strategy_scorecard_path=str(Path(self.tmp.name) / "strategy_scorecard.json"),
+            provider_scorecard_path=str(Path(self.tmp.name) / "provider_scorecard.json"),
         )
         return ScannerExecutor(
             cfg=cfg,
@@ -159,6 +164,49 @@ class ScannerExecutorTests(unittest.TestCase):
             self.log.recent_brain_decisions(limit=1)[0]["reason"],
             "probability_not_calibrated",
         )
+
+    def test_can_gate_live_entries_on_shadow_strategy_scorecard(self):
+        Path(self.tmp.name, "strategy_scorecard.json").write_text(
+            json.dumps(
+                {
+                    "strategies": [
+                        {
+                            "agent": "scanner_executor",
+                            "strategy": "execute_scanner_trade_opportunity",
+                            "decisions": 100,
+                            "approvals": 10,
+                            "markout_samples": 10,
+                            "avg_markout_pct": -0.02,
+                            "promotion_state": "shadow_only",
+                            "blockers": ["non_positive_markout"],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(),
+            action="BUY",
+        )
+        engine, pm = self._engine(execute=True, require_promotable_strategy=True)
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        row = self.log.recent_brain_decisions(limit=1)[0]
+        self.assertEqual(row["reason"], "strategy_scorecard_not_promotable")
+        self.assertIn('"proof_strategy_state": "shadow_only"', row["features_json"])
+        self.assertIn('"proof_strategy_avg_markout_pct": -0.02', row["features_json"])
 
     def test_rejects_missing_execution_metadata(self):
         self.log.insert_brain_decision(
