@@ -11,9 +11,11 @@ act:
 2. Pull AlphaInsider strategy rankings into `data/alphainsider_strategy_rankings_latest.json`.
 3. Update shadow markouts for 1/3/5/15 minute horizons.
 4. Rebuild provider and strategy scorecards.
-5. Run `market_scanner` once so MetaBrain can write approved candidates to
+5. Run `opportunity_factory` once so strong indicators become either executable
+   calibrated candidates or attention decisions.
+6. Run `market_scanner` once so MetaBrain can write approved candidates to
    `brain_decisions`.
-6. Run `scanner_executor` once in shadow mode so approved candidates become
+7. Run `scanner_executor` once in shadow mode so approved candidates become
    auditable `decision_journal` rows.
 
 ## Safety
@@ -36,6 +38,7 @@ brain indicator guards and the normal execution flags.
 - `data/alphainsider_strategy_rankings_latest.json` — ranked external strategy feed.
 - `data/provider_scorecard.json` — resolved provider reliability feed.
 - `data/strategy_scorecard.json` — shadow/live decision quality feed.
+- `data/opportunity_factory_latest.json` — strong-indicator candidate report.
 
 ## Docker
 
@@ -49,6 +52,21 @@ This service should run beside `market_scanner`, `scanner-executor`,
 `market_universe`, and `orderbook-monitor`. It is intentionally a coordinator:
 the money-moving gates remain in `scanner_executor`, `RiskGate`, `DecisionCouncil`,
 and `TradeLog`.
+
+## Indicator Authority
+
+The factory separates two cases:
+
+- **Executable candidate:** the source has a concrete market, side, token and
+  calibrated probability. Example: a proven wallet signal with external
+  win-rate.
+- **Attention decision:** the source is strong but does not yet specify a side
+  for a market. Example: a proven AlphaInsider strategy family without a current
+  TradingView long/short/flat event.
+
+Only executable candidates are written in the scanner opportunity shape that
+`scanner_executor` consumes. Attention decisions are visible to audits and the
+brain, but cannot place orders by themselves.
 
 ## Tavily Budget
 

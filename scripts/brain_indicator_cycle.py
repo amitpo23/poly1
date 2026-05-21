@@ -52,6 +52,7 @@ class BrainIndicatorConfig:
     run_markouts: bool = True
     run_provider_scorecard: bool = True
     run_strategy_scorecard: bool = True
+    run_opportunity_factory: bool = True
     run_market_scanner: bool = True
     dispatch_scanner_executor: bool = True
     allow_live_dispatch: bool = False
@@ -80,6 +81,7 @@ class BrainIndicatorConfig:
             run_markouts=_env_bool("BRAIN_INDICATOR_RUN_MARKOUTS", True),
             run_provider_scorecard=_env_bool("BRAIN_INDICATOR_RUN_PROVIDER_SCORECARD", True),
             run_strategy_scorecard=_env_bool("BRAIN_INDICATOR_RUN_STRATEGY_SCORECARD", True),
+            run_opportunity_factory=_env_bool("BRAIN_INDICATOR_RUN_OPPORTUNITY_FACTORY", True),
             run_market_scanner=_env_bool("BRAIN_INDICATOR_RUN_MARKET_SCANNER", True),
             dispatch_scanner_executor=_env_bool("BRAIN_INDICATOR_DISPATCH_SCANNER_EXECUTOR", True),
             allow_live_dispatch=_env_bool("BRAIN_INDICATOR_ALLOW_LIVE_DISPATCH", False),
@@ -202,6 +204,18 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
                 str(cfg.strategy_min_decisions),
             ],
             {},
+        ))
+    if cfg.run_opportunity_factory:
+        steps.append((
+            "opportunity_factory",
+            [py, "-m", "agents.application.opportunity_factory", "--once", "--db", cfg.db_path],
+            {
+                "OPPORTUNITY_FACTORY_DATA_DIR": str(data),
+                "OPPORTUNITY_FACTORY_ALPHAINSIDER_PATH": str(data / "alphainsider_strategy_rankings_latest.json"),
+                "OPPORTUNITY_FACTORY_MARKET_UNIVERSE_PATH": str(data / "market_universe.json"),
+                "OPPORTUNITY_FACTORY_REPORT_PATH": str(data / "opportunity_factory_latest.json"),
+                "OPPORTUNITY_FACTORY_HEARTBEAT_PATH": str(data / "opportunity_factory_heartbeat"),
+            },
         ))
     if cfg.run_market_scanner:
         steps.append((
