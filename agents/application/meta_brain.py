@@ -619,7 +619,7 @@ class EvidenceRouter:
         """
         source_types = _env_set(
             "EXPERT_EXTERNAL_SOLO_SOURCE_TYPES",
-            "cross_market,equity_fv,alpaca_market_data,openbb_market_data,crypto_exchange_tape",
+            "cross_market,equity_fv,alpaca_market_data,openbb_market_data,crypto_exchange_tape,alphainsider_strategy",
         )
         if claim.source_type not in source_types:
             return False
@@ -645,7 +645,36 @@ class EvidenceRouter:
                         return False
                 except (TypeError, ValueError):
                     return False
+        if claim.source_type == "alphainsider_strategy":
+            return self._has_alphainsider_proof(claim)
         return True
+
+    def _has_alphainsider_proof(self, claim: EvidenceClaim) -> bool:
+        raw = claim.raw or {}
+        try:
+            return_pct = float(raw.get("alphainsider_return_pct") or 0.0)
+            max_drawdown = float(raw.get("alphainsider_max_drawdown") or 1.0)
+        except (TypeError, ValueError):
+            return False
+        rank_values = []
+        for key in ("alphainsider_rank_performance", "alphainsider_rank_top"):
+            try:
+                value = int(float(raw.get(key) or 0))
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                rank_values.append(value)
+        best_rank = min(rank_values) if rank_values else 999999
+        try:
+            matched_timeframes = int(raw.get("alphainsider_matched_timeframes") or 1)
+        except (TypeError, ValueError):
+            matched_timeframes = 1
+        return (
+            return_pct >= _env_float("EXPERT_ALPHAINSIDER_MIN_RETURN_PCT", 0.10)
+            and max_drawdown <= _env_float("EXPERT_ALPHAINSIDER_MAX_DRAWDOWN", 0.35)
+            and best_rank <= _env_int("EXPERT_ALPHAINSIDER_MAX_RANK", 25)
+            and matched_timeframes >= _env_int("EXPERT_ALPHAINSIDER_MIN_MATCHED_TIMEFRAMES", 1)
+        )
 
     def _has_external_wallet_proof(self, claim: EvidenceClaim) -> bool:
         raw = claim.raw or {}

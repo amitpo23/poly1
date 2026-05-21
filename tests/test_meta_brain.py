@@ -214,6 +214,60 @@ class TestEvidenceRouter(unittest.TestCase):
         ])
         self.assertEqual(route.mode, "consensus")
 
+    @patch.dict(os.environ, {
+        "EXPERT_SOLO_MIN_PROB": "0.65",
+        "EXPERT_EXTERNAL_SOLO_MIN_CONFIDENCE": "0.60",
+        "EXPERT_ALPHAINSIDER_MIN_RETURN_PCT": "0.10",
+        "EXPERT_ALPHAINSIDER_MAX_DRAWDOWN": "0.35",
+        "EXPERT_ALPHAINSIDER_MAX_RANK": "25",
+    })
+    def test_alphainsider_proven_strategy_can_lead_as_solo_external_expert(self):
+        router = EvidenceRouter()
+        route = router.route([
+            EvidenceClaim(
+                source_id="alphainsider:MA_MACD_BB",
+                source_type="alphainsider_strategy",
+                direction="yes",
+                probability=0.68,
+                confidence=0.72,
+                freshness_sec=60,
+                raw={
+                    "alphainsider_return_pct": 0.48,
+                    "alphainsider_max_drawdown": 0.16,
+                    "alphainsider_rank_performance": 8,
+                    "alphainsider_rank_top": 6,
+                },
+            )
+        ])
+
+        self.assertEqual(route.mode, "solo")
+        self.assertEqual(route.leader.source_id, "alphainsider:MA_MACD_BB")
+
+    @patch.dict(os.environ, {
+        "EXPERT_SOLO_MIN_PROB": "0.65",
+        "EXPERT_EXTERNAL_SOLO_MIN_CONFIDENCE": "0.60",
+        "EXPERT_ALPHAINSIDER_MAX_DRAWDOWN": "0.35",
+    })
+    def test_alphainsider_high_return_is_rejected_when_drawdown_too_high(self):
+        router = EvidenceRouter()
+        route = router.route([
+            EvidenceClaim(
+                source_id="alphainsider:overfit",
+                source_type="alphainsider_strategy",
+                direction="yes",
+                probability=0.80,
+                confidence=0.90,
+                freshness_sec=60,
+                raw={
+                    "alphainsider_return_pct": 2.0,
+                    "alphainsider_max_drawdown": 0.55,
+                    "alphainsider_rank_performance": 1,
+                },
+            )
+        ])
+
+        self.assertEqual(route.mode, "consensus")
+
     def test_source_reliability_reads_signal_source(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
