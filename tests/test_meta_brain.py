@@ -24,6 +24,7 @@ from agents.application.meta_brain import (
     AlpacaMarketSignal,
     OpenBBMarketSignal,
     CryptoExchangeSignal,
+    QuantPriceFairValueSignal,
     NewsSignal,
     WhaleSentimentSignal,
 )
@@ -32,6 +33,7 @@ from agents.application.sizing import (
     binary_kelly_fraction,
     binary_raw_ev,
     kelly_size_usdc,
+    robust_kelly_fraction,
 )
 from agents.application.trade_log import TradeLog
 
@@ -340,6 +342,17 @@ class TestKellySizing(unittest.TestCase):
         self.assertAlmostEqual(sizing.amount_usdc, 5.0)
         self.assertAlmostEqual(sizing.raw_fraction, 0.20)
 
+    def test_robust_kelly_dampens_uncertain_probability(self):
+        raw = binary_kelly_fraction(0.60, 0.50)
+        robust = robust_kelly_fraction(
+            0.60,
+            0.50,
+            probability_variance=0.04,
+            penalty_lambda=25.0,
+        )
+        self.assertLess(robust, raw)
+        self.assertAlmostEqual(robust, raw / 2.0)
+
 
 # ---------------------------------------------------------------------------
 # ConvictionJSONLReader
@@ -580,6 +593,18 @@ class TestMetaBrain(unittest.TestCase):
         from agents.application.meta_brain import NewsSignal
         mb.news_reader.query = lambda question: NewsSignal(None, 0.0, 0, [], [])
         mb.equity_fv_reader.query = lambda **kwargs: EquityFairValueSignal(None, 0.5, 0.0, None, None, float("inf"))
+        mb.alpaca_reader.query = lambda question: AlpacaMarketSignal(
+            None, 0.5, 0.0, None, None, "neutral"
+        )
+        mb.openbb_reader.query = lambda question: OpenBBMarketSignal(
+            None, 0.5, 0.0, None, None, "neutral"
+        )
+        mb.crypto_tape_reader.query = lambda question: CryptoExchangeSignal(
+            None, 0.5, 0.0, None, None, "neutral"
+        )
+        mb.quant_fv_reader.query = lambda **kwargs: QuantPriceFairValueSignal(
+            None, 0.5, 0.0, None, None, None, 0.0, "none", "neutral"
+        )
         return mb
 
     def test_blocked_by_brain_gate(self):
@@ -883,6 +908,51 @@ class TestMetaBrain(unittest.TestCase):
 
         self.assertTrue(decision.approved)
         self.assertAlmostEqual(decision.features["weighted_components"]["crypto_tape"], 0.69)
+
+    @patch.dict(os.environ, {
+        "META_BRAIN_WEIGHT_BRAIN": "0.0",
+        "META_BRAIN_WEIGHT_WINRATE": "0.0",
+        "META_BRAIN_WEIGHT_CONVICTION": "0.0",
+        "META_BRAIN_WEIGHT_VELOCITY": "0.0",
+        "META_BRAIN_WEIGHT_CROSS_MARKET": "0.0",
+        "META_BRAIN_WEIGHT_EQUITY_FV": "0.0",
+        "META_BRAIN_WEIGHT_ALPACA": "0.0",
+        "META_BRAIN_WEIGHT_OPENBB": "0.0",
+        "META_BRAIN_WEIGHT_CRYPTO_TAPE": "0.0",
+        "META_BRAIN_WEIGHT_QUANT_FV": "1.0",
+        "META_BRAIN_WEIGHT_WHALE": "0.0",
+        "META_BRAIN_WEIGHT_NEWS": "0.0",
+        "META_BRAIN_WEIGHT_LIQUIDITY": "0.0",
+        "META_BRAIN_MIN_EDGE_PCT": "0.0",
+        "META_BRAIN_MIN_RAW_EV": "0.0",
+        "META_BRAIN_QUANT_FV_CALIBRATED_ENABLED": "true",
+    })
+    def test_quant_fair_value_can_provide_calibrated_probability(self):
+        mb = self._make_meta_brain(approved=True, score=0.55)
+        mb.quant_fv_reader.query = lambda **kwargs: QuantPriceFairValueSignal(
+            direction="yes",
+            probability=0.72,
+            confidence=0.72,
+            asset="BTC",
+            target_price=100000.0,
+            current_price=101000.0,
+            edge=0.22,
+            model="test",
+            reason="test quant fair value",
+            features={"quant_fv_annual_vol": 0.5},
+        )
+
+        decision = mb.synthesize(
+            market_id="m1",
+            question="Will Bitcoin be above $100,000?",
+            poly_prob=0.50,
+            hours_to_close=1.0,
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.features["internal_prob_source"], "quant_price_fair_value")
+        self.assertTrue(decision.features["internal_probability_calibrated"])
+        self.assertAlmostEqual(decision.features["weighted_components"]["quant_fv"], 0.72)
 
     @patch.dict(os.environ, {
         "META_BRAIN_WEIGHT_BRAIN": "0.0",

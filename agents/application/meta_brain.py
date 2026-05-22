@@ -47,6 +47,10 @@ from agents.application.openbb_market_data import (
     OpenBBMarketSignal,
     openbb_enabled_for_metabrain,
 )
+from agents.application.quant_price_fair_value import (
+    QuantPriceFairValueReader,
+    QuantPriceFairValueSignal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1590,6 +1594,7 @@ class MetaBrain:
         self.alpaca_reader = AlpacaMarketDataReader()
         self.openbb_reader = OpenBBMarketDataReader()
         self.crypto_tape_reader = CryptoExchangeTapeReader()
+        self.quant_fv_reader = QuantPriceFairValueReader()
         self.execution_quality = ExecutionQualityAdvisor(db_path=self.db_path)
 
     def synthesize_crypto_straddle(
@@ -2148,6 +2153,34 @@ class MetaBrain:
         except Exception as exc:
             logger.debug("meta_brain: crypto tape reader failed: %s", exc)
 
+        # 11. Quant price fair value — lognormal digital probability using
+        #     current external tape, target price, horizon, and volatility
+        #     shrinkage.  It is neutral unless all required inputs exist.
+        quant_fv = QuantPriceFairValueSignal(
+            None, 0.5, 0.0, None, None, None, 0.0, "none", "not_computed"
+        )
+        try:
+            quant_fv = self.quant_fv_reader.query(
+                question=question,
+                hours_to_close=hours_to_close,
+                market_price=poly_prob,
+                tape_features=crypto_tape.features,
+            )
+            features["quant_fv_direction"] = quant_fv.direction
+            features["quant_fv_probability"] = quant_fv.probability
+            features["quant_fv_confidence"] = quant_fv.confidence
+            features["quant_fv_asset"] = quant_fv.asset
+            features["quant_fv_target_price"] = quant_fv.target_price
+            features["quant_fv_current_price"] = quant_fv.current_price
+            features["quant_fv_edge"] = quant_fv.edge
+            features["quant_fv_model"] = quant_fv.model
+            features["quant_fv_reason"] = quant_fv.reason
+            features["quant_fv_features"] = quant_fv.features
+            if quant_fv.direction:
+                signal_sources.append(f"quant_fv:{quant_fv.asset}")
+        except Exception as exc:
+            logger.debug("meta_brain: quant fair-value reader failed: %s", exc)
+
         # 8. Weighted score. Missing win-rate data gets a neutral prior, so new
         # strategies can trade, but proven history improves the final score.
         winrate_prior = _env_float("META_BRAIN_WINRATE_PRIOR", 0.50)
@@ -2209,6 +2242,11 @@ class MetaBrain:
             crypto_tape_component = crypto_tape.probability
         elif crypto_tape_direction == "no":
             crypto_tape_component = 1.0 - crypto_tape.probability
+        quant_fv_component = 0.5
+        if quant_fv.direction == "yes":
+            quant_fv_component = quant_fv.probability
+        elif quant_fv.direction == "no":
+            quant_fv_component = 1.0 - quant_fv.probability
 
         weights = {
             "brain": _env_float("META_BRAIN_WEIGHT_BRAIN", 0.25),
@@ -2220,6 +2258,7 @@ class MetaBrain:
             "alpaca": _env_float("META_BRAIN_WEIGHT_ALPACA", 0.08),
             "openbb": _env_float("META_BRAIN_WEIGHT_OPENBB", 0.06),
             "crypto_tape": _env_float("META_BRAIN_WEIGHT_CRYPTO_TAPE", 0.12),
+            "quant_fv": _env_float("META_BRAIN_WEIGHT_QUANT_FV", 0.10),
             "whale": _env_float("META_BRAIN_WEIGHT_WHALE", 0.10),
             "news": _env_float("META_BRAIN_WEIGHT_NEWS", 0.10),
             "liquidity": _env_float("META_BRAIN_WEIGHT_LIQUIDITY", 0.05),
@@ -2234,6 +2273,7 @@ class MetaBrain:
             "alpaca": alpaca_component,
             "openbb": openbb_component,
             "crypto_tape": crypto_tape_component,
+            "quant_fv": quant_fv_component,
             "whale": whale_component,
             "news": news_component,
             "liquidity": liquidity_component,
@@ -2453,6 +2493,34 @@ class MetaBrain:
                     },
                 )
             )
+        if quant_fv.direction in ("yes", "no"):
+            quant_rel = self.source_reliability.best(
+                self.db_path,
+                ["quant_price_fair_value", f"quant_fv:{quant_fv.asset}"],
+                hours=reliability_hours,
+            )
+            claims.append(
+                EvidenceClaim(
+                    source_id=f"quant_fv:{quant_fv.asset}",
+                    source_type="quant_price_fair_value",
+                    direction=quant_fv.direction,
+                    probability=(
+                        quant_fv.probability
+                        if quant_fv.direction == "yes"
+                        else 1.0 - quant_fv.probability
+                    ),
+                    confidence=float(quant_fv.confidence),
+                    reliability=quant_rel if quant_rel.sample_size else None,
+                    raw={
+                        "asset": quant_fv.asset,
+                        "target_price": quant_fv.target_price,
+                        "current_price": quant_fv.current_price,
+                        "edge": quant_fv.edge,
+                        "model": quant_fv.model,
+                        **quant_fv.features,
+                    },
+                )
+            )
         route = self.evidence_router.route(claims)
         features["evidence_route"] = {
             "mode": route.mode,
@@ -2621,6 +2689,14 @@ class MetaBrain:
             elif cross_prob is not None:
                 internal_probability = max(0.0, min(1.0, float(cross_prob)))
                 internal_prob_source = "cross_market"
+                probability_calibrated = True
+            elif (
+                _env_bool("META_BRAIN_QUANT_FV_CALIBRATED_ENABLED", True)
+                and quant_fv.direction in ("yes", "no")
+                and quant_fv.confidence >= _env_float("QUANT_FV_MIN_CONFIDENCE", 0.55)
+            ):
+                internal_probability = max(0.0, min(1.0, float(quant_fv.probability)))
+                internal_prob_source = "quant_price_fair_value"
                 probability_calibrated = True
             else:
                 internal_probability = score

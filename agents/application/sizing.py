@@ -59,6 +59,31 @@ def binary_kelly_fraction(win_probability: float, entry_price: float) -> float:
     return max(0.0, min(1.0, edge / max(1.0 - c, 1e-9)))
 
 
+def robust_kelly_fraction(
+    win_probability: float,
+    entry_price: float,
+    *,
+    probability_variance: float = 0.0,
+    penalty_lambda: Optional[float] = None,
+) -> float:
+    """Kelly fraction dampened for probability-estimation uncertainty.
+
+    Formula: f_hat = f* / (1 + lambda * Var(f*)).  The helper is opt-in and
+    leaves the existing sizing path unchanged unless callers provide uncertainty.
+    """
+    raw = binary_kelly_fraction(win_probability, entry_price)
+    variance = max(0.0, float(probability_variance or 0.0))
+    if variance <= 0:
+        return raw
+    lam = (
+        penalty_lambda
+        if penalty_lambda is not None
+        else _env_float("ROBUST_KELLY_VARIANCE_LAMBDA", 25.0)
+    )
+    lam = max(0.0, float(lam))
+    return max(0.0, min(1.0, raw / (1.0 + lam * variance)))
+
+
 def kelly_size_usdc(
     *,
     balance_usdc: Optional[float],
@@ -66,6 +91,7 @@ def kelly_size_usdc(
     entry_price: float,
     fallback_amount_usdc: float,
     max_fraction: Optional[float] = None,
+    probability_variance: float = 0.0,
 ) -> KellySizing:
     fallback = max(0.0, float(fallback_amount_usdc))
     p = max(0.0, min(1.0, float(win_probability)))
@@ -87,6 +113,11 @@ def kelly_size_usdc(
         return KellySizing(fallback, 0.0, 0.0, edge, raw_ev, True, "missing_balance")
 
     raw_fraction = binary_kelly_fraction(p, c)
+    adjusted_fraction = robust_kelly_fraction(
+        p,
+        c,
+        probability_variance=probability_variance,
+    )
     scale = max(0.0, _env_float("KELLY_FRACTION_SCALE", 0.25))
     operator_cap = (
         max_fraction
@@ -94,7 +125,7 @@ def kelly_size_usdc(
         else _env_float("MAX_AGENT_ALLOCATION_FRACTION", 0.50)
     )
     cap_fraction = max(0.0, min(1.0, float(operator_cap)))
-    fraction = min(cap_fraction, raw_fraction * scale)
+    fraction = min(cap_fraction, adjusted_fraction * scale)
     amount = balance * fraction
 
     max_position_usdc = _env_float("KELLY_MAX_POSITION_USDC", fallback)
@@ -111,5 +142,5 @@ def kelly_size_usdc(
         edge=edge,
         raw_ev=raw_ev,
         enabled=True,
-        reason="kelly",
+        reason="robust_kelly" if probability_variance > 0 else "kelly",
     )

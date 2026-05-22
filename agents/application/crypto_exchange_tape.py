@@ -7,6 +7,7 @@ MetaBrain and external_conviction. It never places orders.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.parse
@@ -209,6 +210,17 @@ class CryptoExchangeTapeClient:
 
         start = closes[0]
         last = closes[-1]
+        log_returns = [
+            math.log(closes[i] / closes[i - 1])
+            for i in range(1, len(closes))
+            if closes[i] > 0 and closes[i - 1] > 0
+        ]
+        if len(log_returns) >= 2:
+            mean_ret = sum(log_returns) / len(log_returns)
+            variance = sum((r - mean_ret) ** 2 for r in log_returns) / (len(log_returns) - 1)
+            realized_vol_annual = math.sqrt(max(0.0, variance)) * math.sqrt(365.0 * 24.0 * 60.0)
+        else:
+            realized_vol_annual = None
         short_start = closes[max(0, len(closes) - 6)]
         momentum = (last - start) / start if start else 0.0
         short_momentum = (last - short_start) / short_start if short_start else 0.0
@@ -283,6 +295,9 @@ class CryptoExchangeTapeClient:
                 "momentum_pct": round(momentum, 6),
                 "short_momentum_pct": round(short_momentum, 6),
                 "range_pct": round(range_pct, 6),
+                "realized_volatility_annual": (
+                    None if realized_vol_annual is None else round(realized_vol_annual, 6)
+                ),
                 "volume_ratio": round(vol_ratio, 4),
                 "last_open": round(opens[-1], 6) if opens else None,
                 "bid": round(bid, 6),
