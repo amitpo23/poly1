@@ -255,6 +255,15 @@ class ScannerExecutor:
                 "SCANNER_EXECUTOR_READ_ORDERBOOK_IN_SHADOW",
                 True,
             )
+            # CLAUDE.md invariant #5 says read-only paths must use live=False.
+            # scanner_executor is an INTENTIONAL exception: even in shadow
+            # (EXECUTE_SCANNER_EXECUTOR=false), we need live=True to read live
+            # orderbooks so the decision_journal captures realistic execution
+            # quality (bid/ask depth, spread) rather than stale snapshots.
+            # The execute=False branch elsewhere prevents any order submission;
+            # live=True here only enables read calls. To make shadow runs use a
+            # read-only Polymarket client without the private key, set
+            # SCANNER_EXECUTOR_READ_ORDERBOOK_IN_SHADOW=false.
             polymarket = Polymarket(live=self.execute or read_book_in_shadow)
         self.polymarket = polymarket
         self.risk_gate = risk_gate or RiskGate(
