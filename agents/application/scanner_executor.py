@@ -280,7 +280,20 @@ class ScannerExecutor:
             "shadow": 0,
             "skipped": 0,
             "failed": 0,
+            "cycle_blocked": 0,
         }
+        # Pre-sweep RiskGate check (CLAUDE.md invariant #4: RiskGate.ok()
+        # is called twice per cycle — pre-sweep AND per-market). The
+        # per-market call is at _handle_decision; this is the pre-sweep
+        # short-circuit. If HALT appeared, balance crashed, or daily token
+        # budget is blown, we skip the whole cycle instead of paying for
+        # 50 per-market checks first.
+        cycle_block_reason = self.risk_gate.reason()
+        if cycle_block_reason:
+            logger.warning("scanner_executor cycle blocked: %s", cycle_block_reason)
+            stats["cycle_blocked"] = 1
+            self._heartbeat()
+            return stats
         rows = self.trade_log.recent_entry_trade_opportunities(
             agents=self._candidate_agents(),
             max_age_seconds=self.cfg.max_decision_age_seconds,

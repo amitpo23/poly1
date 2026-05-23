@@ -134,6 +134,45 @@ class ScannerExecutorTests(unittest.TestCase):
             execute=execute,
         ), pm
 
+    def test_pre_sweep_risk_gate_block_aborts_cycle_before_any_per_market_work(self):
+        """CLAUDE.md invariant #4: RiskGate.ok() is called twice per cycle —
+        pre-sweep AND per-market. This verifies the pre-sweep short-circuit:
+        when RiskGate.reason() returns non-None at start of run_once, the
+        entire cycle aborts without touching candidates."""
+        # Insert a real candidate that would otherwise be processed
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            asset=None,
+            action="BUY",
+            features={
+                "selected_side": "BUY",
+                "selected_token_id": "tok-up",
+                "selected_entry_price": 0.45,
+                "estimated_win_probability": 0.6,
+                "estimated_win_probability_calibrated": True,
+                "meta_timing": "now",
+            },
+            signal_source="market_scanner",
+            token_id="tok-up",
+        )
+        engine, pm = self._engine(execute=True)
+        # Make RiskGate block this cycle (e.g., HALT just appeared)
+        engine.risk_gate.reason.return_value = "HALT file present"
+        stats = engine.run_once()
+        self.assertEqual(stats["cycle_blocked"], 1)
+        self.assertEqual(stats["seen"], 0)
+        self.assertEqual(stats["executed"], 0)
+        # Critical: no order should have been placed even with a valid candidate
+        pm.execute_market_order.assert_not_called()
+        # And no per-market processing — the candidate was not even fetched.
+
     def test_executes_fresh_scanner_approval_when_ev_and_risk_pass(self):
         self.log.insert_brain_decision(
             agent="market_scanner",
