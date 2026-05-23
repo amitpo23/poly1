@@ -86,6 +86,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             cfg = BrainIndicatorConfig(
                 db_path=str(Path(tmp) / "trade_log.db"),
                 data_dir=tmp,
+                state_path=str(Path(tmp) / "state.json"),
                 report_path=str(Path(tmp) / "report.json"),
                 heartbeat_path=str(Path(tmp) / "heartbeat"),
                 run_market_universe=False,

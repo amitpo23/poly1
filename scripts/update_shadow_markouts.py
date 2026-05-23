@@ -26,6 +26,8 @@ HORIZON_COLUMNS = {
     60: "outcome_60m_json",
 }
 
+DEFAULT_DECISIONS = ("SHADOW_ENTER", "SHADOW_QUOTE", "ENTER")
+
 
 def _parse_ts(value: object) -> datetime | None:
     try:
@@ -99,16 +101,31 @@ class LiveBookFallback:
             return None
 
 
-def _eligible_rows(db_path: str, minutes: int, limit: int) -> list[dict]:
+def _parse_decisions(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        parts = value.split(",")
+    else:
+        parts = list(value)
+    out = tuple(str(x).strip().upper() for x in parts if str(x).strip())
+    return out or DEFAULT_DECISIONS
+
+
+def _eligible_rows(
+    db_path: str,
+    minutes: int,
+    limit: int,
+    decisions: tuple[str, ...],
+) -> list[dict]:
     column = HORIZON_COLUMNS[int(minutes)]
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=int(minutes))).isoformat()
+    placeholders = ",".join("?" for _ in decisions)
     with sqlite3.connect(db_path, timeout=10) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             f"""
             SELECT *
             FROM decision_journal
-            WHERE decision IN ('SHADOW_ENTER', 'SHADOW_QUOTE')
+            WHERE decision IN ({placeholders})
               AND token_id IS NOT NULL
               AND token_id != ''
               AND ts <= ?
@@ -116,7 +133,7 @@ def _eligible_rows(db_path: str, minutes: int, limit: int) -> list[dict]:
             ORDER BY id ASC
             LIMIT ?
             """,
-            (cutoff, int(limit)),
+            (*decisions, cutoff, int(limit)),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -134,6 +151,8 @@ def _markout_payload(row: dict, snapshot: dict, minutes: int) -> dict:
     payload = {
         "minutes": int(minutes),
         "snapshot_ts": snapshot.get("ts"),
+        "snapshot_source": snapshot.get("source"),
+        "snapshot_fallback": snapshot.get("fallback"),
         "target_lag_seconds": snapshot.get("target_lag_seconds"),
         "best_bid": best_bid,
         "best_ask": best_ask,
@@ -141,11 +160,12 @@ def _markout_payload(row: dict, snapshot: dict, minutes: int) -> dict:
         "ask_depth_usdc": ask_depth,
         "question": features.get("question"),
     }
-    if decision == "SHADOW_ENTER" and entry_price and best_bid is not None:
+    if decision in {"SHADOW_ENTER", "ENTER"} and entry_price and best_bid is not None:
         pnl_pct = (best_bid / entry_price) - 1.0
         payload.update(
             {
                 "model": "taker_entry_exit_at_future_bid",
+                "decision": decision,
                 "entry_price": entry_price,
                 "pnl_pct": round(pnl_pct, 6),
                 "hit_take_profit_5pct": pnl_pct >= 0.05,
@@ -191,12 +211,20 @@ def update_markouts(
     limit: int,
     max_lag_seconds: float,
     live_fallback: bool,
+    decisions: tuple[str, ...] = DEFAULT_DECISIONS,
 ) -> dict:
     log = TradeLog(db_path=db_path)
     fallback = LiveBookFallback(live_fallback)
-    summary = {"updated": 0, "missing_snapshot": 0, "live_fallback": 0, "by_horizon": {}}
+    decisions = _parse_decisions(decisions)
+    summary = {
+        "updated": 0,
+        "missing_snapshot": 0,
+        "live_fallback": 0,
+        "decisions": list(decisions),
+        "by_horizon": {},
+    }
     for minutes in horizons:
-        rows = _eligible_rows(db_path, minutes, limit)
+        rows = _eligible_rows(db_path, minutes, limit, decisions)
         horizon_stats = {
             "eligible": len(rows),
             "updated": 0,
@@ -234,12 +262,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Update shadow decision markouts")
     parser.add_argument("--db", default="./data/trade_log.db")
     parser.add_argument("--horizons", default="1,3,5,15")
+    parser.add_argument(
+        "--decisions",
+        default=",".join(DEFAULT_DECISIONS),
+        help="comma-separated decision_journal decision values to mark",
+    )
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--max-lag-seconds", type=float, default=90.0)
     parser.add_argument(
-        "--no-live-fallback",
+        "--live-fallback",
         action="store_true",
-        help="do not use current CLOB book when historical snapshots are missing",
+        help=(
+            "use the current CLOB book when historical snapshots are missing; "
+            "off by default to avoid stale post-hoc markouts"
+        ),
     )
     args = parser.parse_args()
     horizons = [int(x.strip()) for x in args.horizons.split(",") if x.strip()]
@@ -248,7 +284,8 @@ def main() -> int:
         horizons=horizons,
         limit=args.limit,
         max_lag_seconds=args.max_lag_seconds,
-        live_fallback=not args.no_live_fallback,
+        live_fallback=args.live_fallback,
+        decisions=_parse_decisions(args.decisions),
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0

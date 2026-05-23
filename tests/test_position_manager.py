@@ -192,13 +192,13 @@ class TestAggregation(_TmpDB, unittest.TestCase):
 
 class TestEvaluation(_TmpDB, unittest.TestCase):
     def _make_position(self, token_id, entry_price, total_shares=10.0,
-                      total_cost=None, age_seconds=0):
+                      total_cost=None, age_seconds=0, side="BUY"):
         if total_cost is None:
             total_cost = total_shares * entry_price
         return AggregatedPosition(
             token_id=token_id,
             market_id="M1",
-            side="BUY",
+            side=side,
             total_cost_usdc=total_cost,
             total_shares=total_shares,
             avg_entry_price=entry_price,
@@ -225,6 +225,24 @@ class TestEvaluation(_TmpDB, unittest.TestCase):
         pm = self._polymarket({"TOK_X": 0.469})  # below hard 6% threshold of 0.50
         mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
         pos = self._make_position("TOK_X", entry_price=0.50)
+        reason, _ = mgr._evaluate_position(pos)
+        self.assertEqual(reason, "stop_loss")
+
+    def test_sell_no_token_profit_uses_held_token_midpoint(self):
+        # SELL semantics are stored as holding the opposite token. A rising
+        # NO/Down token midpoint is profit and must map to take_profit.
+        pm = self._polymarket({"TOK_NO": 0.525})
+        mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
+        pos = self._make_position("TOK_NO", entry_price=0.50, side="SELL")
+        reason, mid = mgr._evaluate_position(pos)
+        self.assertEqual(reason, "take_profit")
+        self.assertAlmostEqual(mid, 0.525)
+
+    def test_sell_no_token_loss_uses_held_token_midpoint(self):
+        # A falling NO/Down token midpoint is a loss for semantic SELL.
+        pm = self._polymarket({"TOK_NO": 0.469})
+        mgr = PositionManager(polymarket=pm, trade_log=self.tl, cfg=self._config())
+        pos = self._make_position("TOK_NO", entry_price=0.50, side="SELL")
         reason, _ = mgr._evaluate_position(pos)
         self.assertEqual(reason, "stop_loss")
 

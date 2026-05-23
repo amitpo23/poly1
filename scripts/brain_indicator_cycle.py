@@ -59,6 +59,7 @@ class BrainIndicatorConfig:
     alphainsider_limit: int = 25
     alphainsider_sort: str = "performance"
     markout_limit: int = 500
+    markout_decisions: str = "SHADOW_ENTER,SHADOW_QUOTE,ENTER"
     strategy_min_decisions: int = 20
     provider_min_matched: int = 1
     scanner_max_candidates: int = 12
@@ -99,6 +100,10 @@ class BrainIndicatorConfig:
             alphainsider_limit=_env_int("BRAIN_INDICATOR_ALPHAINSIDER_LIMIT", 25),
             alphainsider_sort=os.getenv("BRAIN_INDICATOR_ALPHAINSIDER_SORT", "performance"),
             markout_limit=_env_int("BRAIN_INDICATOR_MARKOUT_LIMIT", 500),
+            markout_decisions=os.getenv(
+                "BRAIN_INDICATOR_MARKOUT_DECISIONS",
+                "SHADOW_ENTER,SHADOW_QUOTE,ENTER",
+            ),
             strategy_min_decisions=_env_int("BRAIN_INDICATOR_STRATEGY_MIN_DECISIONS", 20),
             provider_min_matched=_env_int("BRAIN_INDICATOR_PROVIDER_MIN_MATCHED", 1),
             scanner_max_candidates=_env_int("BRAIN_INDICATOR_SCANNER_MAX_CANDIDATES", 12),
@@ -197,6 +202,8 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
                 "1,3,5,15",
                 "--limit",
                 str(cfg.markout_limit),
+                "--decisions",
+                cfg.markout_decisions,
             ],
             {},
         ))
