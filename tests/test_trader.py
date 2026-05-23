@@ -740,6 +740,41 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
             hb.touch()
             self.assertIsNone(gate.reason())
 
+    def test_position_manager_guard_covers_all_entry_execute_flags(self):
+        """C-4 defense-in-depth: every flag in ENTRY_EXECUTE_FLAGS must
+        trigger the position_manager guard when set true without
+        EXECUTE_MAINTAIN. If a new entry agent is added but its flag is
+        forgotten from ENTRY_EXECUTE_FLAGS, this test will not catch it
+        (that's a list-completeness invariant). What this DOES verify is
+        that every flag CURRENTLY in the list correctly triggers the
+        guard — so refactoring the guard can't accidentally skip one."""
+        from agents.application.risk_gate import ENTRY_EXECUTE_FLAGS
+
+        for flag in ENTRY_EXECUTE_FLAGS:
+            with self.subTest(flag=flag):
+                log = TradeLog(db_path=self.db_path)
+                poly = MagicMock()
+                poly.get_usdc_balance = MagicMock(return_value=80.0)
+                # Clear all entry flags first, then set only the one under test
+                clear_env = {f: "false" for f in ENTRY_EXECUTE_FLAGS}
+                clear_env[flag] = "true"
+                clear_env["EXECUTE_MAINTAIN"] = "false"
+                with patch.dict(os.environ, clear_env, clear=False):
+                    gate = RiskGate(
+                        trade_log=log,
+                        polymarket=poly,
+                        starting_balance_usdc=80.0,
+                        min_usdc_floor=0.0,
+                        kill_switch_file=self.kill_path,
+                        llm_usage_file=self.usage_path,
+                    )
+                    reason = gate.reason()
+                    self.assertIsNotNone(
+                        reason,
+                        f"Guard should block when {flag}=true and EXECUTE_MAINTAIN=false",
+                    )
+                    self.assertIn("EXECUTE_MAINTAIN", reason, f"flag={flag}")
+
     def _insert_filled(self, log, market_id, token_id, side, price, size_usdc):
         log.insert_terminal(
             cycle_id="t-cycle",
