@@ -82,6 +82,7 @@ class OpportunityFactoryConfig:
     min_alphainsider_directional_probability: float = 0.54
     min_alphainsider_directional_confidence: float = 0.54
     alphainsider_tape_probability_calibrated: bool = False
+    wallet_probability_calibrated: bool = False
     max_alphainsider_directional_candidates: int = 6
     max_attention_decisions: int = 8
 
@@ -139,6 +140,10 @@ class OpportunityFactoryConfig:
             ),
             alphainsider_tape_probability_calibrated=_env_bool(
                 "OPPORTUNITY_FACTORY_ALPHAINSIDER_TAPE_PROBABILITY_CALIBRATED",
+                False,
+            ),
+            wallet_probability_calibrated=_env_bool(
+                "OPPORTUNITY_FACTORY_WALLET_PROBABILITY_CALIBRATED",
                 False,
             ),
             max_alphainsider_directional_candidates=_env_int(
@@ -446,7 +451,9 @@ class OpportunityFactory:
             "selected_entry_price": round(entry_price, 4),
             "meta_timing": "now",
             "estimated_win_probability": round(prob, 4),
-            "estimated_win_probability_calibrated": True,
+            "estimated_win_probability_calibrated": bool(
+                self.cfg.wallet_probability_calibrated
+            ),
             "estimated_win_probability_source": "wallet_external_winrate",
             "scanner_raw_ev": round(raw_ev, 4),
             "evidence_route": {

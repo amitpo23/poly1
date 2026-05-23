@@ -60,7 +60,11 @@ class OpportunityFactoryTests(unittest.TestCase):
         self.assertEqual(row["strategy"], "scanner_trade_opportunity")
         self.assertEqual(row["approved"], 1)
         features = json.loads(row["features_json"])
-        self.assertTrue(features["estimated_win_probability_calibrated"])
+        # Wallet path no longer self-labels as calibrated by default; gated
+        # by OPPORTUNITY_FACTORY_WALLET_PROBABILITY_CALIBRATED env var (default
+        # False). Per LIVE_AUDIT_2026-05-22 + SL audit: this hardcoded True
+        # caused 31% of bad SLs on 2026-05-21.
+        self.assertFalse(features["estimated_win_probability_calibrated"])
         self.assertEqual(features["estimated_win_probability_source"], "wallet_external_winrate")
         self.assertEqual(features["selected_token_id"], "up-token")
         self.assertEqual(row["signal_source"], "opportunity_factory,proven_wallet")
