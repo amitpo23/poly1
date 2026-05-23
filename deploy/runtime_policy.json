@@ -44,10 +44,52 @@
       "compose_service": "wallet-follow",
       "compose_profile": "wallet"
     },
+    "external_conviction": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction",
+      "compose_profile": "external_conviction"
+    },
     "external_conviction_api": {
       "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
       "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
       "compose_service": "external-conviction-api",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_polifly": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-polifly",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_whale": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-whale",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_divergence": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-divergence",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_debate": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-debate",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_aggregator": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-aggregator",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_tradingview": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-tradingview",
       "compose_profile": "external_conviction"
     },
     "external_conviction_crypto_tape": {
@@ -66,6 +108,24 @@
       "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
       "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
       "compose_service": "external-conviction-openbb",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_technical": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-technical",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_gdelt": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-gdelt",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_crypto_deriv": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-crypto-deriv",
       "compose_profile": "external_conviction"
     },
     "scanner_executor": {
@@ -95,6 +155,50 @@
     "telegram_reporter": {
       "compose_service": "telegram-reporter",
       "compose_profile": "monitoring"
+    }
+  },
+  "live_signal_services": {
+    "market_scanner": {
+      "compose_service": "market_scanner",
+      "compose_profile": "scanner",
+      "execute_flag": null,
+      "writes_live_orders": false
+    },
+    "brain_indicator_cycle": {
+      "compose_service": "brain-indicator-cycle",
+      "compose_profile": "scanner",
+      "execute_flag": null,
+      "writes_live_orders": false
+    },
+    "market_universe": {
+      "compose_service": "market_universe",
+      "compose_profile": "scanner",
+      "execute_flag": null,
+      "writes_live_orders": false
+    },
+    "orderbook_monitor": {
+      "compose_service": "orderbook-monitor",
+      "compose_profile": "scanner",
+      "execute_flag": null,
+      "writes_live_orders": false
+    },
+    "news_signal": {
+      "compose_service": "news-signal",
+      "compose_profile": "news_shock",
+      "execute_flag": null,
+      "writes_live_orders": false
+    },
+    "wallet_watcher": {
+      "compose_service": "wallet-watcher",
+      "compose_profile": "wallet",
+      "execute_flag": null,
+      "writes_live_orders": false
+    },
+    "hermes_forecast": {
+      "compose_service": "hermes-forecast",
+      "compose_profile": "hermes",
+      "execute_flag": null,
+      "writes_live_orders": false
     }
   },
   "shadow_research_services": {

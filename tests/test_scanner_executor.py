@@ -63,6 +63,9 @@ class ScannerExecutorTests(unittest.TestCase):
         learning_max_entry_price=0.50,
         learning_allow_proven_side_override=False,
         learning_allow_proven_price_override=False,
+        market_loss_cooldown_hours=1.0,
+        prefer_maker_for_fast_markets=True,
+        candidate_agents=("market_scanner",),
     ):
         pm = MagicMock()
         pm._fillable_market_buy.return_value = (
@@ -105,6 +108,7 @@ class ScannerExecutorTests(unittest.TestCase):
             min_net_ev=min_net_ev,
             round_trip_cost_pct=0.04,
             max_entry_drift_pct=0.04,
+            prefer_maker_for_fast_markets=prefer_maker_for_fast_markets,
             require_timing_now=True,
             require_calibrated_probability=True,
             allow_wait_with_high_score=allow_wait_with_high_score,
@@ -117,8 +121,10 @@ class ScannerExecutorTests(unittest.TestCase):
             learning_max_entry_price=learning_max_entry_price,
             learning_allow_proven_side_override=learning_allow_proven_side_override,
             learning_allow_proven_price_override=learning_allow_proven_price_override,
+            market_loss_cooldown_hours=market_loss_cooldown_hours,
             strategy_scorecard_path=str(Path(self.tmp.name) / "strategy_scorecard.json"),
             provider_scorecard_path=str(Path(self.tmp.name) / "provider_scorecard.json"),
+            candidate_agents=candidate_agents,
         )
         return ScannerExecutor(
             cfg=cfg,
@@ -153,6 +159,95 @@ class ScannerExecutorTests(unittest.TestCase):
         decisions = self.log.recent_brain_decisions(limit=2)
         self.assertEqual(decisions[0]["agent"], "scanner_executor")
         self.assertEqual(decisions[0]["approved"], 1)
+
+    def test_executes_non_scanner_agent_when_it_emits_canonical_proposal(self):
+        self.log.insert_brain_decision(
+            agent="external_conviction_api",
+            strategy="public_news_event_probability_scalping",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="public_news_approved",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(signal_source="public_news"),
+            action="BUY",
+            signal_source="public_news",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            candidate_agents=("market_scanner", "external_conviction_api"),
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["executed"], 1)
+        pm.execute_market_order.assert_called_once()
+        row = self.log.recent_decision_journal(limit=1)[0]
+        self.assertEqual(row["decision"], "ENTER")
+        self.assertIn('"proposal_source_agent": "external_conviction_api"', row["features_json"])
+
+    def test_executes_shadow_trade_plan_when_it_has_execution_metadata(self):
+        self.log.insert_brain_decision(
+            agent="external_conviction_divergence",
+            strategy="manifold_divergence_event_probability_scalping",
+            decision_type="shadow_trade_plan",
+            market_id="0xabc",
+            token_id="tok_no",
+            approved=True,
+            reason="manifold divergence",
+            score=0.78,
+            market_type="general_binary",
+            features={
+                "entry_price": 0.48,
+                "condition_id": "0xabc",
+                "clob_token_ids": '["tok_yes", "tok_no"]',
+                "outcomes": '["Yes", "No"]',
+                "estimated_win_probability_calibrated": True,
+            },
+            action="SHADOW_BUY_NO",
+            signal_source="manifold_divergence",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            candidate_agents=("external_conviction_divergence",),
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["executed"], 1)
+        pm.execute_market_order.assert_called_once()
+        recommendation = pm.execute_market_order.call_args.args[1]
+        self.assertEqual(recommendation.side, "SELL")
+        self.assertEqual(self.log.recent(limit=1)[0]["token_id"], "tok_no")
+
+    def test_rejects_non_scanner_agent_without_execution_metadata(self):
+        self.log.insert_brain_decision(
+            agent="external_conviction_api",
+            strategy="public_news_event_probability_scalping",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="public_news_approved",
+            score=0.86,
+            market_type="general_binary",
+            features={"question": "Will BTC be up?", "estimated_win_probability": 0.70},
+            action="BUY",
+            signal_source="public_news",
+        )
+        engine, pm = self._engine(
+            execute=True,
+            candidate_agents=("market_scanner", "external_conviction_api"),
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(
+            self.log.recent_brain_decisions(limit=1)[0]["reason"],
+            "proposal_missing_execution_fields",
+        )
 
     def test_rejects_rank_only_probability(self):
         self.log.insert_brain_decision(
@@ -304,6 +399,47 @@ class ScannerExecutorTests(unittest.TestCase):
 
         self.assertEqual(stats["executed"], 1)
         pm.execute_market_order.assert_called_once()
+
+    def test_learning_guard_expires_after_ttl(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(
+                selected_side="SELL",
+                selected_token_id="tok_down",
+                selected_outcome="Down",
+            ),
+            action="SELL",
+        )
+        engine, pm = self._engine(execute=True, learning_guard_enabled=True)
+        engine._learning_guard_started_ts -= 25 * 3600
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["executed"], 1)
+        pm.execute_market_order.assert_called_once()
+
+    def test_repeat_reject_quarantines_same_market(self):
+        engine, _ = self._engine(execute=True)
+        row = {
+            "id": 99,
+            "market_id": "0xrepeat",
+            "score": 0.5,
+            "signal_source": "market_scanner",
+            "action": "BUY",
+            "features_json": json.dumps(_features(condition_id="0xrepeat")),
+        }
+
+        for _ in range(engine.cfg.repeat_reject_quarantine_threshold):
+            engine._record_reject(row, "internal_edge_too_low", {"raw_ev": -0.04})
+
+        self.assertGreater(engine._market_quarantine_remaining("0xrepeat"), 0)
 
     def test_rejects_missing_execution_metadata(self):
         self.log.insert_brain_decision(
@@ -508,6 +644,32 @@ class ScannerExecutorTests(unittest.TestCase):
         self.assertEqual(journal["decision"], "SHADOW_QUOTE")
         self.assertEqual(journal["reason"], "shadow_maker_quoted")
 
+    def test_shadow_market_entry_does_not_create_real_filled_row(self):
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(question="Will this non-crypto event happen?"),
+            action="BUY",
+        )
+        engine, pm = self._engine(
+            execute=False,
+            price=0.50,
+            prefer_maker_for_fast_markets=False,
+        )
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["shadow"], 1)
+        pm.execute_market_order.assert_not_called()
+        self.assertEqual(self.log.count_recent(FILLED, hours=1), 0)
+        self.assertEqual(self.log.recent(limit=1)[0]["status"], "shadow_filled")
+
     def test_shadow_mode_dedupes_recent_same_market_token(self):
         self.log.insert_brain_decision(
             agent="market_scanner",
@@ -554,6 +716,43 @@ class ScannerExecutorTests(unittest.TestCase):
             self.log.recent_brain_decisions(limit=1)[0]["reason"],
             "shadow_recent_entry_exists",
         )
+
+    def test_blocks_same_market_reentry_after_recent_loss(self):
+        self.log.insert_terminal(
+            "close-loss",
+            "0xabc",
+            "closed_stop_loss",
+            token_id="tok_up",
+            side="SELL",
+            price=0.47,
+            size_usdc=0.9,
+        )
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(
+                selected_side="SELL",
+                selected_token_id="tok_down",
+                estimated_win_probability=0.60,
+            ),
+            action="SELL",
+        )
+        engine, pm = self._engine(execute=True)
+        engine.cfg.reentry_cooldown_hours = -1
+
+        stats = engine.run_once()
+
+        self.assertEqual(stats["skipped"], 1)
+        pm.execute_market_order.assert_not_called()
+        row = self.log.recent_brain_decisions(limit=1)[0]
+        self.assertEqual(row["reason"], "recent_market_loss_cooldown")
+        self.assertIn("do_not_reenter_same_market_immediately_after_loss", row["features_json"])
 
     def test_rejects_taker_entry_when_spread_alone_crosses_stop(self):
         self.log.insert_brain_decision(

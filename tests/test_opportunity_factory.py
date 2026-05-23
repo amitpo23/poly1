@@ -187,7 +187,7 @@ class OpportunityFactoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["approved"], 1)
         self.assertEqual(rows[0]["token_id"], "up-token")
         features = json.loads(rows[0]["features_json"])
-        self.assertTrue(features["estimated_win_probability_calibrated"])
+        self.assertFalse(features["estimated_win_probability_calibrated"])
         self.assertEqual(
             features["estimated_win_probability_source"],
             "alphainsider_proven_family_plus_crypto_tape",

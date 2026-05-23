@@ -81,6 +81,7 @@ class OpportunityFactoryConfig:
     enable_alphainsider_directional: bool = True
     min_alphainsider_directional_probability: float = 0.54
     min_alphainsider_directional_confidence: float = 0.54
+    alphainsider_tape_probability_calibrated: bool = False
     max_alphainsider_directional_candidates: int = 6
     max_attention_decisions: int = 8
 
@@ -135,6 +136,10 @@ class OpportunityFactoryConfig:
             min_alphainsider_directional_confidence=_env_float(
                 "OPPORTUNITY_FACTORY_MIN_ALPHAINSIDER_DIRECTIONAL_CONFIDENCE",
                 0.54,
+            ),
+            alphainsider_tape_probability_calibrated=_env_bool(
+                "OPPORTUNITY_FACTORY_ALPHAINSIDER_TAPE_PROBABILITY_CALIBRATED",
+                False,
             ),
             max_alphainsider_directional_candidates=_env_int(
                 "OPPORTUNITY_FACTORY_MAX_ALPHAINSIDER_DIRECTIONAL_CANDIDATES",
@@ -331,7 +336,9 @@ class OpportunityFactory:
             "selected_entry_price": round(selected_price, 4),
             "meta_timing": "now",
             "estimated_win_probability": round(prob, 4),
-            "estimated_win_probability_calibrated": True,
+            "estimated_win_probability_calibrated": bool(
+                self.cfg.alphainsider_tape_probability_calibrated
+            ),
             "estimated_win_probability_source": "alphainsider_proven_family_plus_crypto_tape",
             "scanner_raw_ev": round(raw_ev, 4),
             "evidence_route": {

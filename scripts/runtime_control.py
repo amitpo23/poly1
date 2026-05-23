@@ -133,7 +133,7 @@ BASE_ENV = {
     "EXECUTION_QUALITY_MIN_NET_EV": "0.02",
     "ORDERBOOK_MONITOR_POLL_SEC": "1",
     "ORDERBOOK_MONITOR_TOKEN_LIMIT": "80",
-    "ORDERBOOK_MONITOR_PRUNE_MINUTES": "180",
+    "ORDERBOOK_MONITOR_PRUNE_MINUTES": "1440",
     "ORDERBOOK_MONITOR_STALE_MARKET_GRACE_SEC": "300",
     "SCANNER_EXECUTOR_POLL_SEC": "2",
     "SCANNER_EXECUTOR_MAX_DECISION_AGE_SEC": "180",
@@ -319,6 +319,13 @@ def _load_policy() -> dict:
     return json.loads(POLICY_PATH.read_text())
 
 
+def _router_signal_services(policy: dict) -> list[str]:
+    services: dict[str, dict] = {}
+    services.update(policy.get("live_signal_services") or {})
+    services.update(policy.get("shadow_research_services") or {})
+    return sorted(services)
+
+
 def _hash_payload(payload: dict) -> str:
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()[:16]
@@ -500,6 +507,8 @@ def live_hour(args: argparse.Namespace) -> int:
         for item in (args.agents.split(",") if args.agents else all_agents.keys())
         if item.strip()
     ]
+    if requested == ["all"]:
+        requested = list(all_agents.keys())
     unknown = [agent for agent in requested if agent not in all_agents]
     if unknown:
         valid = ", ".join(sorted(all_agents))
@@ -526,9 +535,14 @@ def live_hour(args: argparse.Namespace) -> int:
         raise SystemExit("--equity-balance must be positive")
 
     env = dict(BASE_ENV)
+    signal_services = _router_signal_services(policy)
     env["RUNTIME_MODE"] = "live"
+    env["ROUTER_LIVE_ENTRY_AGENTS"] = ",".join(requested)
+    env["ROUTER_SIGNAL_SERVICES"] = ",".join(signal_services)
+    env["SCANNER_EXECUTOR_CANDIDATE_AGENTS"] = ",".join(["market_scanner", *requested])
     env["EXECUTE"] = "true"
     env["MAX_OPEN_POSITIONS"] = str(int(args.max_open))
+    env["MAX_TRADES_PER_HOUR"] = str(int(getattr(args, "max_trades_per_hour", 30)))
     env["POLY1_MAX_HOLD_SECONDS"] = str(max_hold_minutes * 60)
     env["MAINTAIN_MAX_HOLD_HOURS"] = f"{max_hold_minutes / 60:.4f}"
     env["STARTING_BALANCE_USDC"] = f"{wallet_balance:.4f}"
@@ -566,6 +580,56 @@ def live_hour(args: argparse.Namespace) -> int:
         env["DECISION_COUNCIL_MIN_NET_EV"] = "0.005"
         env["DECISION_COUNCIL_EXPERT_MIN_NET_EV"] = "0.0"
         env["DECISION_COUNCIL_THIN_MIN_NET_EV"] = "0.015"
+    if getattr(args, "lab_mode", False):
+        # Small-budget learning mode: let the agents show behavior, including
+        # uncalibrated but high-signal indicators, while the outer budget,
+        # max-open, drawdown guard, and auto-freeze still bound losses.
+        env["SCANNER_EXECUTOR_REQUIRE_CALIBRATED_PROBABILITY"] = "false"
+        env["SCANNER_EXECUTOR_MAX_DECISION_AGE_SEC"] = "900"
+        env["SCANNER_EXECUTOR_MIN_SCORE"] = "0.55"
+        env["SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE"] = "0.55"
+        env["SCANNER_EXECUTOR_MIN_RAW_EV"] = "0.0"
+        env["SCANNER_EXECUTOR_MIN_NET_EV"] = "-0.02"
+        env["SCANNER_EXECUTOR_MAX_ENTRY_DRIFT_PCT"] = "0.50"
+        env["SCANNER_EXECUTOR_MAX_IMMEDIATE_EXIT_LOSS_PCT"] = "0.60"
+        env["SCANNER_EXECUTOR_ROUND_TRIP_COST_PCT"] = "0.02"
+        env["SCANNER_EXECUTOR_REQUIRE_PROMOTABLE_STRATEGY"] = "false"
+        env["POLYMARKET_MIN_ORDER_USDC"] = "0.25"
+        env["MIN_BID_DEPTH_USDC"] = "0.25"
+        env["MAX_ENTRY_SPREAD_PCT"] = "0.50"
+        env["DECISION_COUNCIL_MIN_FILLABLE_USDC"] = "0.25"
+        env["DECISION_COUNCIL_MIN_BOOK_QUALITY"] = "0.0"
+        env["DECISION_COUNCIL_MIN_EXIT_BID_DEPTH_USDC"] = "0.25"
+        env["DECISION_COUNCIL_MAX_BOOK_SPREAD_PCT"] = "0.50"
+        env["MAINTAIN_MIN_EXIT_NOTIONAL_USDC"] = "0.25"
+        env["MIN_EXIT_NOTIONAL_USDC"] = "0.25"
+        env["EXTERNAL_CONVICTION_MIN_CONFIDENCE"] = "0.45"
+        env["EXTERNAL_CONVICTION_MIN_PRICE"] = "0.05"
+        env["EXTERNAL_CONVICTION_MAX_PRICE"] = "0.95"
+        env["EXTERNAL_CONVICTION_ALLOW_WEAK_PROVIDERS"] = "true"
+        env["EXTERNAL_CONVICTION_AGGREGATOR_PROVIDERS"] = (
+            "manifold,metaculus,kalshi,tradingview_options,alpaca_market_data,"
+            "openbb_market_data,crypto_exchange_tape,technical_signal,clob_whale,"
+            "crypto_derivatives,gdelt,public_news,heuristic"
+        )
+        env["EXPERT_EXTERNAL_SOLO_SOURCE_TYPES"] = (
+            "cross_market,equity_fv,alpaca_market_data,openbb_market_data,"
+            "crypto_exchange_tape,alphainsider_strategy,technical_signal,"
+            "clob_whale,whale_consensus,crypto_derivatives,tradingview_options,"
+            "gdelt_news"
+        )
+        env["NEAR_RESOLUTION_MIN_CONFIDENCE"] = "0.50"
+        env["NEAR_RESOLUTION_DIRECTION_MIN_CONFIDENCE"] = "0.50"
+        env["NEAR_RESOLUTION_MIN_ENTRY_PRICE"] = "0.05"
+        env["NEAR_RESOLUTION_MAX_ENTRY_PRICE"] = "0.95"
+        env["BTC_5MIN_MIN_CONFIDENCE"] = "0.45"
+        env["BTC_5MIN_MIN_EDGE_PCT"] = "0.0"
+        env["BTC_5MIN_MIN_CONSENSUS"] = "1"
+        env["BTC_5MIN_MIN_LIVE_ENTRY_PRICE"] = "0.05"
+        env["BTC_5MIN_MAX_LIVE_ENTRY_PRICE"] = "0.95"
+        env["BTC_5MIN_NEWS_VETO"] = "false"
+        env["SCALPER_REQUIRE_UNIVERSE_TOP"] = "false"
+        env["SCALPER_MIN_UNIVERSE_WINRATE"] = "0.0"
     env["BTC_DAILY_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["BTC_5MIN_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["BTC_5MIN_STRADDLE_LEG_USDC"] = args.position_size_usdc
@@ -574,6 +638,38 @@ def live_hour(args: argparse.Namespace) -> int:
     env["WALLET_FOLLOW_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["EXTERNAL_CONVICTION_POSITION_SIZE_USDC"] = args.position_size_usdc
     env["SCANNER_EXECUTOR_POSITION_SIZE_USDC"] = args.position_size_usdc
+    env["SCANNER_EXECUTOR_LEARNING_GUARD_ENABLED"] = (
+        "true" if getattr(args, "scanner_learning_guard_enabled", True) else "false"
+    )
+    env["SCANNER_EXECUTOR_LEARNING_PREFERRED_SIDE"] = getattr(
+        args, "scanner_learning_preferred_side", "BUY"
+    ).strip().upper()
+    env["SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_SIDE_OVERRIDE"] = (
+        "true"
+        if getattr(args, "scanner_learning_allow_proven_side_override", False)
+        else "false"
+    )
+    env["SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_PRICE_OVERRIDE"] = (
+        "true"
+        if getattr(args, "scanner_learning_allow_proven_price_override", False)
+        else "false"
+    )
+    env["SCANNER_EXECUTOR_LEARNING_GUARD_TTL_HOURS"] = "24"
+    env["SCANNER_EXECUTOR_LEARNING_MIN_ENTRY_PRICE"] = getattr(
+        args, "scanner_learning_min_entry_price", "0.40"
+    )
+    env["SCANNER_EXECUTOR_LEARNING_MAX_ENTRY_PRICE"] = getattr(
+        args, "scanner_learning_max_entry_price", "0.49"
+    )
+    env["SCANNER_RECENT_CLOSE_SKIP_HOURS"] = str(
+        getattr(args, "scanner_recent_close_skip_hours", 12)
+    )
+    env["SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS"] = str(
+        getattr(args, "scanner_executor_reentry_cooldown_hours", 12)
+    )
+    env["SCANNER_EXECUTOR_MARKET_LOSS_COOLDOWN_HOURS"] = str(
+        getattr(args, "scanner_executor_market_loss_cooldown_hours", 1.0)
+    )
     env["EXTERNAL_CONVICTION_MAX_OPEN_POSITIONS"] = str(int(args.max_open))
     env["NEAR_RESOLUTION_MAX_OPEN"] = str(int(args.max_open))
     env["NEWS_SHOCK_MAX_OPEN"] = str(int(args.max_open))
@@ -591,6 +687,7 @@ def live_hour(args: argparse.Namespace) -> int:
     control_base = {
         "mode": "live",
         "allowed_live_agents": requested,
+        "router_signal_services": signal_services,
         "budget_usdc": budget,
         "wallet_balance_at_start_usdc": wallet_balance,
         "equity_at_start_usdc": equity_balance,
@@ -670,13 +767,38 @@ def main() -> int:
     p_live_hour.add_argument("--minutes", type=int, default=60)
     p_live_hour.add_argument("--max-hold-minutes", type=int, default=60)
     p_live_hour.add_argument("--max-open", type=int, default=100)
+    p_live_hour.add_argument("--max-trades-per-hour", type=int, default=30)
     p_live_hour.add_argument("--agents", default="")
     p_live_hour.add_argument("--max-position-fraction", default="0.03")
     p_live_hour.add_argument("--max-daily-token-usd", default="10.0")
     p_live_hour.add_argument("--position-size-usdc", default="1.50")
+    p_live_hour.add_argument(
+        "--scanner-learning-guard-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p_live_hour.add_argument("--scanner-learning-preferred-side", default="BUY")
+    p_live_hour.add_argument(
+        "--scanner-learning-allow-proven-side-override",
+        action="store_true",
+    )
+    p_live_hour.add_argument(
+        "--scanner-learning-allow-proven-price-override",
+        action="store_true",
+    )
+    p_live_hour.add_argument("--scanner-learning-min-entry-price", default="0.40")
+    p_live_hour.add_argument("--scanner-learning-max-entry-price", default="0.49")
+    p_live_hour.add_argument("--scanner-recent-close-skip-hours", type=int, default=12)
+    p_live_hour.add_argument("--scanner-executor-reentry-cooldown-hours", type=int, default=12)
+    p_live_hour.add_argument("--scanner-executor-market-loss-cooldown-hours", type=float, default=1.0)
     p_live_hour.add_argument("--scanner-allow-wait", action="store_true")
     p_live_hour.add_argument("--scanner-wait-min-score", default="0.79")
     p_live_hour.add_argument("--aggressive-execution", action="store_true")
+    p_live_hour.add_argument(
+        "--lab-mode",
+        action="store_true",
+        help="Loosen entry gates for a small-budget learning run.",
+    )
     p_live_hour.add_argument("--note", default="")
     p_live_hour.add_argument("--arm", action="store_true", help="remove HALT after writing live control")
     p_live_hour.set_defaults(func=live_hour)

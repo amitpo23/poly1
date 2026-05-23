@@ -22,6 +22,7 @@ from typing import Optional
 from agents.application.decision_council import DecisionCouncil
 from agents.application.regime_router import family_from_signal, route_for_features
 from agents.application.risk_gate import RiskGate
+from agents.application.signal_contract import TradeProposal
 from agents.application.sizing import kelly_size_usdc
 from agents.application.trade_log import FILLED, TradeLog
 from agents.utils.notify import _safe_balance, notify_trade
@@ -57,6 +58,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 @dataclass
 class ScannerExecutorConfig:
     poll_seconds: int = 2
@@ -80,6 +88,7 @@ class ScannerExecutorConfig:
     wait_override_min_score: float = 0.79
     max_open_positions: int = 4
     reentry_cooldown_hours: int = 12
+    market_loss_cooldown_hours: float = 1.0
     shadow_entry_cooldown_minutes: int = 10
     heartbeat_path: str = "/app/data/scanner_executor_heartbeat"
     provider_scorecard_path: str = "./data/provider_scorecard.json"
@@ -92,6 +101,11 @@ class ScannerExecutorConfig:
     learning_max_entry_price: float = 0.50
     learning_allow_proven_side_override: bool = False
     learning_allow_proven_price_override: bool = False
+    learning_guard_ttl_hours: float = 24.0
+    repeat_reject_cache_ttl_seconds: int = 300
+    repeat_reject_quarantine_threshold: int = 5
+    repeat_reject_quarantine_seconds: int = 3600
+    candidate_agents: tuple[str, ...] = ("market_scanner",)
 
     @classmethod
     def from_env(cls) -> "ScannerExecutorConfig":
@@ -135,6 +149,10 @@ class ScannerExecutorConfig:
             ),
             max_open_positions=_env_int("SCANNER_EXECUTOR_MAX_OPEN", 4),
             reentry_cooldown_hours=_env_int("SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS", 12),
+            market_loss_cooldown_hours=_env_float(
+                "SCANNER_EXECUTOR_MARKET_LOSS_COOLDOWN_HOURS",
+                1.0,
+            ),
             shadow_entry_cooldown_minutes=_env_int(
                 "SCANNER_EXECUTOR_SHADOW_ENTRY_COOLDOWN_MINUTES",
                 10,
@@ -182,6 +200,26 @@ class ScannerExecutorConfig:
             learning_allow_proven_price_override=_env_bool(
                 "SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_PRICE_OVERRIDE",
                 False,
+            ),
+            learning_guard_ttl_hours=_env_float(
+                "SCANNER_EXECUTOR_LEARNING_GUARD_TTL_HOURS",
+                24.0,
+            ),
+            repeat_reject_cache_ttl_seconds=_env_int(
+                "SCANNER_EXECUTOR_REPEAT_REJECT_CACHE_TTL_SEC",
+                300,
+            ),
+            repeat_reject_quarantine_threshold=_env_int(
+                "SCANNER_EXECUTOR_REPEAT_REJECT_QUARANTINE_THRESHOLD",
+                5,
+            ),
+            repeat_reject_quarantine_seconds=_env_int(
+                "SCANNER_EXECUTOR_REPEAT_REJECT_QUARANTINE_SEC",
+                3600,
+            ),
+            candidate_agents=_env_list(
+                "SCANNER_EXECUTOR_CANDIDATE_AGENTS",
+                _env_list("ROUTER_LIVE_ENTRY_AGENTS", ("market_scanner",)),
             ),
         )
 
@@ -231,6 +269,9 @@ class ScannerExecutor:
             round_trip_cost_pct=self.cfg.round_trip_cost_pct,
         )
         self._processed: set[int] = set()
+        self._learning_guard_started_ts = time.time()
+        self._repeat_rejects: dict[tuple[str, str], tuple[int, float]] = {}
+        self._market_quarantine_until: dict[str, float] = {}
 
     def run_once(self) -> dict:
         stats = {
@@ -240,7 +281,8 @@ class ScannerExecutor:
             "skipped": 0,
             "failed": 0,
         }
-        rows = self.trade_log.recent_scanner_trade_opportunities(
+        rows = self.trade_log.recent_entry_trade_opportunities(
+            agents=self._candidate_agents(),
             max_age_seconds=self.cfg.max_decision_age_seconds,
             limit=self.cfg.batch_limit,
         )
@@ -266,11 +308,45 @@ class ScannerExecutor:
         decision_id = int(row["id"])
         market_id = str(row["market_id"])
         score = float(row.get("score") or 0.0)
-        side = str(features.get("selected_side") or row.get("action") or "").upper()
-        token_id = str(features.get("selected_token_id") or row.get("token_id") or "")
+        try:
+            proposal = TradeProposal.from_brain_decision(row, features)
+        except ValueError as exc:
+            reason = (
+                "missing_execution_metadata"
+                if str(row.get("agent") or "") == "market_scanner"
+                else "proposal_missing_execution_fields"
+            )
+            self._record_reject(
+                row,
+                reason,
+                {
+                    "proposal_error": str(exc),
+                    "source_agent": row.get("agent"),
+                    "source_strategy": row.get("strategy"),
+                    "source_signal_source": row.get("signal_source"),
+                    "has_selected_side": bool(features.get("selected_side") or row.get("action")),
+                    "has_selected_token_id": bool(features.get("selected_token_id") or row.get("token_id")),
+                    "has_selected_entry_price": bool(
+                        features.get("selected_entry_price") or features.get("entry_price")
+                    ),
+                },
+            )
+            return "skipped"
+        side = proposal.side
+        token_id = proposal.token_id
         question = str(features.get("question") or market_id)
+        quarantine_remaining = self._market_quarantine_remaining(market_id)
+        if quarantine_remaining > 0:
+            self._record_reject(
+                row,
+                "market_recent_reject_quarantine",
+                {"quarantine_remaining_sec": round(quarantine_remaining, 3)},
+            )
+            return "skipped"
 
         meta_timing = str(features.get("meta_timing") or "")
+        if not meta_timing and str(row.get("decision_type") or "") in {"trade_plan", "shadow_trade_plan"}:
+            meta_timing = "now"
         timing_override = False
         if self.cfg.require_timing_now and meta_timing != "now":
             timing_override = (
@@ -320,7 +396,7 @@ class ScannerExecutor:
             self._record_reject(row, "missing_execution_metadata", {"side": side, "token_id": bool(token_id)})
             return "skipped"
         if (
-            self.cfg.learning_guard_enabled
+            self._learning_guard_active()
             and self.cfg.learning_preferred_side in {"BUY", "SELL"}
             and side != self.cfg.learning_preferred_side
             and not (
@@ -341,6 +417,19 @@ class ScannerExecutor:
 
         outcomes = _as_list(features.get("outcomes")) or ["Yes", "No"]
         token_ids = _as_list(features.get("clob_token_ids"))
+        if len(token_ids) != 2 and token_id:
+            hydrated = self._hydrate_market_metadata(token_id)
+            if hydrated:
+                outcomes = hydrated.get("outcomes") or outcomes
+                token_ids = hydrated.get("token_ids") or token_ids
+                features = {
+                    **features,
+                    "outcomes": outcomes,
+                    "clob_token_ids": token_ids,
+                    "outcome_prices": hydrated.get("outcome_prices") or features.get("outcome_prices"),
+                    "question": hydrated.get("question") or features.get("question"),
+                    "gamma_market_id": hydrated.get("gamma_market_id") or features.get("gamma_market_id"),
+                }
         if len(token_ids) != 2:
             self._record_reject(row, "missing_clob_token_ids", {"tokens": token_ids})
             return "skipped"
@@ -364,6 +453,23 @@ class ScannerExecutor:
         ):
             self._record_reject(row, "recent_close_cooldown", {"hours": self.cfg.reentry_cooldown_hours})
             return "skipped"
+        if self.cfg.market_loss_cooldown_hours > 0:
+            recent_market_losses = self.trade_log.count_recent_closes_for_market(
+                market_id,
+                hours=self.cfg.market_loss_cooldown_hours,
+                statuses=("closed_stop_loss", "resolved_loss"),
+            )
+            if recent_market_losses > 0:
+                self._record_reject(
+                    row,
+                    "recent_market_loss_cooldown",
+                    {
+                        "hours": self.cfg.market_loss_cooldown_hours,
+                        "recent_market_losses": recent_market_losses,
+                        "lesson": "do_not_reenter_same_market_immediately_after_loss",
+                    },
+                )
+                return "skipped"
         if (
             not self.execute
             and self.trade_log.has_recent_decision_journal(
@@ -381,7 +487,7 @@ class ScannerExecutor:
             )
             return "skipped"
 
-        estimated_prob = _safe_float(features.get("estimated_win_probability"), score)
+        estimated_prob = proposal.probability
         regime_features = self._regime_snapshot(row, features)
         if self.cfg.enforce_regime_router and not bool(regime_features.get("regime_family_allowed", True)):
             self._record_reject(row, "strategy_family_blocked_by_regime", regime_features)
@@ -406,7 +512,7 @@ class ScannerExecutor:
 
         executable_entry_price = _safe_float(avg_price, live_price) or live_price
         if (
-            self.cfg.learning_guard_enabled
+            self._learning_guard_active()
             and not (
                 self.cfg.learning_min_entry_price
                 <= executable_entry_price
@@ -535,6 +641,11 @@ class ScannerExecutor:
             self._record_reject(row, "kelly_size_zero", sizing.features())
             return "skipped"
         execution_features = {
+            "trade_proposal": proposal.to_dict(),
+            "proposal_source_agent": proposal.source_agent,
+            "proposal_source_strategy": proposal.source_strategy,
+            "proposal_strategy_type": proposal.strategy_type,
+            "proposal_exit_policy": proposal.exit_policy,
             "meta_timing": meta_timing,
             "timing_override": timing_override,
             "live_entry_price": round(live_price, 4),
@@ -547,7 +658,7 @@ class ScannerExecutor:
             **sizing.features(),
             **proof_features,
             **regime_features,
-            "learning_guard_enabled": self.cfg.learning_guard_enabled,
+            "learning_guard_enabled": self._learning_guard_active(),
             "learning_preferred_side": self.cfg.learning_preferred_side,
             "learning_min_entry_price": self.cfg.learning_min_entry_price,
             "learning_max_entry_price": self.cfg.learning_max_entry_price,
@@ -599,7 +710,7 @@ class ScannerExecutor:
         if not self.execute:
             self.trade_log.mark(
                 pending_id,
-                FILLED,
+                "shadow_filled",
                 response={
                     "shadow": True,
                     "source_decision_id": decision_id,
@@ -674,6 +785,24 @@ class ScannerExecutor:
             "outcome_prices": repr([str(x) for x in prices[:2]]),
         }
         return (_DocMarket(metadata), 0.0)
+
+    def _hydrate_market_metadata(self, token_id: str) -> dict:
+        getter = getattr(self.polymarket, "get_market", None)
+        if not callable(getter):
+            return {}
+        try:
+            market = getter(token_id)
+            metadata = market[0].dict().get("metadata", {})
+            return {
+                "gamma_market_id": metadata.get("id"),
+                "question": metadata.get("question"),
+                "outcomes": _as_list(metadata.get("outcomes")),
+                "token_ids": _as_list(metadata.get("clob_token_ids")),
+                "outcome_prices": _as_list(metadata.get("outcome_prices")),
+            }
+        except Exception as exc:
+            logger.info("scanner_executor metadata hydration failed for token=%s: %s", token_id[:18], exc)
+            return {}
 
     def _min_score_for_decision(self, row: dict, features: dict) -> float:
         if not bool(features.get("estimated_win_probability_calibrated")):
@@ -764,6 +893,49 @@ class ScannerExecutor:
             "scanner_executor skip: decision=%s market=%s reason=%s",
             row["id"], str(row["market_id"])[:20], reason,
         )
+        self._remember_reject(str(row["market_id"]), reason)
+
+    def _learning_guard_active(self) -> bool:
+        if not self.cfg.learning_guard_enabled:
+            return False
+        ttl_hours = float(self.cfg.learning_guard_ttl_hours or 0.0)
+        if ttl_hours <= 0:
+            return True
+        return (time.time() - self._learning_guard_started_ts) <= ttl_hours * 3600.0
+
+    def _market_quarantine_remaining(self, market_id: str) -> float:
+        until = float(self._market_quarantine_until.get(str(market_id)) or 0.0)
+        remaining = until - time.time()
+        if remaining <= 0:
+            self._market_quarantine_until.pop(str(market_id), None)
+            return 0.0
+        return remaining
+
+    def _remember_reject(self, market_id: str, reason: str) -> None:
+        if reason == "market_recent_reject_quarantine":
+            return
+        threshold = int(self.cfg.repeat_reject_quarantine_threshold or 0)
+        if threshold <= 0:
+            return
+        now = time.time()
+        ttl = max(0, int(self.cfg.repeat_reject_cache_ttl_seconds or 0))
+        key = (str(market_id), str(reason))
+        count, first_ts = self._repeat_rejects.get(key, (0, now))
+        if ttl and now - first_ts > ttl:
+            count, first_ts = 0, now
+        count += 1
+        self._repeat_rejects[key] = (count, first_ts)
+        if count >= threshold:
+            quarantine_sec = max(0, int(self.cfg.repeat_reject_quarantine_seconds or 0))
+            if quarantine_sec:
+                self._market_quarantine_until[str(market_id)] = now + quarantine_sec
+                logger.warning(
+                    "scanner_executor quarantined market=%s reason=%s count=%s ttl=%ss",
+                    str(market_id)[:20],
+                    reason,
+                    count,
+                    quarantine_sec,
+                )
 
     def _record_approval(
         self,
@@ -1000,6 +1172,23 @@ class ScannerExecutor:
             if str(provider.get("source")) in wanted:
                 return provider
         return None
+
+    def _candidate_agents(self) -> list[str]:
+        agents = ["market_scanner"]
+        agents.extend(str(agent).strip() for agent in self.cfg.candidate_agents if str(agent).strip())
+        blocked = {
+            "scanner_executor",
+            "position_manager",
+            "position_manager_llm",
+            "trading_supervisor",
+        }
+        seen = set()
+        agents = [
+            agent
+            for agent in agents
+            if agent not in blocked and not (agent in seen or seen.add(agent))
+        ]
+        return agents or ["market_scanner"]
 
     def _heartbeat(self) -> None:
         try:
