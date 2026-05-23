@@ -289,6 +289,65 @@ carry-over items shift to:
 
 ---
 
+## 9b. ROUND 2 DEPLOY OUTCOME — 2026-05-23 ~20:15 UTC
+
+After §9, the operator approved continuing tonight with Tier 0b/0c work.
+7 additional commits were authored under Rule 2.2 standing authorization:
+
+| Commit | Type | Item |
+|---|---|---|
+| `31d1297` | fix | **C-2 wallet path** — config-gated `OPPORTUNITY_FACTORY_WALLET_PROBABILITY_CALIBRATED` (default False); fixes the 31% root-cause path from yesterday's SLs |
+| `e5c7a97` | test | **C-4 verify** — parametrized test that every flag in ENTRY_EXECUTE_FLAGS triggers position_manager guard |
+| `6725bd9` | docs | **C-1 doc** — comprehensive analysis showing recover_stranded_pendings race is theoretical (opt-in via TRADE_LOG_RECOVER_ON_INIT, default unset) |
+| `c93d713` | feat | **DB backup** — trade_log_backup step in brain_indicator_cycle every 4h |
+| `54644e4` | fix | **I-2** — pre-sweep RiskGate.ok() in scanner_executor.run_once (CLAUDE.md invariant #4) |
+| `9818a89` | docs | **I-1 doc** — Polymarket(live=True) intentional in scanner_executor shadow mode |
+| `56b6105` | test | **C-3** — strengthened tenacity retry-predicate invariant test |
+
+Push: `17556b0..56b6105 main -> main`. Server: `git reset --hard origin/main`
++ `runtime_control.py freeze` + brain-indicator-cycle rebuilt + recreated.
+
+**ALL 15 preflight checks pass for the first time tonight:**
+
+```
+trading_stability_preflight[freeze]: ok
+- OK trade_log_backup: newest=trade_log-20260523T201445Z.db age_hours=0.01 max=30.0
+- (14 other OK checks)
+```
+
+The 4-hour-cron backup loop is now active. Backup file:
+`/srv/poly1/data/backups/trade_log-20260523T201445Z.db` (724MB).
+
+### Tier 0b/0c status after tonight
+
+| Item | Status |
+|---|---|
+| C-1 recover_stranded_pendings race | **Verified safe** (commit 6725bd9) |
+| C-2 calibration loop integration test | **Pending** (existing tests cover units; integration test deferred — flagged in carry-over) |
+| C-3 tenacity HTTPError test | **Done + strengthened** (commit 56b6105) |
+| C-4 EXECUTE_MAINTAIN heartbeat | **Done + parametrized** (commit e5c7a97) |
+| C-2 wallet path hardcode (LIVE_AUDIT P0 #4) | **Done** (commit 31d1297) |
+| Markouts service (LIVE_AUDIT P0 #2) | **Deferred** — structural issue (orderbook_monitor only tracks 80 tokens; --live-fallback has no rate limit) |
+| DB backup cron | **Done + verified running** (commit c93d713) |
+| I-1 Polymarket(live=True) in shadow | **Documented as intentional** (commit 9818a89) |
+| I-2 per-market RiskGate recheck | **Done** (commit 54644e4) |
+
+### Next session (Tier 1)
+
+- Markouts service design (structural — orderbook_monitor expansion OR
+  rate-limited live-fallback OR position_marks-based markouts for ENTER rows)
+- SPEC.md sync — new env vars per CLAUDE.md convention
+- C-2 calibration loop INTEGRATION test (the formal version
+  PRE_LIVE_QA_REVIEW C-2 asked for; needs end-to-end harness)
+- LIVE PROBE — only after the above + explicit operator approval +
+  preflight `--mode live` passes
+
+### Tests
+
+674/674 unit tests pass locally. Preflight `--mode freeze` passes on server.
+
+---
+
 ## 10. Lessons for the next agent
 
 1. **`git add <file>` stages the WHOLE file** — including pre-existing
