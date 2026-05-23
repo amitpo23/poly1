@@ -16,6 +16,48 @@ def _load_runtime_control():
 
 
 class RuntimeControlTests(unittest.TestCase):
+    def test_runtime_policy_exposes_external_strategy_family(self):
+        policy_path = Path(__file__).resolve().parents[1] / "deploy" / "runtime_policy.json"
+        policy = json.loads(policy_path.read_text())
+        agents = policy["entry_agents"]
+        expected = {
+            "external_conviction",
+            "external_conviction_api",
+            "external_conviction_polifly",
+            "external_conviction_whale",
+            "external_conviction_divergence",
+            "external_conviction_debate",
+            "external_conviction_aggregator",
+            "external_conviction_tradingview",
+            "external_conviction_technical",
+            "external_conviction_gdelt",
+            "external_conviction_crypto_deriv",
+        }
+        self.assertTrue(expected.issubset(agents))
+        for agent in expected:
+            self.assertEqual(agents[agent]["execute_flag"], "EXECUTE_EXTERNAL_CONVICTION")
+            self.assertEqual(agents[agent]["reserve_flag"], "EXTERNAL_CONVICTION_RESERVE_USDC")
+
+    def test_runtime_policy_exposes_router_signal_services(self):
+        policy_path = Path(__file__).resolve().parents[1] / "deploy" / "runtime_policy.json"
+        policy = json.loads(policy_path.read_text())
+        services = set(policy.get("live_signal_services") or {})
+        expected = {
+            "market_scanner",
+            "brain_indicator_cycle",
+            "market_universe",
+            "orderbook_monitor",
+            "news_signal",
+            "wallet_watcher",
+            "hermes_forecast",
+        }
+        self.assertTrue(expected.issubset(services))
+        for service in expected:
+            meta = policy["live_signal_services"][service]
+            self.assertFalse(meta["writes_live_orders"], service)
+            self.assertIsNone(meta["execute_flag"], service)
+            self.assertTrue(meta["compose_service"], service)
+
     def test_live_hour_budget_sets_reserve_adjusted_floor(self):
         rc = _load_runtime_control()
         with tempfile.TemporaryDirectory() as tmp:
@@ -74,6 +116,10 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertIn('BTC_5MIN_POSITION_SIZE_USDC="1.50"', env_text)
             self.assertIn('SCANNER_EXECUTOR_ALLOW_WAIT_WITH_HIGH_SCORE="true"', env_text)
             self.assertIn('SCANNER_EXECUTOR_REQUIRE_CALIBRATED_PROBABILITY="true"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_LEARNING_GUARD_ENABLED="true"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_LEARNING_PREFERRED_SIDE="BUY"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_LEARNING_MAX_ENTRY_PRICE="0.49"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_MARKET_LOSS_COOLDOWN_HOURS="1.0"', env_text)
             self.assertIn('SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE="0.79"', env_text)
             self.assertIn('SCANNER_EXECUTOR_MIN_SCORE="0.79"', env_text)
             self.assertIn('SCANNER_EXECUTOR_MAX_ENTRY_DRIFT_PCT="0.10"', env_text)
@@ -97,7 +143,98 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertEqual(control["equity_at_start_usdc"], 35.125)
             self.assertEqual(control["max_hold_minutes"], 45)
             self.assertTrue(control["aggressive_execution"])
+            self.assertIn("router_signal_services", control)
             self.assertFalse(halt.exists())
+
+    def test_live_hour_all_expands_agents_and_reports_signal_services(self):
+        rc = _load_runtime_control()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "deploy").mkdir()
+            (root / "data").mkdir()
+            policy = {
+                "entry_agents": {
+                    "scanner_executor": {
+                        "execute_flag": "EXECUTE_SCANNER_EXECUTOR",
+                        "reserve_flag": "SCANNER_EXECUTOR_RESERVE_USDC",
+                    },
+                    "wallet_follow": {
+                        "execute_flag": "EXECUTE_WALLET_FOLLOW",
+                        "reserve_flag": "WALLET_FOLLOW_RESERVE_USDC",
+                    },
+                },
+                "live_signal_services": {
+                    "market_scanner": {
+                        "compose_service": "market_scanner",
+                        "compose_profile": "scanner",
+                        "execute_flag": None,
+                        "writes_live_orders": False,
+                    }
+                },
+                "shadow_research_services": {
+                    "crypto_5m_market_maker_shadow": {
+                        "compose_service": "crypto-5m-market-maker-shadow",
+                        "compose_profile": "research",
+                        "execute_flag": None,
+                        "writes_live_orders": False,
+                    }
+                },
+            }
+            (root / "deploy" / "runtime_policy.json").write_text(json.dumps(policy))
+            halt = root / "data" / "HALT"
+            halt.write_text("halt\n")
+
+            rc.ROOT = root
+            rc.POLICY_PATH = root / "deploy" / "runtime_policy.json"
+            rc.ENV_RUNTIME_PATH = root / "deploy" / ".env.runtime"
+            rc.CONTROL_PATH = root / "data" / "runtime_control.json"
+            rc.HALT_PATH = halt
+
+            args = argparse.Namespace(
+                agents="all",
+                minutes=15,
+                max_hold_minutes=30,
+                budget=4.0,
+                wallet_balance=24.0,
+                equity_balance=24.0,
+                max_open=2,
+                max_trades_per_hour=10,
+                max_position_fraction="0.03",
+                max_daily_token_usd="10.0",
+                position_size_usdc="1.00",
+                scanner_allow_wait=False,
+                scanner_wait_min_score="0.79",
+                scanner_learning_guard_enabled=True,
+                scanner_learning_preferred_side="BUY",
+                scanner_learning_allow_proven_side_override=False,
+                scanner_learning_allow_proven_price_override=False,
+                scanner_learning_min_entry_price="0.40",
+                scanner_learning_max_entry_price="0.49",
+                scanner_recent_close_skip_hours=12,
+                scanner_executor_reentry_cooldown_hours=12,
+                scanner_executor_market_loss_cooldown_hours=0.5,
+                aggressive_execution=False,
+                lab_mode=False,
+                note="all agents",
+                arm=False,
+            )
+            rc.live_hour(args)
+
+            env_text = rc.ENV_RUNTIME_PATH.read_text()
+            control = json.loads(rc.CONTROL_PATH.read_text())
+            self.assertEqual(control["allowed_live_agents"], ["scanner_executor", "wallet_follow"])
+            self.assertEqual(
+                control["router_signal_services"],
+                ["crypto_5m_market_maker_shadow", "market_scanner"],
+            )
+            self.assertIn('ROUTER_LIVE_ENTRY_AGENTS="scanner_executor,wallet_follow"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_CANDIDATE_AGENTS="market_scanner,scanner_executor,wallet_follow"', env_text)
+            self.assertIn(
+                'ROUTER_SIGNAL_SERVICES="crypto_5m_market_maker_shadow,market_scanner"',
+                env_text,
+            )
+            self.assertIn('SCANNER_EXECUTOR_MARKET_LOSS_COOLDOWN_HOURS="0.5"', env_text)
+            self.assertTrue(halt.exists())
 
     def test_shadow_probe_allows_riskgate_without_live_execute_flags(self):
         rc = _load_runtime_control()
@@ -194,6 +331,70 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertEqual(control["budget_usdc"], 0.0)
             self.assertTrue(control["shadow_only"])
             self.assertFalse(halt.exists())
+
+
+class LearningGuardDefaultsTests(unittest.TestCase):
+    """Verify the scanner_executor learning guard env vars persist across all
+    runtime modes (regression for 2026-05-21 production drawdown where the
+    guard was inert because env vars were missing from .env.runtime)."""
+
+    def _setup_root(self, tmp: str, policy: dict) -> "object":
+        rc = _load_runtime_control()
+        root = Path(tmp)
+        (root / "deploy").mkdir()
+        (root / "data").mkdir()
+        (root / "deploy" / "runtime_policy.json").write_text(json.dumps(policy))
+        rc.ROOT = root
+        rc.POLICY_PATH = root / "deploy" / "runtime_policy.json"
+        rc.ENV_RUNTIME_PATH = root / "deploy" / ".env.runtime"
+        rc.CONTROL_PATH = root / "data" / "runtime_control.json"
+        rc.HALT_PATH = root / "data" / "HALT"
+        return rc
+
+    def _assert_learning_guard_defaults(self, env_text: str) -> None:
+        self.assertIn('SCANNER_EXECUTOR_LEARNING_GUARD_ENABLED="true"', env_text)
+        self.assertIn('SCANNER_EXECUTOR_LEARNING_PREFERRED_SIDE="BUY"', env_text)
+        self.assertIn('SCANNER_EXECUTOR_LEARNING_MIN_ENTRY_PRICE="0.40"', env_text)
+        self.assertIn('SCANNER_EXECUTOR_LEARNING_MAX_ENTRY_PRICE="0.49"', env_text)
+        self.assertIn(
+            'SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_SIDE_OVERRIDE="false"', env_text
+        )
+        self.assertIn(
+            'SCANNER_EXECUTOR_LEARNING_ALLOW_PROVEN_PRICE_OVERRIDE="false"', env_text
+        )
+        self.assertIn('SCANNER_EXECUTOR_LEARNING_GUARD_TTL_HOURS="24"', env_text)
+
+    def test_freeze_persists_learning_guard_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = {
+                "entry_agents": {},
+                "live_signal_services": {},
+                "shadow_research_services": {},
+            }
+            rc = self._setup_root(tmp, policy)
+            rc.freeze(argparse.Namespace(note=""))
+            self._assert_learning_guard_defaults(rc.ENV_RUNTIME_PATH.read_text())
+
+    def test_live_probe_persists_learning_guard_defaults(self):
+        # live_probe() raises SystemExit if args.agent is not in entry_agents,
+        # so the policy fixture must include at least one matching agent.
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = {
+                "entry_agents": {
+                    "trader": {"execute_flag": "EXECUTE"},
+                },
+                "live_signal_services": {},
+                "shadow_research_services": {},
+            }
+            rc = self._setup_root(tmp, policy)
+            args = argparse.Namespace(
+                agent="trader",
+                budget=5.0,
+                note="",
+                arm=False,
+            )
+            rc.live_probe(args)
+            self._assert_learning_guard_defaults(rc.ENV_RUNTIME_PATH.read_text())
 
 
 if __name__ == "__main__":
