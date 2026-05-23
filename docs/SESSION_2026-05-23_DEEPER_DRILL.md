@@ -1,5 +1,88 @@
 # SESSION 2026-05-23 — Deeper Drill (SL / Exit Timing / Brain Accuracy)
 
+---
+
+## ⚠️ CORRECTION 2026-05-23 LATE NIGHT
+
+The original analysis below used `(exit_price/entry_price - 1)` to compute
+PnL per trade. **This formula is correct for BUY entries but WRONG for
+SELL entries**, because:
+
+- BUY: both entry_price and exit_price refer to the YES token. Formula works.
+- SELL: entry row's `price` is the RECOMMENDATION price (YES side, e.g.,
+  0.845), but the bot actually bought NO at `1 - 0.845 = 0.155`. The close
+  row's `price` is the NO price at exit (e.g., 0.1519). The formula
+  `0.1519 / 0.845 - 1 = -82%` is meaningless — it compares YES at entry
+  to NO at exit.
+
+**Corrected PnL via `response_json.pnl_usdc_real`** (the ground-truth
+realized PnL from the close trade):
+
+| Metric | Original (BUGGY) | **Corrected** |
+|---|---|---|
+| Win rate | 29.5% | **22.1%** |
+| Loss rate | 70.5% | **77.9%** |
+| Total PnL 30d | +$6.54 | **−$1.92** |
+| ROI | +4.89% | **−1.41%** |
+
+**The bot lost money over 30 days. Operator was correct to question.**
+
+### Corrected band breakdown (using OWNED-token entry price)
+
+For BUY: owned_entry = entry_price (YES).
+For SELL: owned_entry = 1 − entry_price (NO).
+
+| Band | n | wins | win% | PnL | ROI% |
+|---|---|---|---|---|---|
+| <0.20 | 22 | 1 | 4.5% | −$1.57 | −4.50% |
+| 0.20-0.30 | 3 | 1 | 33.3% | +$0.13 | +1.33% |
+| 0.30-0.40 | 12 | 3 | 25.0% | −$0.35 | −1.83% |
+| **0.40-0.50** | **19** | **8** | **42.1%** | **+$1.72** | **+8.40%** ✅ |
+| **0.50-0.60** | **32** | **7** | **21.9%** | **−$1.90** | **−4.98%** ❌ |
+| 0.60-0.70 | 6 | 1 | 16.7% | +$0.08 | +0.68% |
+| 0.70+ | 1 | 0 | 0.0% | −$0.03 | −1.50% |
+
+### What this CORRECTS
+
+- **The "death zone 0.70+ at −80% ROI" claim is WRONG.** Only 1 trade
+  (not 4) has owned-token entry above 0.70 when using correct semantics.
+  The original 4 trades were SELL entries with NO-side prices around 0.15,
+  not 0.85.
+- **The biggest single-band loss is actually 0.50-0.60** (−$1.90 across
+  32 trades).
+- **The one profitable band is 0.40-0.50** (+$1.72) — which is exactly
+  what `SCANNER_EXECUTOR_LEARNING_MAX_ENTRY_PRICE=0.49` now protects on
+  the scanner_executor path (active since tonight's deploy `85cac28`).
+
+### What survives the correction
+
+- **SL is not premature** (the Q1 finding) — still valid. SL exits had no
+  recovery to profitable levels.
+- **Exit timing 86% efficient** (the Q2 finding) — still valid. The MFE
+  calculation was on BUY-side TP wins where the formula works.
+- **Score is NOT predictive** (the Q3 finding) — directionally still
+  valid, but the magnitudes need re-verification with corrected PnL.
+
+### Actionable updates (replaces F1-F5 below)
+
+- **F1' (priority):** verify that ALL entry paths (not just scanner_executor)
+  have the 0.50+ block. Specifically check btc_5min, news_shock,
+  wallet_follow, near_resolution. If they don't cap at 0.49, the
+  losses-in-0.50-0.60 pattern WILL recur.
+- **F4 BLOCKED**: don't hard-block sports/politics/general on n=8.
+- **F3 (trailing stop)**: still worth a code read in a future session.
+- **F5 (don't change SL)**: still valid — confirmed by SL audit.
+
+**For tomorrow's live test** (operator's plan): enable
+`scanner_executor` only. The learning guard's `MAX_ENTRY_PRICE=0.49` is
+the bot's protection against the 0.50-0.60 leak (which is where most
+historical losses concentrated). Other agents (btc_5min etc.) should
+stay disabled until their entry-price caps are verified.
+
+---
+
+# ORIGINAL ANALYSIS (preserved for audit — contains buggy PnL formula)
+
 **Operator's follow-up questions:**
 1. Is the stop-loss premature? How many SLs would have been profitable if held?
 2. Are exit timings (TP, hold-time) optimal?

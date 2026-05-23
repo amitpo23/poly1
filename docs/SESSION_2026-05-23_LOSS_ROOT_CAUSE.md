@@ -1,5 +1,34 @@
 # SESSION 2026-05-23 — Loss Root-Cause Analysis
 
+---
+
+## ⚠️ CORRECTION 2026-05-23 LATE NIGHT
+
+The "TL;DR" claim that **PnL is positive +$6.54 / +4.89% ROI** is WRONG.
+A formula bug (using `exit_price/entry_price-1` for SELL trades) inflated
+results. Corrected via `response_json.pnl_usdc_real`:
+
+| Metric | Original (BUGGY) | **Corrected** |
+|---|---|---|
+| Win rate | 29.5% | **22.1%** |
+| Loss rate | 70.5% | **77.9%** |
+| Total PnL 30d | +$6.54 | **−$1.92** |
+| ROI | +4.89% | **−1.41%** |
+
+**The bot lost money in net over 30 days.** See
+`docs/SESSION_2026-05-23_DEEPER_DRILL.md` §"CORRECTION" for details.
+
+What survives: the qualitative findings about execution failures
+(64.5% of terminal events), the OpenAI bug fix (51 failures → 0 after
+deploy), the favorite-longshot pattern in 0.50+ bands.
+
+What's overturned: the asymmetric-payoff VC-style framing. The bot's
+realized PnL was negative, not positive-with-noisy-distribution.
+
+---
+
+# ORIGINAL ANALYSIS (preserved for audit — contains buggy PnL formula)
+
 **Question (operator):** *למה 72 או מעל 70 אחוז מהטריידים שלנו היו הפסדים?*
 
 **TL;DR:** ה־70% loss rate הוא **לא** ה־problem. הוא תוצר של asymmetric payoff
