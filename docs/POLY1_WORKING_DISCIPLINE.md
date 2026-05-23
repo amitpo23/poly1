@@ -25,21 +25,62 @@
 
 ---
 
-## חוק 2 — Diff + Go לפני כל שינוי
+## חוק 2 — Diff + Go + 4-Criteria Authorization
+
+עודכן 2026-05-23 אחרי תקלה ב־commit שבו `git add <file>` בלע שינויים
+pre-existing של agent קודם (Codex), והרחבת מנדט ל־"4-criteria standing
+authorization" לבקשת המפעיל.
+
+### 2.1 — Diff verification (חובה לפני כל commit)
 
 לפני שינוי קוד / docs / config / .env:
 
-1. ה־agent מציג בצ'אט: ה־diff (לקובץ קיים) או את התוכן המלא (לקובץ חדש).
-2. ה־agent ממתין ל־"go" / "אישור" / "מאשר" מפורש.
-3. רק אז מבוצעת הכתיבה.
+1. ה־agent מבצע את ה־Edit.
+2. ה־agent מריץ `git diff <file>` (לפני `git add`) ומאמת:
+   - ה־diff מכיל בדיוק את השורות של ה־edit, **לא יותר**.
+   - אם יש pre-existing changes (modifications של agent אחר או של המפעיל
+     שלא נסקרו בסשן הנוכחי) — לעצור, להציג ל־operator, ולשאול:
+     - (a) לכלול במקביל עם documentation בקומיט message
+     - (b) Surgical stash + commit clean + restore pre-existing
+     - (c) להשאיר uncommitted ולעבור הלאה
+3. רק לאחר שה־diff נקי → `git add` → commit.
 
 **חריגים שאינם דורשים אישור pre-write:**
-- קריאה (Read tool, ls, cat).
+- קריאה (Read tool, ls, cat, head).
 - חקירה (grep, find).
 - SQL **read-only** על שרת.
 - TaskCreate / TaskUpdate (state ניהול פנימי).
 
-**אסור:** "תיקון קטן" שמבוצע "בלי לטרוח לאשר".
+### 2.2 — Standing Authorization for Goal-Aligned Changes
+
+ה־agent יכול לבצע autonomously (בלי לעצור לאישור pre-write) שינויים
+שמ־**clearly** עונים על כל ארבע מטרות הפרויקט:
+
+1. **רווח ממסחר** — המטרה הסופית של ה־bot.
+2. **בחינה שרכיבים טכניים עובדים** — כל מה שנכתב יבחן מולו.
+3. **יכולת לבחון אסטרטגיות + לממש אותן** — testability + executability.
+4. **winrate גבוהה + למידה** — feedback loops + measurement.
+
+**תנאים לשימוש ב־standing authorization:**
+
+- ה־agent חייב להיות **בטוח** שהשינוי עונה על כל 4 (לא 3 מתוך 4).
+- חייב tag לפני שינוי (חוק 1).
+- חייב diff מלא ב־commit message + הסבר איך זה עונה על 4 ה־criteria.
+- חייב memory update אחרי commit.
+- חייב session journal entry (חוק 4).
+
+**אם אחד מתנאים אלו לא מתקיים, או יש ספק** → התנהגות 2.1: diff + go.
+
+**שינויים שאסור לעשות תחת standing authorization (גם אם לכאורה goal-aligned):**
+
+- שינוי runtime config שמשפיע ישירות על trading live (`RUNTIME_MODE`,
+  `EXECUTE_*`, `HALT`).
+- מחיקת קבצים או branches.
+- `git push` (חוק 3 ממשיך כמו שהוא).
+- שינוי SPEC.md או CLAUDE.md (דורש אישור מפורש).
+- שינוי שמסיר invariants מ־CLAUDE.md.
+
+**אסור (חוצה הכללים):** "תיקון קטן" שמבוצע "בלי לטרוח לאשר ובלי לתעד".
 
 ---
 
@@ -167,4 +208,5 @@ ad-hoc override:
 
 | תאריך | שינוי | מאשר |
 |---|---|---|
-| 2026-05-23 | יצירה ראשונה (7 כללים, version mgmt, חריגים) | (ממתין לאישור) |
+| 2026-05-23 | יצירה ראשונה (7 כללים, version mgmt, חריגים) | המפעיל |
+| 2026-05-23 | חוק 2 הורחב: diff verification חובה + 4-criteria standing authorization | המפעיל |
