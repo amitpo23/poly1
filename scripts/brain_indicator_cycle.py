@@ -54,6 +54,7 @@ class BrainIndicatorConfig:
     run_strategy_scorecard: bool = True
     run_opportunity_factory: bool = True
     run_market_scanner: bool = True
+    run_backup: bool = True
     dispatch_scanner_executor: bool = True
     allow_live_dispatch: bool = False
     alphainsider_limit: int = 25
@@ -75,6 +76,8 @@ class BrainIndicatorConfig:
     opportunity_factory_interval_sec: int = 60
     market_scanner_interval_sec: int = 60
     scanner_executor_interval_sec: int = 60
+    backup_interval_sec: int = 14400  # 4h; preflight requires <30h freshness
+    backup_dir: str = "./data/backups"
     state_path: str = "./data/brain_indicator_cycle_state.json"
     heartbeat_path: str = "./data/brain_indicator_cycle_heartbeat"
     report_path: str = "./data/brain_indicator_cycle_latest.json"
@@ -95,6 +98,7 @@ class BrainIndicatorConfig:
             run_strategy_scorecard=_env_bool("BRAIN_INDICATOR_RUN_STRATEGY_SCORECARD", True),
             run_opportunity_factory=_env_bool("BRAIN_INDICATOR_RUN_OPPORTUNITY_FACTORY", True),
             run_market_scanner=_env_bool("BRAIN_INDICATOR_RUN_MARKET_SCANNER", True),
+            run_backup=_env_bool("BRAIN_INDICATOR_RUN_BACKUP", True),
             dispatch_scanner_executor=_env_bool("BRAIN_INDICATOR_DISPATCH_SCANNER_EXECUTOR", True),
             allow_live_dispatch=_env_bool("BRAIN_INDICATOR_ALLOW_LIVE_DISPATCH", False),
             alphainsider_limit=_env_int("BRAIN_INDICATOR_ALPHAINSIDER_LIMIT", 25),
@@ -119,6 +123,8 @@ class BrainIndicatorConfig:
             opportunity_factory_interval_sec=_env_int("BRAIN_INDICATOR_OPPORTUNITY_FACTORY_INTERVAL_SEC", 60),
             market_scanner_interval_sec=_env_int("BRAIN_INDICATOR_MARKET_SCANNER_INTERVAL_SEC", 60),
             scanner_executor_interval_sec=_env_int("BRAIN_INDICATOR_SCANNER_EXECUTOR_INTERVAL_SEC", 60),
+            backup_interval_sec=_env_int("BRAIN_INDICATOR_BACKUP_INTERVAL_SEC", 14400),
+            backup_dir=os.getenv("BRAIN_INDICATOR_BACKUP_DIR", f"{data_dir}/backups"),
             state_path=os.getenv(
                 "BRAIN_INDICATOR_STATE_PATH",
                 f"{data_dir}/brain_indicator_cycle_state.json",
@@ -275,6 +281,19 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
             [py, "-m", "agents.application.scanner_executor", "--once", "--db", cfg.db_path],
             env,
         ))
+    if cfg.run_backup:
+        steps.append((
+            "trade_log_backup",
+            [
+                py,
+                "scripts/python/backup_trade_log.py",
+                "--db",
+                cfg.db_path,
+                "--out-dir",
+                cfg.backup_dir,
+            ],
+            {},
+        ))
     return steps
 
 
@@ -288,6 +307,7 @@ def step_intervals(cfg: BrainIndicatorConfig) -> dict[str, int]:
         "opportunity_factory": cfg.opportunity_factory_interval_sec,
         "market_scanner": cfg.market_scanner_interval_sec,
         "scanner_executor_dispatch": cfg.scanner_executor_interval_sec,
+        "trade_log_backup": cfg.backup_interval_sec,
     }
 
 

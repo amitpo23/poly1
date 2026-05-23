@@ -19,6 +19,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_opportunity_factory=False,
             run_market_scanner=False,
             dispatch_scanner_executor=True,
+            run_backup=False,
             no_trade_guard=True,
             allow_live_dispatch=False,
         )
@@ -41,6 +42,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_opportunity_factory=False,
             run_market_scanner=False,
             dispatch_scanner_executor=True,
+            run_backup=False,
             no_trade_guard=False,
             allow_live_dispatch=True,
         )
@@ -61,6 +63,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_strategy_scorecard=False,
             run_market_scanner=False,
             dispatch_scanner_executor=False,
+            run_backup=False,
         )
 
         steps = build_steps(cfg)
@@ -97,6 +100,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
                 run_opportunity_factory=False,
                 run_market_scanner=True,
                 dispatch_scanner_executor=True,
+                run_backup=False,
                 no_trade_guard=True,
             )
             report = run_once(cfg, runner=runner)
@@ -119,6 +123,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_opportunity_factory=False,
             run_market_scanner=True,
             dispatch_scanner_executor=False,
+            run_backup=False,
             enable_tavily=False,
             enable_llm=False,
             tavily_daily_limit=1,
@@ -154,6 +159,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
                 run_opportunity_factory=False,
                 run_market_scanner=True,
                 dispatch_scanner_executor=False,
+                run_backup=False,
                 alphainsider_interval_sec=900,
                 market_scanner_interval_sec=60,
             )
@@ -166,6 +172,31 @@ class BrainIndicatorCycleTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(step.get("skipped") for step in second["steps"]))
         self.assertTrue(all(step.get("skip_reason") == "cadence" for step in second["steps"]))
+
+    def test_run_backup_step_added_with_correct_args(self):
+        """Backup step must invoke scripts/python/backup_trade_log.py with
+        the configured db_path and backup_dir. Addresses preflight
+        trade_log_backup BLOCKED (50h vs 30h threshold)."""
+        cfg = BrainIndicatorConfig(
+            db_path="/tmp/poly1/trade_log.db",
+            run_market_universe=False,
+            run_alphainsider=False,
+            run_markouts=False,
+            run_provider_scorecard=False,
+            run_strategy_scorecard=False,
+            run_opportunity_factory=False,
+            run_market_scanner=False,
+            dispatch_scanner_executor=False,
+            run_backup=True,
+            backup_dir="/tmp/poly1/backups",
+        )
+        steps = build_steps(cfg)
+        self.assertEqual(len(steps), 1)
+        name, cmd, _env = steps[0]
+        self.assertEqual(name, "trade_log_backup")
+        self.assertIn("scripts/python/backup_trade_log.py", cmd)
+        self.assertIn("/tmp/poly1/trade_log.db", cmd)
+        self.assertIn("/tmp/poly1/backups", cmd)
 
     def test_allow_live_is_blocked_when_no_trade_guard_is_on(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -181,6 +212,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
                 run_opportunity_factory=False,
                 run_market_scanner=False,
                 dispatch_scanner_executor=False,
+                run_backup=False,
                 no_trade_guard=True,
                 allow_live_dispatch=True,
             )
