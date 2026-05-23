@@ -86,17 +86,33 @@ class TestExecuteMarketOrderFAK(unittest.TestCase):
         return (doc, 0.0)
 
     def test_retry_predicate_excludes_non_network_errors(self):
+        """CLAUDE.md invariant #3 + PRE_LIVE_QA_REVIEW_2026-05-21 C-3:
+        the tenacity retry decorator on execute_market_order's _post()
+        must ONLY retry on network errors. Adding HTTPError or generic
+        Exception to the retry predicate would re-submit a FOK order
+        that the CLOB already accepted — double-fill, no retract primitive.
+
+        Source-inspection test (the most direct way to protect this
+        invariant — a behavioral test would need real tenacity, but this
+        test file stubs tenacity to identity for other tests). If anyone
+        changes the retry predicate, this test catches it before merge."""
         source = (Path(__file__).resolve().parents[1] / "agents/polymarket/polymarket.py").read_text()
         start = source.index("@retry(", source.index("def execute_market_order"))
         end = source.index("def _post", start)
         retry_block = source[start:end]
+        # Allowed retry types (network-only)
         self.assertIn("httpx.TimeoutException", retry_block)
         self.assertIn("httpx.NetworkError", retry_block)
         self.assertIn("requests.Timeout", retry_block)
         self.assertIn("requests.ConnectionError", retry_block)
+        # Forbidden retry types — adding any of these = double-fill risk
         self.assertNotIn("requests.HTTPError", retry_block)
         self.assertNotIn("httpx.HTTPError", retry_block)
         self.assertNotIn("retry_if_exception_type(Exception", retry_block)
+        self.assertNotIn("retry_if_exception_type(BaseException", retry_block)
+        # Bounded retries + propagate the final exception (not swallow)
+        self.assertIn("stop_after_attempt(3)", retry_block)
+        self.assertIn("reraise=True", retry_block)
 
     @patch.object(Polymarket, "__init__", lambda self, **kw: None)
     def test_execute_market_order_passes_fak_when_requested(self):
