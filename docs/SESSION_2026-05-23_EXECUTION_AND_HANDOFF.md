@@ -230,7 +230,66 @@ behind (the additional one is `f0db42c` itself which predates session).
 
 ---
 
-## 9. Lessons for the next agent
+## 9. DEPLOY OUTCOME — 2026-05-23 19:42 UTC
+
+**Deploy executed and verified after the handoff doc was committed.**
+
+### Phase A: push
+
+```
+git push origin main
+c5ff2e6..17556b0  main -> main
+```
+
+### Phase B: SSH atomic chain on server
+
+```
+git fetch origin
+git reset --hard origin/main
+python3 scripts/runtime_control.py freeze --note "post-2026-05-23-merge-learning-guard"
+```
+
+### Verification (all passed)
+
+| Check | Result |
+|---|---|
+| Server HEAD | `17556b0` ✅ |
+| HALT file | regenerated 19:42 UTC ✅ |
+| `SCANNER_EXECUTOR_LEARNING_GUARD_ENABLED` | `"true"` ✅ |
+| `SCANNER_EXECUTOR_LEARNING_PREFERRED_SIDE` | `"BUY"` ✅ |
+| `RUNTIME_MODE` | `"freeze"` ✅ |
+| `EXECUTE` | `"false"` ✅ |
+| `EXECUTE_SCANNER_EXECUTOR` | `"false"` ✅ |
+| Config hash | `8c48c5946a275aec` ✅ |
+| Root orphans | both still present (untouched) ✅ |
+
+### Preflight: 14 OK, 1 BLOCKED
+
+```
+- BLOCKED trade_log_backup: newest=trade_log-20260521T172908Z.db age_hours=50.22 max=30.0
+```
+
+This is ops-hygiene (DB backup is 50h old, threshold 30h). **Does not
+affect freeze safety.** Fix in Tier 0b — either run the backup script
+or schedule it.
+
+### Carry-over update
+
+The "Server merge" carry-over from §5 is now DONE. The remaining
+carry-over items shift to:
+
+- **Tier 0b (next session):** C-2 wallet path, I-1 Polymarket(live=True),
+  I-2 RiskGate per-market recheck, markouts service scheduling, DB
+  backup cron, SPEC.md sync.
+- **Tier 0c (after Tier 0b):** 4 PRE_LIVE_QA_REVIEW CRITICAL blockers.
+- **Live probe (only after Tier 0a+0b stable, separate session):** $1
+  per trade, 2-4 open, 15-min window, watch
+  `today_lesson_side_blocked` and `today_lesson_price_band_blocked`
+  counts.
+
+---
+
+## 10. Lessons for the next agent
 
 1. **`git add <file>` stages the WHOLE file** — including pre-existing
    modifications from other sessions. Always `git diff <file>` BEFORE
