@@ -1701,7 +1701,26 @@ class TradeLog:
     def recover_stranded_pendings(self, older_than_minutes: int = 10) -> int:
         """Mark old pending rows as MAY_HAVE_FIRED — the order may have executed
         on the exchange even though we never recorded the response. Operator
-        must verify against on-chain state before re-trading these markets."""
+        must verify against on-chain state before re-trading these markets.
+
+        SAFETY (re: PRE_LIVE_QA_REVIEW_2026-05-21.md C-1 concern about
+        startup races with multiple containers):
+
+        Concurrent calls from N containers are safe. The UPDATE is a single
+        atomic SQLite statement gated by `self._lock`. Once container A
+        transitions a row PENDING→MAY_HAVE_FIRED, container B's WHERE
+        status=PENDING finds nothing to update. No double-mark, no rollback.
+
+        Production default: `TRADE_LOG_RECOVER_ON_INIT=false` (opt-in only),
+        so __init__ does NOT call this. Recovery is reserved for explicit
+        operator action via a script — concurrency risk is therefore zero
+        in normal operation.
+
+        The status transition is one-way by design (per CLAUDE.md
+        invariant #2): once MAY_HAVE_FIRED, only manual operator action
+        can clear the row. This blocks any future trading on the same
+        market until on-chain verification, which is the desired safety
+        behavior."""
         cutoff = (
             datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)
         ).isoformat()
