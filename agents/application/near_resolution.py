@@ -377,10 +377,20 @@ class NearResolutionEngine:
                 end_date=end_date_str,
                 news_context=news_context,
             )
-            from langchain_core.messages import HumanMessage
+            try:
+                from langchain_core.messages import HumanMessage, SystemMessage
+            except ImportError:
+                @dataclass
+                class _Message:
+                    content: str
+
+                HumanMessage = SystemMessage = _Message
             raw = None
             try:
-                response = self._llm.invoke([HumanMessage(content=prompt_text)])
+                response = self._llm.invoke([
+                    SystemMessage(content="You respond only with valid JSON."),
+                    HumanMessage(content=prompt_text),
+                ])
                 raw = response.content if hasattr(response, "content") else str(response)
             except Exception as llm_exc:
                 _is_quota = (
@@ -402,7 +412,10 @@ class NearResolutionEngine:
                         _resp = _client.messages.create(
                             model=_model,
                             max_tokens=1024,
-                            messages=[{"role": "user", "content": prompt_text}],
+                            messages=[{
+                                "role": "user",
+                                "content": "Respond only with valid JSON.\n\n" + prompt_text,
+                            }],
                         )
                         raw = _resp.content[0].text
                     except Exception as anth_exc:

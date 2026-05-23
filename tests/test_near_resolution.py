@@ -6,7 +6,9 @@ No live network calls.
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -172,6 +174,57 @@ class TestMaybeEnterAll(_TmpDB, unittest.TestCase):
         self.assertEqual(n, 1)
         rows = log.recent(limit=5)
         self.assertEqual(rows[0]["status"], NEAR_RESOLUTION_OPEN)
+
+    def test_llm_direction_sends_json_system_instruction(self):
+        engine, _ = self._engine()
+
+        class FakeLLM:
+            def __init__(self):
+                self.messages = None
+
+            def invoke(self, messages):
+                self.messages = messages
+                return type(
+                    "Response",
+                    (),
+                    {"content": '{"direction":"yes","confidence":0.8,"reasoning":"ok"}'},
+                )()
+
+        fake = FakeLLM()
+        engine._llm = fake
+        engine._init_llm = lambda: None
+        engine._prompter = type(
+            "Prompter",
+            (),
+            {"binary_market_direction": lambda *args, **kwargs: "Return JSON for this market."},
+        )()
+
+        messages_mod = types.ModuleType("langchain_core.messages")
+
+        class TestMessage:
+            def __init__(self, content):
+                self.content = content
+
+        messages_mod.HumanMessage = TestMessage
+        messages_mod.SystemMessage = TestMessage
+        langchain_core_mod = types.ModuleType("langchain_core")
+        with patch.dict(
+            sys.modules,
+            {
+                "langchain_core": langchain_core_mod,
+                "langchain_core.messages": messages_mod,
+            },
+        ):
+            result = engine._llm_direction(
+                "Will BTC be up?",
+                0.45,
+                0.55,
+                "2026-05-22T00:00:00Z",
+            )
+
+        self.assertEqual(result["direction"], "yes")
+        self.assertIsNotNone(fake.messages)
+        self.assertIn("json", fake.messages[0].content.lower())
 
     def test_low_confidence_skipped(self):
         engine, log = self._engine()
