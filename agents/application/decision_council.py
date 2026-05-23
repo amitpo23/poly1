@@ -59,6 +59,7 @@ class DecisionCouncil:
         min_probability: float = 0.52,
         expert_min_probability: float = 0.50,
         thin_liquidity_usdc: float = 5_000.0,
+        min_fillable_usdc: float = 1.0,
         min_book_quality: float = 0.65,
         min_exit_bid_depth_usdc: float = 20.0,
         max_book_spread_pct: float = 0.08,
@@ -71,6 +72,7 @@ class DecisionCouncil:
         self.min_probability = float(min_probability)
         self.expert_min_probability = float(expert_min_probability)
         self.thin_liquidity_usdc = float(thin_liquidity_usdc)
+        self.min_fillable_usdc = max(0.0, float(min_fillable_usdc))
         self.min_book_quality = float(min_book_quality)
         self.min_exit_bid_depth_usdc = float(min_exit_bid_depth_usdc)
         self.max_book_spread_pct = float(max_book_spread_pct)
@@ -86,6 +88,7 @@ class DecisionCouncil:
             min_probability=_env_float("DECISION_COUNCIL_MIN_PROBABILITY", 0.52),
             expert_min_probability=_env_float("DECISION_COUNCIL_EXPERT_MIN_PROBABILITY", 0.50),
             thin_liquidity_usdc=_env_float("DECISION_COUNCIL_THIN_LIQUIDITY_USDC", 5_000.0),
+            min_fillable_usdc=_env_float("DECISION_COUNCIL_MIN_FILLABLE_USDC", 1.0),
             min_book_quality=_env_float("DECISION_COUNCIL_MIN_BOOK_QUALITY", 0.65),
             min_exit_bid_depth_usdc=_env_float("DECISION_COUNCIL_MIN_EXIT_BID_DEPTH_USDC", 20.0),
             max_book_spread_pct=_env_float("DECISION_COUNCIL_MAX_BOOK_SPREAD_PCT", 0.08),
@@ -111,7 +114,7 @@ class DecisionCouncil:
         is_expert = mode == "solo"
         liquidity = _safe_float(features.get("liquidity_usdc"), None)
         thin = (
-            (fillable_usdc is not None and float(fillable_usdc) < 1.0)
+            (fillable_usdc is not None and float(fillable_usdc) < self.min_fillable_usdc)
             or (liquidity is not None and liquidity < self.thin_liquidity_usdc)
         )
 
@@ -142,6 +145,7 @@ class DecisionCouncil:
             "decision_council_min_raw_ev": self.min_raw_ev,
             "decision_council_round_trip_cost_pct": self.round_trip_cost_pct,
             "decision_council_min_probability": min_prob,
+            "decision_council_min_fillable_usdc": self.min_fillable_usdc,
             "decision_council_min_book_quality": self.min_book_quality,
             "decision_council_min_exit_bid_depth_usdc": self.min_exit_bid_depth_usdc,
             "decision_council_max_book_spread_pct": self.max_book_spread_pct,

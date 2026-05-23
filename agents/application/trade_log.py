@@ -1850,6 +1850,43 @@ class TradeLog:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def recent_entry_trade_opportunities(
+        self,
+        *,
+        agents: Optional[list[str]] = None,
+        max_age_seconds: int = 180,
+        limit: int = 50,
+    ) -> list:
+        """Return fresh approved entry decisions that may become proposals.
+
+        Historically only ``market_scanner`` could feed ``scanner_executor``.
+        The router path can now inspect any explicitly enabled entry agent, but
+        the executor will still require canonical execution metadata before it
+        can place an order.
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+        ).isoformat()
+        allowed = [str(agent).strip() for agent in (agents or []) if str(agent).strip()]
+        params: list = [cutoff]
+        agent_filter = ""
+        if allowed:
+            placeholders = ",".join("?" for _ in allowed)
+            agent_filter = f"AND agent IN ({placeholders}) "
+            params.extend(allowed)
+        params.append(int(limit))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM brain_decisions "
+                "WHERE decision_type IN ('entry', 'trade_plan', 'shadow_trade_plan') "
+                "AND approved = 1 "
+                "AND ts >= ? "
+                f"{agent_filter}"
+                "ORDER BY id ASC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def market_brain_decisions(
         self, market_id: str, hours: float = 6, limit: int = 5
     ) -> list:

@@ -85,6 +85,19 @@ class TestTradingPolicyContract(unittest.TestCase):
         ):
             self.assertIn(required, support)
             self.assertTrue(support[required].get("compose_service"))
+        signal_services = runtime.get("live_signal_services") or {}
+        for required in (
+            "market_scanner",
+            "brain_indicator_cycle",
+            "market_universe",
+            "orderbook_monitor",
+            "news_signal",
+            "wallet_watcher",
+            "hermes_forecast",
+        ):
+            self.assertIn(required, signal_services)
+            self.assertTrue(signal_services[required].get("compose_service"))
+            self.assertFalse(signal_services[required].get("writes_live_orders"))
 
     def test_secret_free_examples_match_policy(self):
         env_text = (ROOT / ".env.example").read_text()
