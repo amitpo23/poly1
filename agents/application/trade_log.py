@@ -1356,16 +1356,20 @@ class TradeLog:
             return row is not None
 
     def count_close_failed_for_token(self, token_id: str) -> int:
-        """Count close_failed rows for this token.
+        """Count close_failed + exit_deferred rows for this token.
 
-        Used by position_manager to detect permanently-stuck positions: if a
-        FAK sell keeps bouncing (e.g., illiquid market, 400 'no orders found
-        to match with FAK order') beyond MAINTAIN_MAX_CLOSE_FAILURES cycles,
-        escalate to resolved_loss so the retry loop stops.
+        Used by position_manager to detect permanently-stuck positions.
+        Originally only counted close_failed (hard 5xx errors); on
+        2026-05-24 the audit revealed that exit_deferred ("FAK found
+        no match, will retry") accumulates forever for illiquid markets
+        — 4 attempts on one token in 80 seconds with no escalation. We
+        now count both: the threshold (MAINTAIN_MAX_CLOSE_FAILURES,
+        default 3) escalates after a small number of total stuck attempts
+        regardless of whether they were hard failures or soft deferrals.
         """
         sql = (
             "SELECT COUNT(*) FROM trades WHERE token_id = ? "
-            "AND status = 'close_failed'"
+            "AND status IN ('close_failed', 'exit_deferred')"
         )
         with self._lock, self._connect() as conn:
             row = conn.execute(sql, (str(token_id),)).fetchone()
