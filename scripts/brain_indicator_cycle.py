@@ -79,6 +79,7 @@ class BrainIndicatorConfig:
     scanner_executor_interval_sec: int = 60
     backup_interval_sec: int = 14400  # 4h; preflight requires <30h freshness
     backup_dir: str = "./data/backups"
+    backup_keep: int = 6
     state_path: str = "./data/brain_indicator_cycle_state.json"
     heartbeat_path: str = "./data/brain_indicator_cycle_heartbeat"
     report_path: str = "./data/brain_indicator_cycle_latest.json"
@@ -127,6 +128,7 @@ class BrainIndicatorConfig:
             scanner_executor_interval_sec=_env_int("BRAIN_INDICATOR_SCANNER_EXECUTOR_INTERVAL_SEC", 60),
             backup_interval_sec=_env_int("BRAIN_INDICATOR_BACKUP_INTERVAL_SEC", 14400),
             backup_dir=os.getenv("BRAIN_INDICATOR_BACKUP_DIR", f"{data_dir}/backups"),
+            backup_keep=_env_int("BRAIN_INDICATOR_BACKUP_KEEP", 6),
             state_path=os.getenv(
                 "BRAIN_INDICATOR_STATE_PATH",
                 f"{data_dir}/brain_indicator_cycle_state.json",
@@ -292,6 +294,8 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
                 cfg.db_path,
                 "--out-dir",
                 cfg.backup_dir,
+                "--keep",
+                str(cfg.backup_keep),
             ],
             {},
         ))

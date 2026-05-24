@@ -231,6 +231,30 @@ class BrainIndicatorCycleTests(unittest.TestCase):
         self.assertIn("scripts/python/backup_trade_log.py", cmd)
         self.assertIn("/tmp/poly1/trade_log.db", cmd)
         self.assertIn("/tmp/poly1/backups", cmd)
+        # Rotation: --keep must be propagated to bound disk usage
+        # (was unbounded before; ate ~4.5GB/day on the server).
+        self.assertIn("--keep", cmd)
+        keep_idx = cmd.index("--keep")
+        self.assertEqual(cmd[keep_idx + 1], "6")  # default keep
+
+    def test_run_backup_step_honors_custom_keep(self):
+        cfg = BrainIndicatorConfig(
+            db_path="/tmp/poly1/trade_log.db",
+            run_market_universe=False,
+            run_alphainsider=False,
+            run_markouts=False,
+            run_provider_scorecard=False,
+            run_strategy_scorecard=False,
+            run_opportunity_factory=False,
+            run_market_scanner=False,
+            dispatch_scanner_executor=False,
+            run_backup=True,
+            backup_dir="/tmp/poly1/backups",
+            backup_keep=12,
+        )
+        _, cmd, _ = build_steps(cfg)[0]
+        keep_idx = cmd.index("--keep")
+        self.assertEqual(cmd[keep_idx + 1], "12")
 
     def test_allow_live_is_blocked_when_no_trade_guard_is_on(self):
         with tempfile.TemporaryDirectory() as tmp:
