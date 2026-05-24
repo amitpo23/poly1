@@ -189,6 +189,14 @@ BASE_ENV = {
     "SCANNER_EXECUTOR_WAIT_OVERRIDE_MIN_SCORE": "0.79",
     "SCANNER_EXECUTOR_MAX_OPEN": "4",
     "SCANNER_EXECUTOR_REENTRY_COOLDOWN_HOURS": "12",
+    # Coverage rebalancing: scanner_executor accepts candidates from both
+    # market_scanner AND opportunity_factory so consensus_router can fire
+    # whenever both happen to approve the same market. Empirically (2026-05-24)
+    # they have 0 overlap; deeper architectural change is needed before
+    # consensus events become common, but having both wired in now means we
+    # don't miss the rare overlap and can measure it when it appears.
+    "SCANNER_EXECUTOR_CANDIDATE_AGENTS": "market_scanner,opportunity_factory,external_conviction_crypto_tape,external_conviction_divergence",
+    "SCANNER_EXECUTOR_CONSENSUS_ENABLED": "true",
     "SCANNER_EXECUTOR_SHADOW_ENTRY_COOLDOWN_MINUTES": "10",
     "PREFLIGHT_MAX_DISK_USED_PCT": "85",
     "PREFLIGHT_REQUIRE_DB_BACKUP": "true",
@@ -197,6 +205,13 @@ BASE_ENV = {
     "META_BRAIN_ANCHOR_THRESHOLD": "0.70",
     "META_BRAIN_MIN_WEIGHTED_SCORE_ANCHOR": "0.40",
     "META_BRAIN_WEIGHT_NEWS": "0.10",
+    # Manifold/Kalshi/Metaculus cross-market consensus carries the
+    # favorite-longshot bias that has driven the bot's 16.7% winrate
+    # on `meta_brain,manifold,manifold:manifold` signals (vs alphainsider
+    # path's 39.1% winrate). Lowering this weight reduces manifold's
+    # ability to dominate the meta-brain score and push SELL @ price>0.5
+    # candidates that the learning guard then has to filter. Was 0.10.
+    "META_BRAIN_WEIGHT_CROSS_MARKET": "0.03",
     "META_BRAIN_WEIGHT_EQUITY_FV": "0.12",
     "META_BRAIN_OPENBB_ENABLED": "true",
     "META_BRAIN_WEIGHT_OPENBB": "0.06",
