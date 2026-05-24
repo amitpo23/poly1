@@ -56,6 +56,7 @@ import logging
 import os
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from agents.application.trade_log import (
@@ -84,6 +85,13 @@ class ResolutionConfig:
     # positions. Without this, swarm sub-agents can't be defunded.
     swarm_db_path: str = ""
     swarm_sync_enabled: bool = True
+    # Dust terminator: when a position is on-chain dust AND gamma hasn't
+    # produced a resolution AND the position is older than the threshold,
+    # auto-write resolved_loss to terminate the journal. Without this,
+    # position_manager re-evaluates the same dust positions forever and
+    # the calibrator counts them as still-open exposure.
+    dust_terminator_enabled: bool = True
+    dust_terminator_age_hours: int = 24
 
     @classmethod
     def from_env(cls) -> "ResolutionConfig":
@@ -97,6 +105,12 @@ class ResolutionConfig:
             swarm_sync_enabled=os.getenv(
                 "RESOLUTION_SWARM_SYNC_ENABLED", "true"
             ).lower() == "true",
+            dust_terminator_enabled=os.getenv(
+                "RESOLUTION_DUST_TERMINATOR_ENABLED", "true"
+            ).lower() == "true",
+            dust_terminator_age_hours=int(
+                os.getenv("RESOLUTION_DUST_TERMINATOR_AGE_HOURS", "24")
+            ),
         )
 
 
@@ -174,9 +188,53 @@ class ResolutionSync:
         if on_chain >= self.cfg.dust_shares_floor:
             return None, "still_held"
         outcome = self._gamma_resolution(token_id)
-        if outcome is None:
-            return None, "dust_market_open"
-        return outcome, "ok"
+        if outcome is not None:
+            return outcome, "ok"
+        # Dust on-chain AND gamma has nothing to say. Without the
+        # terminator the journal grows a stuck "dust_market_open" row
+        # for every old position whose market hasn't resolved yet —
+        # position_manager wastes a cycle on each one forever, and the
+        # calibrator counts them as live exposure.
+        if (
+            self.cfg.dust_terminator_enabled
+            and self._is_older_than_dust_threshold(token_id)
+        ):
+            return self._synthesize_dust_loss_outcome(token_id), "dust_terminated"
+        return None, "dust_market_open"
+
+    def _is_older_than_dust_threshold(self, token_id: str) -> bool:
+        """Return True if the EARLIEST open row for this token is older
+        than `dust_terminator_age_hours`. Older positions are deemed
+        abandoned — markets typically resolve within a few days even
+        when gamma doesn't surface it in our queries."""
+        with self.trade_log._lock, self.trade_log._connect() as conn:
+            row = conn.execute(
+                "SELECT MIN(ts) AS first_ts FROM trades "
+                "WHERE token_id = ?",
+                (token_id,),
+            ).fetchone()
+        first_ts = row["first_ts"] if row else None
+        if not first_ts:
+            return False
+        try:
+            dt = datetime.fromisoformat(str(first_ts).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        age_hours = (
+            datetime.now(timezone.utc) - dt.astimezone(timezone.utc)
+        ).total_seconds() / 3600
+        return age_hours >= self.cfg.dust_terminator_age_hours
+
+    def _synthesize_dust_loss_outcome(self, token_id: str) -> dict:
+        """Build a resolved_loss outcome for dust terminator path. We
+        treat the position as a total write-off because we hold no
+        useful shares and the market hasn't produced a payout."""
+        return {
+            "status_key": "resolved_loss",
+            "market_id": "",
+            "payout_per_share": 0.0,
+            "outcome_label": "dust_terminated",
+        }
 
     def _tokens_needing_check(self) -> list[str]:
         """Return distinct token_ids that have OPEN_STATUSES rows but no

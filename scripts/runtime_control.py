@@ -739,6 +739,18 @@ def live_hour(args: argparse.Namespace) -> int:
     _write_control(control)
     if args.arm:
         HALT_PATH.unlink(missing_ok=True)
+        # Per the 2026-05-24 deep audit: when the new control file
+        # hash is written, every container that was started with the
+        # OLD hash will be blocked by risk_gate's hash-mismatch check.
+        # That check exists by design (a stale-env container shouldn't
+        # trade with yesterday's policy), so we DON'T weaken it — we
+        # refresh the containers that the operator explicitly armed.
+        # Without this, today's pattern repeats: arming with
+        # `--agents scanner_executor,btc_5min` only ever refreshes
+        # scanner_executor (manually), btc_5min stays stale and
+        # silently refuses to trade.
+        if not getattr(args, "skip_recreate", False):
+            _recreate_armed_agents(requested)
     print(
         "runtime mode set: live "
         f"agents={','.join(requested)} budget={budget:.2f} "
@@ -753,6 +765,50 @@ def live_hour(args: argparse.Namespace) -> int:
     else:
         print(f"left {HALT_PATH} unchanged; pass --arm only after approval")
     return 0
+
+
+# Map runtime entry-agent names to docker compose service names.
+# In most cases they match (e.g., `btc_5min` agent → `btc_5min` service).
+# scanner_executor is the only one with a hyphen mismatch in the service
+# naming (`scanner-executor`).
+AGENT_TO_COMPOSE_SERVICE = {
+    "scanner_executor": "scanner-executor",
+    "btc_5min": "btc_5min",
+    "btc_daily": "btc_daily",
+    "scalper": "scalper",
+    "near_resolution": "near_resolution",
+    "news_shock": "news_shock",
+    "wallet_follow": "wallet_follow",
+    "trader": "poly1",
+}
+
+
+def _recreate_armed_agents(agents: list[str]) -> None:
+    """Force-recreate the docker compose service for each armed agent so
+    risk_gate's hash-mismatch check passes. Quiet on failure — we log
+    but do not raise, because a recreate failure shouldn't undo the
+    runtime_control write.
+    """
+    import subprocess
+    for agent in agents:
+        service = AGENT_TO_COMPOSE_SERVICE.get(agent, agent)
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "up", "-d", "--force-recreate", service],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if result.returncode == 0:
+                print(f"recreated {service} (agent={agent})")
+            else:
+                print(
+                    f"WARN: recreate {service} failed rc={result.returncode}: "
+                    f"{result.stderr.strip()[:200]}"
+                )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            print(f"WARN: recreate {service} skipped: {exc}")
 
 
 def status(_: argparse.Namespace) -> int:
@@ -830,6 +886,16 @@ def main() -> int:
     )
     p_live_hour.add_argument("--note", default="")
     p_live_hour.add_argument("--arm", action="store_true", help="remove HALT after writing live control")
+    p_live_hour.add_argument(
+        "--skip-recreate",
+        action="store_true",
+        help=(
+            "Skip the auto force-recreate of armed agent containers. "
+            "WARNING: without recreate, containers with stale runtime "
+            "hash will be blocked by risk_gate. Use only if you've "
+            "already recreated manually."
+        ),
+    )
     p_live_hour.set_defaults(func=live_hour)
 
     p_status = sub.add_parser("status")
