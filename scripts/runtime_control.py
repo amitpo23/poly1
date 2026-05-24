@@ -33,7 +33,15 @@ BASE_ENV = {
     "POLY1_FAST_TAKE_PROFIT_PCT": "0.04",
     "POLY1_PREFERRED_TAKE_PROFIT_HIGH_PCT": "0.08",
     "POLY1_TAKE_PROFIT_CAP_PCT": "0.25",
-    "POLY1_MAX_HOLD_SECONDS": "21600",
+    # Hold time bound — empirical evidence (2026-05-24 exit analysis,
+    # 7 days, 81 closed trades):
+    #   <5min bucket:   +$0.86 (32% wr) — POSITIVE
+    #   5-60min bucket: -$0.34 (35% wr) — slightly negative
+    #   1-4h bucket:    -$0.31 (8% wr)  — clearly negative
+    #   >4h bucket:     -$0.27 (0% wr)  — worst
+    # Capping at 1h captures the productive <60min window and drops the
+    # negative-EV tail. See docs/SESSION_2026-05-24_EXIT_ANALYSIS.md.
+    "POLY1_MAX_HOLD_SECONDS": "3600",
     "MARKET_BRAIN_ENABLED": "true",
     "MAX_TRADES_PER_HOUR": "100",
     "MAX_OPEN_POSITIONS": "10",
@@ -254,7 +262,8 @@ BASE_ENV = {
     "MAINTAIN_PREFERRED_TAKE_PROFIT_HIGH_PCT": "0.08",
     "MAINTAIN_IMMEDIATE_REVIEW_MOVE_PCT": "0.02",
     "MAINTAIN_TRAILING_STOP_PCT": "0.02",
-    "MAINTAIN_MAX_HOLD_HOURS": "6",
+    # Matches POLY1_MAX_HOLD_SECONDS above (3600s = 1h).
+    "MAINTAIN_MAX_HOLD_HOURS": "1",
     "MAINTAIN_POLL_SEC": "10",
     "MAINTAIN_LLM_EXIT_INTERVAL_SEC": "60",
     "MAINTAIN_PARTIAL_TAKE_PROFIT_ENABLED": "true",
