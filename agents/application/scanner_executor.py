@@ -103,6 +103,15 @@ class ScannerExecutorConfig:
     # When True, BOTH edge AND EV must clear thresholds. When False (default),
     # EITHER passes — captures asymmetric strategies the strict gate misses.
     bayesian_require_both_modes: bool = False
+    # Anti-gap protection: short-horizon binary markets (5-min crypto
+    # Up/Down) resolve fast and can gap 50%+ in seconds. The global SL
+    # (0.06) was too wide for these — Trade 4237 on 2026-05-24 lost
+    # 47% because the market resolved against us in 30 sec. Setting
+    # a tight per-position SL via response_json sl_pct_override.
+    # btc_5min already uses this; scanner_executor extends it to
+    # crypto_momentum candidates that came through its funnel.
+    crypto_momentum_sl_pct_override: float = 0.03
+    crypto_momentum_tp_pct_override: float = 0.08
     min_raw_ev: float = 0.04
     min_net_ev: float = 0.03
     round_trip_cost_pct: float = 0.04
@@ -191,6 +200,12 @@ class ScannerExecutorConfig:
             ),
             bayesian_require_both_modes=_env_bool(
                 "SCANNER_EXECUTOR_BAYESIAN_REQUIRE_BOTH_MODES", False
+            ),
+            crypto_momentum_sl_pct_override=_env_float(
+                "SCANNER_EXECUTOR_CRYPTO_MOMENTUM_SL_PCT", 0.03
+            ),
+            crypto_momentum_tp_pct_override=_env_float(
+                "SCANNER_EXECUTOR_CRYPTO_MOMENTUM_TP_PCT", 0.08
             ),
             min_raw_ev=_env_float("SCANNER_EXECUTOR_MIN_RAW_EV", 0.04),
             min_net_ev=_env_float("SCANNER_EXECUTOR_MIN_NET_EV", 0.03),
@@ -854,6 +869,7 @@ class ScannerExecutor:
         )
         market = self._market_tuple(features, market_id, outcomes, token_ids)
 
+        exit_overrides = self._per_position_exit_overrides(row, features)
         if not self.execute or force_shadow_from_freeze:
             self.trade_log.mark(
                 pending_id,
@@ -866,6 +882,7 @@ class ScannerExecutor:
                     "net_ev": round(net_ev, 4),
                     "meta_timing": meta_timing,
                     "timing_override": timing_override,
+                    **exit_overrides,
                     **sizing.features(),
                 },
                 error="SHADOW: scanner_executor",
@@ -900,6 +917,7 @@ class ScannerExecutor:
                 "net_ev": round(net_ev, 4),
                 "meta_timing": meta_timing,
                 "timing_override": timing_override,
+                **exit_overrides,
                 **sizing.features(),
             },
             price=entry_price,
@@ -1052,6 +1070,47 @@ class ScannerExecutor:
             min_ev_usdc=self.cfg.bayesian_min_ev_usdc,
             require_both_modes=self.cfg.bayesian_require_both_modes,
         )
+
+    def _per_position_exit_overrides(self, row: dict, features: dict) -> dict:
+        """Compute per-position TP/SL overrides for the response_json.
+
+        Short-horizon binary markets (5-min crypto Up/Down) resolve
+        within minutes and can gap 50%+ when the period expires
+        unfavourably. The global stop_loss_pct (0.06) was too wide —
+        Trade 4237 (2026-05-24) lost 47% because the market resolved
+        against us in 30 seconds. For these strategies, write tighter
+        per-position SL (default 0.03) + matched TP (0.08) into the
+        trade's response_json so position_manager reads them and
+        bounds exit damage.
+
+        Heuristics for "needs tight SL":
+        - strategy_type == 'crypto_momentum'
+        - signal_source includes 'crypto_tape' (5-min momentum path)
+        - market_cluster looks like '*-updown-5m-*'
+
+        Returns a dict with optional sl_pct_override and tp_pct_override
+        keys, ready to be merged into response_json.
+        """
+        strategy_type = str(features.get("strategy_type") or "")
+        signal_source = str(
+            row.get("signal_source") or features.get("signal_source") or ""
+        )
+        market_cluster = str(features.get("market_cluster") or "")
+        proposal = features.get("trade_proposal") or {}
+        evidence = proposal.get("evidence") or {}
+        horizon = str(evidence.get("horizon") or "")
+        is_crypto_momentum = (
+            strategy_type == "crypto_momentum"
+            or "crypto_tape" in signal_source
+            or "updown-5m" in market_cluster
+            or horizon == "5m"
+        )
+        if is_crypto_momentum:
+            return {
+                "sl_pct_override": self.cfg.crypto_momentum_sl_pct_override,
+                "tp_pct_override": self.cfg.crypto_momentum_tp_pct_override,
+            }
+        return {}
 
     def _has_proven_override(self, row: dict, features: dict) -> bool:
         source = str(features.get("estimated_win_probability_source") or "")
