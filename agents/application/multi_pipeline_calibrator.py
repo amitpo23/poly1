@@ -74,23 +74,44 @@ def _direct_execution_stats(
     conn: sqlite3.Connection, *, days: int
 ) -> dict[str, dict]:
     """For each direct-execution agent, walk its closed trades and
-    aggregate wins/losses + sum_pnl. Returns dict keyed by agent name."""
+    aggregate wins/losses + sum_pnl. Returns dict keyed by agent name.
+
+    Entry-status detection covers both standard `filled` rows (used by
+    scanner_executor) and agent-specific entry statuses like
+    `btc_5min_open` and `near_resolution_open` — those agents use UUID
+    cycle_ids and tag the status itself, so we recognize them by status.
+    Each such status is also a tag of the firing agent.
+    """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat()
-    terminal_statuses = WIN_STATUSES | LOSS_STATUSES
+    terminal_statuses = WIN_STATUSES | LOSS_STATUSES | {"close_failed"}
     placeholders = ",".join("?" for _ in terminal_statuses)
 
-    # First find all entry rows (status='filled') per agent
+    # Recognized entry statuses by agent. `filled` is the generic one;
+    # the *_open variants are agent-tagged (status string IS the tag).
+    ENTRY_STATUS_TO_AGENT = {
+        "filled": None,                # fall back to cycle_id detection
+        "btc_5min_open": "btc_5min",
+        "near_resolution_open": "near_resolution",
+    }
+    entry_status_placeholders = ",".join("?" for _ in ENTRY_STATUS_TO_AGENT)
+
+    # First find all entry rows per agent
     entries: dict[str, dict] = {}  # token_id -> {agent, ts, ...}
     for row in conn.execute(
-        """
-        SELECT id, ts, cycle_id, market_id, token_id, side, price, size_usdc
+        f"""
+        SELECT id, ts, cycle_id, market_id, token_id, side, price, size_usdc, status
         FROM trades
-        WHERE status = 'filled' AND ts >= ? AND token_id IS NOT NULL AND token_id != ''
+        WHERE status IN ({entry_status_placeholders})
+          AND ts >= ? AND token_id IS NOT NULL AND token_id != ''
         ORDER BY id
         """,
-        (cutoff,),
+        (*ENTRY_STATUS_TO_AGENT.keys(), cutoff),
     ):
-        agent = _agent_from_cycle_id(row["cycle_id"])
+        # Status-tagged statuses identify the agent directly. For generic
+        # `filled` we fall back to cycle_id pattern matching.
+        agent = ENTRY_STATUS_TO_AGENT.get(row["status"])
+        if agent is None:
+            agent = _agent_from_cycle_id(row["cycle_id"])
         if not agent:
             continue
         # If multiple entries for same token_id, keep the LATEST (most recent)
