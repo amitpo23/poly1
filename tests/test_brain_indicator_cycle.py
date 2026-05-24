@@ -22,6 +22,7 @@ class MarkoutStepTests(unittest.TestCase):
             run_market_scanner=False,
             dispatch_scanner_executor=False,
             run_backup=False,
+            run_calibration_refresh=False,
             no_trade_guard=True,
             allow_live_dispatch=False,
         )
@@ -54,6 +55,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_market_scanner=False,
             dispatch_scanner_executor=True,
             run_backup=False,
+            run_calibration_refresh=False,
             no_trade_guard=True,
             allow_live_dispatch=False,
         )
@@ -77,6 +79,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_market_scanner=False,
             dispatch_scanner_executor=True,
             run_backup=False,
+            run_calibration_refresh=False,
             no_trade_guard=False,
             allow_live_dispatch=True,
         )
@@ -98,6 +101,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_market_scanner=False,
             dispatch_scanner_executor=False,
             run_backup=False,
+            run_calibration_refresh=False,
         )
 
         steps = build_steps(cfg)
@@ -135,6 +139,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
                 run_market_scanner=True,
                 dispatch_scanner_executor=True,
                 run_backup=False,
+            run_calibration_refresh=False,
                 no_trade_guard=True,
             )
             report = run_once(cfg, runner=runner)
@@ -158,6 +163,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_market_scanner=True,
             dispatch_scanner_executor=False,
             run_backup=False,
+            run_calibration_refresh=False,
             enable_tavily=False,
             enable_llm=False,
             tavily_daily_limit=1,
@@ -194,6 +200,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
                 run_market_scanner=True,
                 dispatch_scanner_executor=False,
                 run_backup=False,
+            run_calibration_refresh=False,
                 alphainsider_interval_sec=900,
                 market_scanner_interval_sec=60,
             )
@@ -222,6 +229,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_market_scanner=False,
             dispatch_scanner_executor=False,
             run_backup=True,
+            run_calibration_refresh=False,
             backup_dir="/tmp/poly1/backups",
         )
         steps = build_steps(cfg)
@@ -249,6 +257,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
             run_market_scanner=False,
             dispatch_scanner_executor=False,
             run_backup=True,
+            run_calibration_refresh=False,
             backup_dir="/tmp/poly1/backups",
             backup_keep=12,
         )
@@ -271,6 +280,7 @@ class BrainIndicatorCycleTests(unittest.TestCase):
                 run_market_scanner=False,
                 dispatch_scanner_executor=False,
                 run_backup=False,
+            run_calibration_refresh=False,
                 no_trade_guard=True,
                 allow_live_dispatch=True,
             )

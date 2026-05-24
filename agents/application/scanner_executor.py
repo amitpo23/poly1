@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from agents.application import consensus_router
+from agents.application import bayesian_aggregator, consensus_router
 from agents.application.decision_council import DecisionCouncil
 from agents.application.regime_router import family_from_signal, route_for_features
 from agents.application.risk_gate import RiskGate
@@ -86,6 +86,17 @@ class ScannerExecutorConfig:
     consensus_min_score: float = 0.65
     consensus_min_net_ev: float = 0.015
     consensus_min_raw_ev: float = 0.02
+    # Bayesian edge gate (Day 3 of probability-engine plan): when enabled,
+    # scanner_executor runs `bayesian_aggregator.compute_edge` for each
+    # candidate using the offline calibration JSON; rejects if edge is
+    # below the threshold (calibrated P(win) doesn't beat market-implied
+    # by enough margin). Default off until the calibration file exists.
+    bayesian_gate_enabled: bool = False
+    bayesian_calibration_path: str = "/app/data/probability_calibration.json"
+    bayesian_min_edge: float = 0.05
+    bayesian_min_samples: int = 10
+    bayesian_use_wilson: bool = True
+    bayesian_fallback_prior: float = 0.25
     min_raw_ev: float = 0.04
     min_net_ev: float = 0.03
     round_trip_cost_pct: float = 0.04
@@ -149,6 +160,25 @@ class ScannerExecutorConfig:
             ),
             consensus_min_raw_ev=_env_float(
                 "SCANNER_EXECUTOR_CONSENSUS_MIN_RAW_EV", 0.02
+            ),
+            bayesian_gate_enabled=_env_bool(
+                "SCANNER_EXECUTOR_BAYESIAN_GATE_ENABLED", False
+            ),
+            bayesian_calibration_path=os.getenv(
+                "SCANNER_EXECUTOR_BAYESIAN_CALIBRATION_PATH",
+                "/app/data/probability_calibration.json",
+            ),
+            bayesian_min_edge=_env_float(
+                "SCANNER_EXECUTOR_BAYESIAN_MIN_EDGE", 0.05
+            ),
+            bayesian_min_samples=int(
+                _env_float("SCANNER_EXECUTOR_BAYESIAN_MIN_SAMPLES", 10.0)
+            ),
+            bayesian_use_wilson=_env_bool(
+                "SCANNER_EXECUTOR_BAYESIAN_USE_WILSON", True
+            ),
+            bayesian_fallback_prior=_env_float(
+                "SCANNER_EXECUTOR_BAYESIAN_FALLBACK_PRIOR", 0.25
             ),
             min_raw_ev=_env_float("SCANNER_EXECUTOR_MIN_RAW_EV", 0.04),
             min_net_ev=_env_float("SCANNER_EXECUTOR_MIN_NET_EV", 0.03),
@@ -311,6 +341,11 @@ class ScannerExecutor:
         self._learning_guard_started_ts = time.time()
         self._repeat_rejects: dict[tuple[str, str], tuple[int, float]] = {}
         self._market_quarantine_until: dict[str, float] = {}
+        # Bayesian calibration: load lazily on first use, cache for the
+        # process lifetime. Calibration file is regenerated daily by
+        # `scripts/probability_calibrator_cron.py` (Day 5 — TODO).
+        self._bayesian_calibration: Optional[dict] = None
+        self._bayesian_calibration_mtime: float = 0.0
 
     def run_once(self) -> dict:
         stats = {
@@ -429,12 +464,33 @@ class ScannerExecutor:
             )
             consensus_features = consensus_result.as_features()
 
+        # Bayesian edge gate — Day 4 of the probability-engine plan.
+        # Runs the calibrated P(win) vs market-implied check. We log the
+        # result in features regardless (audit), but only reject when the
+        # gate is enabled AND the candidate fails.
+        bayesian_result = self._bayesian_edge(row, features)
+        bayesian_features = (
+            bayesian_result.as_features() if bayesian_result is not None else {}
+        )
+        if (
+            self.cfg.bayesian_gate_enabled
+            and bayesian_result is not None
+            and not bayesian_result.actionable
+        ):
+            self._record_reject(
+                row,
+                "bayesian_edge_below_threshold",
+                {**consensus_features, **bayesian_features},
+            )
+            return "skipped"
+
         min_score = self._min_score_for_decision(row, features, consensus=consensus_result)
         if score < min_score:
             self._record_reject(
                 row,
                 "score_below_executor_min",
-                {"score": score, "min_score": min_score, **consensus_features},
+                {"score": score, "min_score": min_score, **consensus_features,
+                 **bayesian_features},
             )
             return "skipped"
         if (
@@ -913,6 +969,75 @@ class ScannerExecutor:
         if relaxations:
             return min(self.cfg.min_score, *relaxations)
         return self.cfg.min_score
+
+    def _load_bayesian_calibration(self) -> Optional[dict]:
+        """Lazy-load + auto-refresh the calibration JSON. Returns None if
+        the file doesn't exist or fails to parse — caller must handle.
+        """
+        path = Path(self.cfg.bayesian_calibration_path)
+        if not path.exists():
+            return None
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        if (
+            self._bayesian_calibration is not None
+            and mtime == self._bayesian_calibration_mtime
+        ):
+            return self._bayesian_calibration
+        try:
+            import json as _json
+            self._bayesian_calibration = _json.loads(path.read_text())
+            self._bayesian_calibration_mtime = mtime
+            logger.info(
+                "scanner_executor: loaded bayesian calibration from %s "
+                "(matched=%s, total_closes=%s)",
+                path,
+                self._bayesian_calibration.get("matched"),
+                self._bayesian_calibration.get("total_closes"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "scanner_executor: bayesian calibration load failed: %s", exc
+            )
+            return None
+        return self._bayesian_calibration
+
+    def _bayesian_edge(
+        self, row: dict, features: dict
+    ) -> Optional["bayesian_aggregator.EdgeResult"]:
+        """Return EdgeResult for this candidate or None if calibration
+        unavailable."""
+        if not self.cfg.bayesian_gate_enabled:
+            return None
+        calibration = self._load_bayesian_calibration()
+        if calibration is None:
+            return None
+        signal_source = str(
+            row.get("signal_source") or features.get("signal_source") or ""
+        )
+        action = str(features.get("selected_side") or row.get("action") or "")
+        entry_price = (
+            features.get("selected_entry_price")
+            or features.get("entry_price")
+            or features.get("yes_price")
+        )
+        market_type = str(row.get("market_type") or "")
+        candidate = {
+            "signal_source": signal_source,
+            "action": action,
+            "entry_price": entry_price,
+            "market_type": market_type,
+        }
+        return bayesian_aggregator.compute_edge(
+            candidate,
+            calibration,
+            min_edge=self.cfg.bayesian_min_edge,
+            min_samples=self.cfg.bayesian_min_samples,
+            use_wilson=self.cfg.bayesian_use_wilson,
+            fallback_global_prior=self.cfg.bayesian_fallback_prior,
+        )
 
     def _has_proven_override(self, row: dict, features: dict) -> bool:
         source = str(features.get("estimated_win_probability_source") or "")

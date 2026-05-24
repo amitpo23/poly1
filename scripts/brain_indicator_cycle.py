@@ -80,6 +80,11 @@ class BrainIndicatorConfig:
     backup_interval_sec: int = 14400  # 4h; preflight requires <30h freshness
     backup_dir: str = "./data/backups"
     backup_keep: int = 6
+    run_calibration_refresh: bool = True
+    calibration_refresh_interval_sec: int = 3600  # every hour
+    calibration_lookback_days: int = 30
+    calibration_max_age_hours: int = 48
+    calibration_out_path: str = "./data/probability_calibration.json"
     state_path: str = "./data/brain_indicator_cycle_state.json"
     heartbeat_path: str = "./data/brain_indicator_cycle_heartbeat"
     report_path: str = "./data/brain_indicator_cycle_latest.json"
@@ -129,6 +134,22 @@ class BrainIndicatorConfig:
             backup_interval_sec=_env_int("BRAIN_INDICATOR_BACKUP_INTERVAL_SEC", 14400),
             backup_dir=os.getenv("BRAIN_INDICATOR_BACKUP_DIR", f"{data_dir}/backups"),
             backup_keep=_env_int("BRAIN_INDICATOR_BACKUP_KEEP", 6),
+            run_calibration_refresh=_env_bool(
+                "BRAIN_INDICATOR_RUN_CALIBRATION_REFRESH", True
+            ),
+            calibration_refresh_interval_sec=_env_int(
+                "BRAIN_INDICATOR_CALIBRATION_REFRESH_INTERVAL_SEC", 3600
+            ),
+            calibration_lookback_days=_env_int(
+                "BRAIN_INDICATOR_CALIBRATION_LOOKBACK_DAYS", 30
+            ),
+            calibration_max_age_hours=_env_int(
+                "BRAIN_INDICATOR_CALIBRATION_MAX_AGE_HOURS", 48
+            ),
+            calibration_out_path=os.getenv(
+                "BRAIN_INDICATOR_CALIBRATION_OUT_PATH",
+                f"{data_dir}/probability_calibration.json",
+            ),
             state_path=os.getenv(
                 "BRAIN_INDICATOR_STATE_PATH",
                 f"{data_dir}/brain_indicator_cycle_state.json",
@@ -299,6 +320,23 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
             ],
             {},
         ))
+    if cfg.run_calibration_refresh:
+        steps.append((
+            "probability_calibration_refresh",
+            [
+                py,
+                "scripts/refresh_probability_calibration.py",
+                "--db",
+                cfg.db_path,
+                "--days",
+                str(cfg.calibration_lookback_days),
+                "--max-age-hours",
+                str(cfg.calibration_max_age_hours),
+                "--out",
+                cfg.calibration_out_path,
+            ],
+            {},
+        ))
     return steps
 
 
@@ -313,6 +351,7 @@ def step_intervals(cfg: BrainIndicatorConfig) -> dict[str, int]:
         "market_scanner": cfg.market_scanner_interval_sec,
         "scanner_executor_dispatch": cfg.scanner_executor_interval_sec,
         "trade_log_backup": cfg.backup_interval_sec,
+        "probability_calibration_refresh": cfg.calibration_refresh_interval_sec,
     }
 
 
