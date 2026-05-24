@@ -2549,20 +2549,28 @@ class MetaBrain:
             ],
             "conflicts": [c.source_id for c in route.conflicts],
         }
-        # Informed-only weighting: neutral signals (exactly 0.5) carry no weight
+        # Informed-only weighting: neutral signals (≈ 0.5) carry no weight
         # so they cannot dilute a single strong signal.  A component at 0.5 means
         # "no data" — it should be invisible, not drag the score toward the median.
+        # Use a small epsilon: arithmetic on calibrator outputs can produce
+        # 0.5 ± 1e-15 even when the source intended "neutral", and exact float
+        # equality would let those slip past the guard and dilute the score.
         NEUTRAL = 0.5
+        NEUTRAL_EPS = 1e-9
+
+        def _is_neutral(v: float) -> bool:
+            return abs(v - NEUTRAL) <= NEUTRAL_EPS
+
         active_weight_sum = sum(
             max(0.0, weights[k])
             for k, v in components.items()
-            if v != NEUTRAL
+            if not _is_neutral(v)
         )
         if active_weight_sum > 0:
             score = sum(
                 max(0.0, weights[k]) * v
                 for k, v in components.items()
-                if v != NEUTRAL
+                if not _is_neutral(v)
             ) / active_weight_sum
         else:
             # All signals neutral — fall back to full-weight blend (will ≈ 0.5).

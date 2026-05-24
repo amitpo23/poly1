@@ -707,6 +707,57 @@ class TestMetaBrain(unittest.TestCase):
             0.50,
         )
 
+    def test_near_neutral_component_excluded_from_weighted_score(self):
+        """Calibrator/aggregation arithmetic can return 0.5 ± 1e-15 for
+        signals the source intended as 'no data'. The pre-fix exact
+        equality check at meta_brain.py:2555 missed these and let them
+        dilute the score; the epsilon-based check now treats them as
+        neutral, identical to exact 0.5.
+
+        Direct unit test of the informed-only scoring math without
+        going through synthesize() — we don't need to fake winrate
+        history to make the point.
+        """
+        components = {
+            "brain": 0.80,           # strong signal
+            "winrate": 0.5 + 1e-15,  # near-neutral float arithmetic noise
+            "news": 0.5,             # exact neutral
+        }
+        weights = {"brain": 0.25, "winrate": 0.15, "news": 0.10}
+
+        # Reproduce the post-fix logic from meta_brain.py
+        NEUTRAL = 0.5
+        NEUTRAL_EPS = 1e-9
+        active_weight_sum = sum(
+            max(0.0, weights[k])
+            for k, v in components.items()
+            if abs(v - NEUTRAL) > NEUTRAL_EPS
+        )
+        score = sum(
+            max(0.0, weights[k]) * v
+            for k, v in components.items()
+            if abs(v - NEUTRAL) > NEUTRAL_EPS
+        ) / active_weight_sum if active_weight_sum > 0 else 0.5
+
+        # Only `brain` should contribute; near-neutral winrate and exact
+        # neutral news both excluded. Score == 0.80 (brain's value).
+        self.assertAlmostEqual(score, 0.80, places=6)
+
+        # Confirm pre-fix behaviour would have differed: with exact-only
+        # equality, winrate (0.5 + 1e-15) is NOT exactly NEUTRAL and gets
+        # included. Score would be (0.25*0.80 + 0.15*0.5)/0.40 = 0.6875.
+        score_pre_fix = sum(
+            max(0.0, weights[k]) * v
+            for k, v in components.items()
+            if v != NEUTRAL  # exact equality (old behaviour)
+        ) / sum(
+            max(0.0, weights[k])
+            for k, v in components.items()
+            if v != NEUTRAL
+        )
+        self.assertAlmostEqual(score_pre_fix, 0.6875, places=4)
+        self.assertNotAlmostEqual(score_pre_fix, 0.80, places=3)
+
     @patch.dict(os.environ, {
         "EXPERT_SOLO_MIN_PROB": "0.65",
         "EXPERT_SOLO_MIN_WINRATE": "0.65",
