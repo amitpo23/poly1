@@ -216,13 +216,21 @@ class RiskGate:
             size_usdc = pos.get("size_usdc")
             if not token_id or not side or price is None or not size_usdc:
                 continue
-            # `token_id` is already the exact CLOB outcome token we bought.
+            # `token_id` is the exact CLOB outcome token we bought.
             # A recommendation with side=SELL means "bet against outcomes[0]",
             # implemented by buying outcomes[1] at order_price=(1-model_price).
-            # TradeLog.price stores that actual token entry price, so MTM must
-            # value shares against `price` for both BUY and SELL rows.
-            entry_px = float(price)
-            if entry_px <= 0:
+            # scanner_executor.py:723 stores `price` as an outcomes[0]-anchored
+            # value: `anchor_price = live_price if side==BUY else 1.0 - live_price`.
+            # So for SELL rows, `trades.price` is the YES-equivalent (e.g. 0.17
+            # for a SELL meaning "outcomes[0] won't happen"), NOT the NO
+            # token's actual entry price (0.83 in this example).
+            # get_midpoint(token_id) returns the NO token's mid — so to value
+            # the position correctly we must use the NO entry price as the
+            # share-cost basis. For BUY rows the anchor IS the YES entry, so
+            # no adjustment.
+            anchored = float(price)
+            entry_px = anchored if side == "BUY" else 1.0 - anchored
+            if entry_px <= 0 or entry_px >= 1:
                 continue
             shares = size_usdc / entry_px
             try:

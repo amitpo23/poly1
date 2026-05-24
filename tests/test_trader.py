@@ -941,20 +941,62 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
         self.assertTrue(gate.ok(), msg=f"unexpected block: {gate.reason()}")
         self.assertAlmostEqual(gate.position_mtm_usd(), 20.0, places=4)
 
-    def test_sell_position_mtm_uses_actual_token_entry_price(self):
-        """SELL recommendations are encoded as BUYs of the opposite token.
-        TradeLog.price is already the actual token entry price, so MTM must
-        not invert it again with 1-price.
+    def test_sell_position_mtm_uses_actual_no_entry_price(self):
+        """SELL recommendations are encoded as BUYs of the NO token at
+        order_price=(1-YES_recommendation). scanner_executor.py:723 stores
+        TradeLog.price as the outcomes[0]-anchored value (the YES recommendation
+        equivalent), NOT the actual NO token entry price. risk_gate must
+        invert it with 1-price to get the real share-cost basis.
+
+        Setup: SELL with YES anchor 0.40 → NO actual entry = 0.60. NO mid
+        flat at 0.60 → portfolio at entry. Shares = 20/0.60 = 33.33;
+        mtm = 33.33 * 0.60 = 20.0.
         """
+        log = TradeLog(db_path=self.db_path)
+        self._insert_filled(log, "M1", "NO_TOKEN", "SELL", 0.40, 20.0)
+        poly = self._poly_with_midpoints(balance=60.0, midpoints={"NO_TOKEN": 0.60})
+        gate = self._gate(polymarket=poly, starting_balance_usdc=80.0,
+                          max_daily_loss_pct=0.10,
+                          max_trades_per_hour=100)
+        self.assertAlmostEqual(gate.position_mtm_usd(), 20.0, places=4)
+        self.assertTrue(gate.ok(), msg=f"unexpected block: {gate.reason()}")
+
+    def test_sell_position_mtm_reflects_no_price_move(self):
+        """When the NO token's mid moves AWAY from entry, MTM must reflect
+        the loss/gain in NO terms, not YES terms.
+
+        Setup: SELL with YES anchor 0.40 → NO entry 0.60. NO mid drops to
+        0.40 (the original YES anchor value) → real loss. Shares = 33.33;
+        mtm = 33.33 * 0.40 = 13.33; loss = 6.67 ($-33%).
+
+        Pre-fix bug: shares were computed as 20/0.40 = 50, mtm = 50*0.40
+        = 20.0 → bug hid the loss entirely. This test now codifies the
+        correct behaviour."""
         log = TradeLog(db_path=self.db_path)
         self._insert_filled(log, "M1", "NO_TOKEN", "SELL", 0.40, 20.0)
         poly = self._poly_with_midpoints(balance=60.0, midpoints={"NO_TOKEN": 0.40})
         gate = self._gate(polymarket=poly, starting_balance_usdc=80.0,
+                          max_daily_loss_pct=0.50,  # allow drawdown to surface
+                          max_trades_per_hour=100)
+        # Real: 20 USDC / 0.60 NO_entry = 33.33 shares; 33.33 * 0.40 mid = 13.33
+        self.assertAlmostEqual(gate.position_mtm_usd(), 13.333333, places=4)
+
+    def test_sell_position_mtm_extreme_price_inversion(self):
+        """Extreme SELL (YES anchor near 0): correct inversion is critical
+        because the share count diverges sharply.
+
+        SELL @ YES anchor 0.17 (NO entry 0.83). Pre-fix: shares = 20/0.17
+        = 117.6, mtm at NO mid 0.83 = 97.65 → 5x overstatement.
+        Post-fix: shares = 20/0.83 = 24.1; mtm = 24.1 * 0.83 = 20.0
+        (flat at entry).
+        """
+        log = TradeLog(db_path=self.db_path)
+        self._insert_filled(log, "M1", "NO_TOKEN", "SELL", 0.17, 20.0)
+        poly = self._poly_with_midpoints(balance=60.0, midpoints={"NO_TOKEN": 0.83})
+        gate = self._gate(polymarket=poly, starting_balance_usdc=80.0,
                           max_daily_loss_pct=0.10,
                           max_trades_per_hour=100)
-        # shares = 20 / 0.40 = 50; mtm = 50 * 0.40 = 20; portfolio flat.
         self.assertAlmostEqual(gate.position_mtm_usd(), 20.0, places=4)
-        self.assertTrue(gate.ok(), msg=f"unexpected block: {gate.reason()}")
 
 
 class TestPolymarketDryRun(unittest.TestCase):
