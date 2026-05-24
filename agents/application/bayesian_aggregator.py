@@ -36,21 +36,24 @@ from agents.application.probability_calibrator import (
 class EdgeResult:
     """The output of edge computation for a single candidate.
 
-    Fields:
-    - p_win_calibrated: best-fit P(win) from history (point estimate)
-    - p_win_conservative: Wilson 95% lower bound (use for thresholding)
-    - implied_p_win: market's implied win probability for our side
-    - edge: p_win_conservative - implied_p_win
-    - actionable: True iff edge >= min_edge AND sample_size >= min_samples
-    - reason: short string explaining the decision
-    - source_segment: the segment we drew the estimate from
-    - sample_size: n behind the estimate
+    Two decision modes:
+    - winrate-based: edge = wilson_lower(p_win) - implied_p_win; actionable
+      when edge >= min_edge. Conservative — rejects when sample is small
+      OR magnitude is bad. May miss profitable asymmetric strategies.
+    - EV-based: ev = p_win × avg_win + p_loss × avg_loss (in USDC per $1
+      position); actionable when ev >= min_ev_usdc. Captures asymmetric
+      reward/risk (small winrate × big wins can still be +EV).
+
+    The aggregator runs BOTH and is actionable when EITHER passes.
     """
 
     p_win_calibrated: Optional[float]
     p_win_conservative: Optional[float]
     implied_p_win: float
     edge: Optional[float]
+    expected_value_usdc: Optional[float]
+    avg_win_usdc: Optional[float]
+    avg_loss_usdc: Optional[float]
     actionable: bool
     reason: str
     source_segment: str
@@ -62,6 +65,9 @@ class EdgeResult:
             "bayesian_p_win_conservative": self.p_win_conservative,
             "bayesian_implied_p_win": self.implied_p_win,
             "bayesian_edge": self.edge,
+            "bayesian_expected_value_usdc": self.expected_value_usdc,
+            "bayesian_avg_win_usdc": self.avg_win_usdc,
+            "bayesian_avg_loss_usdc": self.avg_loss_usdc,
             "bayesian_actionable": self.actionable,
             "bayesian_reason": self.reason,
             "bayesian_segment": self.source_segment,
@@ -96,6 +102,8 @@ def compute_edge(
     min_samples: int = 5,
     use_wilson: bool = True,
     fallback_global_prior: float = 0.25,
+    min_ev_usdc: float = 0.01,
+    require_both_modes: bool = False,
 ) -> EdgeResult:
     """Compute calibrated edge for a candidate.
 
@@ -128,6 +136,9 @@ def compute_edge(
             p_win_conservative=None,
             implied_p_win=0.5,
             edge=None,
+            expected_value_usdc=None,
+            avg_win_usdc=None,
+            avg_loss_usdc=None,
             actionable=False,
             reason="invalid_entry_price",
             source_segment="none",
@@ -153,6 +164,9 @@ def compute_edge(
             p_win_conservative=fallback_global_prior,
             implied_p_win=implied,
             edge=fallback_global_prior - implied,
+            expected_value_usdc=None,
+            avg_win_usdc=None,
+            avg_loss_usdc=None,
             actionable=False,
             reason=f"no_segment_above_min_samples_{min_samples}",
             source_segment="fallback_prior",
@@ -164,17 +178,45 @@ def compute_edge(
     p_use = p_cons if use_wilson else p_cal
     edge = p_use - implied
 
-    actionable = edge >= min_edge
-    if actionable:
-        reason = f"edge_{round(edge,3)}_at_n{stat.total}"
+    # RR-aware: expected value per $1 position using calibrated p_win
+    # (point estimate, NOT wilson — for EV we use best estimate of mean).
+    ev_per_trade = stat.expected_value_per_trade()
+    avg_win = stat.avg_win_usdc
+    avg_loss = stat.avg_loss_usdc
+
+    edge_actionable = edge >= min_edge
+    ev_actionable = ev_per_trade is not None and ev_per_trade >= min_ev_usdc
+
+    if require_both_modes:
+        actionable = edge_actionable and ev_actionable
     else:
-        reason = f"edge_below_min_{round(edge,3)}<{min_edge}"
+        # Default: either mode can approve. Lets asymmetric-RR strategies
+        # fire even when winrate alone is below threshold.
+        actionable = edge_actionable or ev_actionable
+
+    if actionable:
+        which = "edge" if edge_actionable else "ev"
+        reason = (
+            f"{which}_actionable_edge={round(edge,3)}_"
+            f"ev=${round(ev_per_trade,4) if ev_per_trade is not None else 'na'}"
+            f"_n{stat.total}"
+        )
+    else:
+        reason = (
+            f"both_below_min_edge={round(edge,3)}<{min_edge}_"
+            f"ev=${round(ev_per_trade,4) if ev_per_trade is not None else 'na'}<{min_ev_usdc}"
+        )
 
     return EdgeResult(
         p_win_calibrated=round(p_cal, 4),
         p_win_conservative=round(p_cons, 4),
         implied_p_win=round(implied, 4),
         edge=round(edge, 4),
+        expected_value_usdc=(
+            round(ev_per_trade, 4) if ev_per_trade is not None else None
+        ),
+        avg_win_usdc=round(avg_win, 4) if avg_win is not None else None,
+        avg_loss_usdc=round(avg_loss, 4) if avg_loss is not None else None,
         actionable=actionable,
         reason=reason,
         source_segment=f"{stat.segment}:{stat.key}",

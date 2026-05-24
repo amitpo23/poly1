@@ -97,7 +97,7 @@ class ComputeEdgeTests(unittest.TestCase):
             cal, min_edge=0.05, min_samples=5,
         )
         self.assertFalse(result.actionable)
-        self.assertIn("edge_below_min", result.reason)
+        self.assertIn("below_min", result.reason)
 
     def test_falls_back_to_prior_when_segment_below_min_samples(self):
         cal = _fake_calibration(

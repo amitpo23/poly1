@@ -52,12 +52,20 @@ LOSS_STATUSES = frozenset({
 
 @dataclass(frozen=True)
 class CalibrationStat:
-    """Win rate for a single (key, segment) pair."""
+    """Win rate + magnitude for a single (key, segment) pair.
+
+    Magnitude fields (avg_win_pct, avg_loss_pct) make this RR-aware:
+    a 36% winrate with avg_win=+6% and avg_loss=-1% has E[return] =
+    +1.5% per trade, which is what an expected-value gate should care
+    about. The pure-winrate Wilson lower bound misses this.
+    """
 
     key: str
     segment: str
     wins: int
     losses: int
+    sum_win_pnl_usdc: float = 0.0
+    sum_loss_pnl_usdc: float = 0.0
 
     @property
     def total(self) -> int:
@@ -74,7 +82,6 @@ class CalibrationStat:
         """Wilson score interval lower bound at 95% confidence.
 
         Conservative point-estimate for sources with few samples.
-        Source: en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval
         """
         n = self.total
         if n == 0:
@@ -85,6 +92,32 @@ class CalibrationStat:
         center = (p + z * z / (2 * n)) / denom
         half = (z / denom) * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
         return max(0.0, center - half)
+
+    @property
+    def avg_win_usdc(self) -> Optional[float]:
+        if self.wins == 0:
+            return None
+        return self.sum_win_pnl_usdc / self.wins
+
+    @property
+    def avg_loss_usdc(self) -> Optional[float]:
+        if self.losses == 0:
+            return None
+        return self.sum_loss_pnl_usdc / self.losses
+
+    def expected_value_per_trade(self, position_size_usdc: float = 1.0) -> Optional[float]:
+        """E[return per trade] using calibrated p_win + avg magnitudes.
+
+        Returns None when insufficient data (no wins OR no losses) — at
+        n<5 of either side the magnitude estimate is too noisy.
+        """
+        if self.total == 0:
+            return None
+        if self.avg_win_usdc is None or self.avg_loss_usdc is None:
+            return None
+        p = self.winrate or 0.0
+        # avg_loss_usdc is negative (losing trades); using it as-is.
+        return p * self.avg_win_usdc + (1 - p) * self.avg_loss_usdc
 
     def as_dict(self) -> dict:
         return {
@@ -97,6 +130,19 @@ class CalibrationStat:
             "wilson_lower": (
                 round(self.wilson_lower, 4) if self.wilson_lower is not None else None
             ),
+            "avg_win_usdc": (
+                round(self.avg_win_usdc, 4) if self.avg_win_usdc is not None else None
+            ),
+            "avg_loss_usdc": (
+                round(self.avg_loss_usdc, 4) if self.avg_loss_usdc is not None else None
+            ),
+            "ev_per_trade_usdc": (
+                round(self.expected_value_per_trade(), 4)
+                if self.expected_value_per_trade() is not None
+                else None
+            ),
+            "sum_win_pnl_usdc": round(self.sum_win_pnl_usdc, 4),
+            "sum_loss_pnl_usdc": round(self.sum_loss_pnl_usdc, 4),
         }
 
 
@@ -231,12 +277,12 @@ def calibrate(db_path: str, *, days: int = 30, max_age_hours: int = 48) -> dict:
     with sqlite3.connect(db_path, timeout=30) as conn:
         conn.row_factory = sqlite3.Row
         closes = _collect_closes(conn, days=days)
-        # Group counters: key=segment_type:value, win/loss
-        per_source: dict[str, list[int]] = {}
-        per_market_type: dict[str, list[int]] = {}
-        per_action: dict[str, list[int]] = {}
-        per_band: dict[str, list[int]] = {}
-        per_source_band: dict[str, list[int]] = {}
+        # Group counters: key=segment_type:value, [wins, losses, sum_win_pnl, sum_loss_pnl]
+        per_source: dict[str, list[float]] = {}
+        per_market_type: dict[str, list[float]] = {}
+        per_action: dict[str, list[float]] = {}
+        per_band: dict[str, list[float]] = {}
+        per_source_band: dict[str, list[float]] = {}
         matched = 0
         unmatched = 0
         for close in closes:
@@ -256,6 +302,12 @@ def calibrate(db_path: str, *, days: int = 30, max_age_hours: int = 48) -> dict:
             mtype = decision["market_type"]
             action = decision["action"]
             band = _price_band(decision["entry_price"])
+            # Magnitude (PnL in USDC) — used for RR-aware EV calc.
+            pnl = close.get("pnl_usdc_real")
+            try:
+                pnl_f = float(pnl) if pnl is not None else 0.0
+            except (TypeError, ValueError):
+                pnl_f = 0.0
             for bucket, key in (
                 (per_source, source),
                 (per_market_type, mtype),
@@ -263,13 +315,24 @@ def calibrate(db_path: str, *, days: int = 30, max_age_hours: int = 48) -> dict:
                 (per_band, band),
                 (per_source_band, f"{source}|{band}"),
             ):
-                bucket.setdefault(key, [0, 0])
-                bucket[key][0 if is_win else 1] += 1
+                # [wins, losses, sum_win_pnl, sum_loss_pnl]
+                bucket.setdefault(key, [0, 0, 0.0, 0.0])
+                if is_win:
+                    bucket[key][0] += 1
+                    bucket[key][2] += pnl_f
+                else:
+                    bucket[key][1] += 1
+                    bucket[key][3] += pnl_f  # pnl_f is negative for losses
 
         def _build(stats: dict, segment: str) -> list[dict]:
             out = []
-            for key, (wins, losses) in stats.items():
-                stat = CalibrationStat(key=key, segment=segment, wins=wins, losses=losses)
+            for key, (wins, losses, sum_win, sum_loss) in stats.items():
+                stat = CalibrationStat(
+                    key=key, segment=segment,
+                    wins=int(wins), losses=int(losses),
+                    sum_win_pnl_usdc=float(sum_win),
+                    sum_loss_pnl_usdc=float(sum_loss),
+                )
                 out.append(stat.as_dict())
             return sorted(out, key=lambda x: -x["total"])
 
@@ -311,6 +374,8 @@ def lookup_winrate(
                     segment=entry["segment"],
                     wins=entry["wins"],
                     losses=entry["losses"],
+                    sum_win_pnl_usdc=entry.get("sum_win_pnl_usdc", 0.0) or 0.0,
+                    sum_loss_pnl_usdc=entry.get("sum_loss_pnl_usdc", 0.0) or 0.0,
                 )
         return None
 

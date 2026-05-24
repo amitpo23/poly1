@@ -97,6 +97,12 @@ class ScannerExecutorConfig:
     bayesian_min_samples: int = 10
     bayesian_use_wilson: bool = True
     bayesian_fallback_prior: float = 0.25
+    # RR-aware: minimum expected value per $1 position. Lets a 36%-winrate
+    # strategy with 6:1 reward/risk fire even when wilson_lower says reject.
+    bayesian_min_ev_usdc: float = 0.01
+    # When True, BOTH edge AND EV must clear thresholds. When False (default),
+    # EITHER passes — captures asymmetric strategies the strict gate misses.
+    bayesian_require_both_modes: bool = False
     min_raw_ev: float = 0.04
     min_net_ev: float = 0.03
     round_trip_cost_pct: float = 0.04
@@ -179,6 +185,12 @@ class ScannerExecutorConfig:
             ),
             bayesian_fallback_prior=_env_float(
                 "SCANNER_EXECUTOR_BAYESIAN_FALLBACK_PRIOR", 0.25
+            ),
+            bayesian_min_ev_usdc=_env_float(
+                "SCANNER_EXECUTOR_BAYESIAN_MIN_EV_USDC", 0.01
+            ),
+            bayesian_require_both_modes=_env_bool(
+                "SCANNER_EXECUTOR_BAYESIAN_REQUIRE_BOTH_MODES", False
             ),
             min_raw_ev=_env_float("SCANNER_EXECUTOR_MIN_RAW_EV", 0.04),
             min_net_ev=_env_float("SCANNER_EXECUTOR_MIN_NET_EV", 0.03),
@@ -1037,6 +1049,8 @@ class ScannerExecutor:
             min_samples=self.cfg.bayesian_min_samples,
             use_wilson=self.cfg.bayesian_use_wilson,
             fallback_global_prior=self.cfg.bayesian_fallback_prior,
+            min_ev_usdc=self.cfg.bayesian_min_ev_usdc,
+            require_both_modes=self.cfg.bayesian_require_both_modes,
         )
 
     def _has_proven_override(self, row: dict, features: dict) -> bool:
