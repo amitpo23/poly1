@@ -165,6 +165,7 @@ class ScannerExecutorTests(unittest.TestCase):
         engine, pm = self._engine(execute=True)
         # Make RiskGate block this cycle (e.g., HALT just appeared)
         engine.risk_gate.reason.return_value = "HALT file present"
+        engine.risk_gate.is_freeze_only_block.return_value = False
         stats = engine.run_once()
         self.assertEqual(stats["cycle_blocked"], 1)
         self.assertEqual(stats["seen"], 0)
@@ -172,6 +173,40 @@ class ScannerExecutorTests(unittest.TestCase):
         # Critical: no order should have been placed even with a valid candidate
         pm.execute_market_order.assert_not_called()
         # And no per-market processing — the candidate was not even fetched.
+
+    def test_freeze_only_block_routes_to_shadow_path(self):
+        """When risk_gate.reason() returns freeze-only, the cycle continues
+        and the per-market handler routes to the shadow path so
+        decision_journal still records SHADOW_ENTER. This enables the
+        Week-1 shadow measurement to accumulate data while the bot is
+        frozen against live execution."""
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xabc",
+            approved=True,
+            reason="scanner_approved score=0.860",
+            score=0.86,
+            market_type="general_binary",
+            features=_features(),
+            action="BUY",
+        )
+        engine, pm = self._engine(execute=True)
+        engine.risk_gate.reason.return_value = (
+            "runtime control mode=freeze blocks live entries"
+        )
+        engine.risk_gate.is_freeze_only_block.return_value = True
+        stats = engine.run_once()
+        # Cycle was NOT aborted; the per-market path ran.
+        self.assertEqual(stats["cycle_blocked"], 0)
+        self.assertEqual(stats["shadow"], 1)
+        self.assertEqual(stats["executed"], 0)
+        # No live order was placed.
+        pm.execute_market_order.assert_not_called()
+        # SHADOW_ENTER row was written.
+        journal = self.log.recent_decision_journal(limit=1)[0]
+        self.assertEqual(journal["decision"], "SHADOW_ENTER")
 
     def test_executes_fresh_scanner_approval_when_ev_and_risk_pass(self):
         self.log.insert_brain_decision(

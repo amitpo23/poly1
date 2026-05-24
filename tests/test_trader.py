@@ -599,6 +599,77 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
         self.assertFalse(gate.ok())
         self.assertIn("mode=freeze", gate.reason())
 
+    def test_is_freeze_only_block_true_when_only_freeze(self):
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "freeze",
+            "allowed_live_agents": [],
+            "config_hash": "freeze-hash",
+        }))
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0  # healthy balance
+        gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+        self.assertTrue(gate.is_freeze_only_block())
+
+    def test_is_freeze_only_block_false_when_balance_also_blocks(self):
+        """Freeze + balance below floor: must NOT route to shadow path."""
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "freeze",
+            "allowed_live_agents": [],
+            "config_hash": "freeze-hash",
+        }))
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 5.0  # below min_usdc_floor=10.0
+        gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+        self.assertFalse(gate.is_freeze_only_block())
+
+    def test_is_freeze_only_block_false_when_kill_switch(self):
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "freeze",
+            "allowed_live_agents": [],
+            "config_hash": "freeze-hash",
+        }))
+        Path(self.kill_path).write_text("halt")
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0
+        gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+        self.assertFalse(gate.is_freeze_only_block())
+
+    def test_is_freeze_only_block_false_when_no_runtime_file(self):
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0
+        gate = self._gate(polymarket=pm)
+        self.assertFalse(gate.is_freeze_only_block())
+
+    def test_is_freeze_only_block_false_when_live_mode(self):
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "live",
+            "allowed_live_agents": ["scanner_executor"],
+            "config_hash": "live-hash",
+        }))
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0
+        gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+        self.assertFalse(gate.is_freeze_only_block())
+
+    def test_reason_skip_runtime_bypasses_freeze_check(self):
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "freeze",
+            "allowed_live_agents": [],
+            "config_hash": "freeze-hash",
+        }))
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0
+        gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+        # Normal reason() returns the freeze block
+        self.assertIn("mode=freeze", gate.reason())
+        # skip_runtime=True bypasses runtime check; no other gate fires
+        self.assertIsNone(gate.reason(skip_runtime=True))
+
     def test_runtime_control_hash_mismatch_blocks(self):
         control_path = self.tmp_path / "runtime_control.json"
         control_path.write_text(json.dumps({

@@ -307,11 +307,18 @@ class RiskGate:
             )
         return max(0.0, available)
 
-    def reason(self) -> Optional[str]:
-        """Return None if all gates pass, else a short string describing the first failure."""
-        runtime_reason = self.runtime_control_reason()
-        if runtime_reason:
-            return runtime_reason
+    def reason(self, *, skip_runtime: bool = False) -> Optional[str]:
+        """Return None if all gates pass, else a short string describing the first failure.
+
+        ``skip_runtime=True`` bypasses the runtime control-plane check so a
+        caller can ask: "ignoring the freeze flag, is any real risk gate
+        firing?" Used to distinguish a mode block (which should still allow
+        shadow logging) from a true veto (balance, drawdown, kill switch).
+        """
+        if not skip_runtime:
+            runtime_reason = self.runtime_control_reason()
+            if runtime_reason:
+                return runtime_reason
 
         if self.kill_switch_file.exists():
             return f"kill switch file present: {self.kill_switch_file}"
@@ -465,6 +472,21 @@ class RiskGate:
             logger.warning("risk_gate: blocked - %s", r)
             return False
         return True
+
+    def is_freeze_only_block(self) -> bool:
+        """True iff the only active block is runtime_control mode=freeze.
+
+        Used by entry agents to route to the shadow-log path during freeze
+        instead of dropping the decision entirely. Returns False when:
+        - runtime control is not in freeze mode (e.g., live/expired probe)
+        - any non-runtime gate (kill switch, balance, drawdown, position
+          manager guard) is also blocking — in that case the trade must be
+          rejected outright, even for shadow purposes.
+        """
+        rt = self.runtime_control_reason()
+        if rt is None or "mode=freeze" not in rt:
+            return False
+        return self.reason(skip_runtime=True) is None
 
     def daily_token_usd(self) -> float:
         if not self.llm_usage_file.exists():

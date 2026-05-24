@@ -298,7 +298,10 @@ class ScannerExecutor:
         # budget is blown, we skip the whole cycle instead of paying for
         # 50 per-market checks first.
         cycle_block_reason = self.risk_gate.reason()
-        if cycle_block_reason:
+        if cycle_block_reason and not self.risk_gate.is_freeze_only_block():
+            # True veto (HALT, balance, drawdown, pm guard, etc.) — abort cycle.
+            # A freeze-only block does NOT abort: per-market handler routes to
+            # the shadow path so decision_journal keeps accumulating.
             logger.warning("scanner_executor cycle blocked: %s", cycle_block_reason)
             stats["cycle_blocked"] = 1
             self._heartbeat()
@@ -643,9 +646,16 @@ class ScannerExecutor:
                 return "skipped"
 
         risk_reason = self.risk_gate.reason()
+        force_shadow_from_freeze = False
         if risk_reason:
-            self._record_reject(row, "risk_gate_blocked", {"risk_reason": risk_reason})
-            return "skipped"
+            if self.risk_gate.is_freeze_only_block():
+                # Mode=freeze blocks live entries but should not silence the
+                # shadow measurement pipeline. Route to the existing shadow
+                # path so decision_journal still records a SHADOW_ENTER.
+                force_shadow_from_freeze = True
+            else:
+                self._record_reject(row, "risk_gate_blocked", {"risk_reason": risk_reason})
+                return "skipped"
 
         balance = None
         try:
@@ -729,7 +739,7 @@ class ScannerExecutor:
         )
         market = self._market_tuple(features, market_id, outcomes, token_ids)
 
-        if not self.execute:
+        if not self.execute or force_shadow_from_freeze:
             self.trade_log.mark(
                 pending_id,
                 "shadow_filled",
