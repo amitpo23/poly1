@@ -310,6 +310,9 @@ BASE_ENV = {
     "SCANNER_EXECUTOR_LEARNING_GUARD_TTL_HOURS": "24",
     # AlphaInsider: treat strategy-ranked signals as calibrated probabilities
     "OPPORTUNITY_FACTORY_ALPHAINSIDER_TAPE_PROBABILITY_CALIBRATED": "true",
+    # Alpaca as primary indicator — elevated weight (default was 0.08)
+    "META_BRAIN_ALPACA_ENABLED": "true",
+    "META_BRAIN_WEIGHT_ALPACA": "0.20",
 }
 
 
