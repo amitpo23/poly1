@@ -1061,3 +1061,140 @@ Btc5MinDaemon → Btc5MinEngine.maybe_enter()
 | `BTC_5MIN_MAX_PER_HOUR` | `6` | Hard trade cap |
 
 Tests: `tests/test_btc_5min.py`. Env vars: `BTC_5MIN_*`.
+
+## 24. Bayesian probability engine (2026-05-24)
+
+A learning loop that grades each entry source by realized PnL and
+gates new entries on measured edge instead of nominal LLM confidence.
+
+### 24.1 Three pipelines
+
+Every entry on poly1 belongs to one of three pipelines:
+
+1. **decision_journal** — scanner_executor + market_scanner. Brain
+   decisions land in `decision_journal` with `decision='ENTER'` or
+   `'SHADOW_ENTER'`. A real fire writes a `trades` row with
+   `cycle_id` linking back to the decision.
+2. **direct_execution** — btc_5min, scalper, near_resolution.
+   Bypass the decision_journal; write directly to `trades`. Status
+   columns (`btc_5min_open`, `scalper_leg`, etc.) distinguish them.
+3. **shadow_research** — external_conviction_* (7 agents).
+   Approval-only writers to `brain_decisions`. No `trades` row,
+   no decision_journal row. Visible only through synthetic markouts
+   computed from `orderbook_snapshots`.
+
+### 24.2 Calibration refresh
+
+`scripts/refresh_probability_calibration.py` reads closed `trades`
+and SHADOW_ENTER `decision_journal` rows, joins by token_id +
+timestamp window to `orderbook_snapshots` for the markout horizon
+(1/3/5/15 min), and writes per-segment stats to
+`data/probability_calibration.json`. The refresh runs as a step in
+`brain_indicator_cycle.py` (~hourly).
+
+Segments produced:
+- `per_signal_source` (e.g., `alphainsider_proven,crypto_tape`)
+- `per_price_band` (`<0.40`, `0.40-0.49`, ..., `0.65-0.74`, `>=0.75`)
+- `per_source_band` (cross of source × band)
+- `per_action` (BUY vs SELL)
+- `per_market_type` (e.g., `crypto_updown` vs `scanner_executor`)
+- `per_direct_execution_agent` (btc_5min, near_resolution)
+- `shadow_research_visibility` (per external_conviction_* agent)
+
+Each segment row contains: `n`, `winrate`, `wilson_lower` (95% CI
+lower bound — conservative under small samples), `avg_win_usdc`,
+`avg_loss_usdc`, `expected_value_per_trade`.
+
+### 24.3 Bayesian gate (scanner_executor only)
+
+When `BAYESIAN_ENABLED=true`, scanner_executor runs every candidate
+through `bayesian_aggregator.compute_edge()` after the LLM+brain
+agree and BEFORE order placement. The aggregator:
+1. Looks up the best-matching segment (source × band → source → band)
+2. Returns `actionable=True` iff
+   `wilson_lower * avg_win + (1 - wilson_lower) * avg_loss >= min_ev_usdc`
+   AND `n >= min_samples`.
+
+Env vars:
+- `BAYESIAN_MIN_EDGE` — minimum probability edge over implied price
+  (default 0.02).
+- `BAYESIAN_MIN_SAMPLES` — minimum n per segment to take a position
+  (default 5).
+- `BAYESIAN_USE_WILSON` — lower-bound mode (default true).
+- `BAYESIAN_MIN_EV_USDC` — minimum modeled EV (default 0.0).
+
+Trades rejected by the gate increment `bayesian_edge_below_threshold`
+in scanner_executor cycle metrics. After 5 rejects on the same
+market, the market is quarantined for 1h.
+
+### 24.4 Per-position SL/TP overrides (2026-05-24)
+
+position_manager reads `sl_pct_override` and `tp_pct_override` from
+each trade's `response_json` payload. When present, the exit logic
+uses these instead of `cfg.stop_loss_pct` / `cfg.take_profit_pct`.
+
+Used by:
+- **btc_5min** — writes `sl_pct_override=0.03`, `tp_pct_override=0.08`
+  (post-backtest tuning, prev was global 0.06/0.05).
+- **scanner_executor** — writes the same values for any candidate
+  classified as `crypto_momentum` (4 heuristics: `strategy_type`,
+  `signal_source contains 'crypto_tape'`, `market_cluster matches
+  '*updown-5m*'`, `evidence horizon == '5m'`). Added after Trade 4237
+  on 2026-05-24 lost 47% in 37 sec on a gapping ETH 5-min market.
+
+Env vars:
+- `BTC_5MIN_TAKE_PROFIT_PCT` (default 0.08)
+- `BTC_5MIN_STOP_LOSS_PCT` (default 0.03)
+- `SCANNER_EXECUTOR_CRYPTO_MOMENTUM_SL_PCT` (default 0.03)
+- `SCANNER_EXECUTOR_CRYPTO_MOMENTUM_TP_PCT` (default 0.08)
+
+## 25. Runtime control plane (2026-05-24)
+
+`scripts/runtime_control.py` controls live-hour arming with three
+safety layers:
+
+### 25.1 Auto force-recreate on arm
+
+When `live-hour --arm --agents X,Y` is invoked, runtime_control
+writes the new `runtime_control.json` and `deploy/.env.runtime`,
+THEN runs `docker compose up -d --force-recreate <service>` for
+each agent in `--agents`. This ensures the new RUNTIME_CONFIG_HASH
+propagates into the container env without operator manual steps.
+
+Use `--skip-recreate` to opt out (rarely needed).
+
+### 25.2 Hash check + stale-marker (`data/<agent>_HASH_STALE`)
+
+`risk_gate.runtime_control_reason()` compares
+`RUNTIME_CONFIG_HASH` (container env) to
+`runtime_control.json.config_hash`. Mismatch:
+- Logs CRITICAL ("HASH STALE: agent=X expected=Y actual=Z")
+- Writes `./data/<agent>_HASH_STALE` with diagnostic JSON
+- Returns block reason (so all trades are still refused)
+
+`scripts/health_check.py` lists every `*_HASH_STALE` marker and
+exits 1 if any exist — suitable for cron / supervisor polling.
+
+### 25.3 Shadow during freeze (FREEZE_HALT_MARKER)
+
+`risk_gate.is_freeze_only_block()` returns True when the only
+active block is runtime mode=freeze paired with a `HALT` file
+containing `FREEZE_HALT_MARKER`. Entry agents (scanner_executor,
+btc_daily, btc_5min, external_conviction) use this to route to
+shadow-log path even during freeze, accumulating
+`decision_journal SHADOW_ENTER` rows without ever placing live
+orders. Operator emergencies (other HALT contents) still block
+all paths including shadow.
+
+## 26. Orderbook monitor watchlist (2026-05-24)
+
+`orderbook_monitor` polls 3 sources to build its watchlist:
+1. `market_universe_tokens` — curated focused universe
+2. `filled_positions_with_id` — currently-held positions
+3. `recent_shadow_decision_tokens(max_age_hours=N)` — token_ids
+   from SHADOW_* decisions in the last N hours that still have
+   ≥1 NULL outcome_*_json column
+
+Without (3), shadow markouts cannot be computed because no
+snapshots accumulate for hypothetically-entered markets. Default
+`ORDERBOOK_MONITOR_SHADOW_LOOKBACK_HOURS=24`.
