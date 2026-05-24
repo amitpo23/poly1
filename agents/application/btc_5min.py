@@ -94,7 +94,13 @@ class Btc5MinConfig:
     poll_sec: int = 3
     cooldown_sec: int = 300            # = one 5-min window
     max_hold_seconds: int = 120        # force exit before the 5m market resolves
-    take_profit_pct: float = 0.05
+    take_profit_pct: float = 0.08
+    # 2026-05-24 backtest finding: btc_5min had 35% wr but -$0.045 EV
+    # because the global SL (0.06) is too wide for 5-min markets that
+    # auto-resolve fast. Backtest grid says tight SL (~0.02-0.03) with
+    # higher TP (0.08-0.20) flips EV positive. Default 0.03 is a
+    # conservative middle ground vs the grid optimum.
+    stop_loss_pct: float = 0.03
     max_per_hour: int = MAX_TRADES_PER_HOUR
     heartbeat_path: str = "/app/data/btc_5min_heartbeat"
     assets: tuple[str, ...] = ("btc",)
@@ -127,7 +133,8 @@ class Btc5MinConfig:
             poll_sec=_env_int("BTC_5MIN_POLL_SEC", 3),
             cooldown_sec=_env_int("BTC_5MIN_COOLDOWN_SEC", 300),
             max_hold_seconds=_env_int("BTC_5MIN_MAX_HOLD_SECONDS", 120),
-            take_profit_pct=_env_float("BTC_5MIN_TAKE_PROFIT_PCT", 0.05),
+            take_profit_pct=_env_float("BTC_5MIN_TAKE_PROFIT_PCT", 0.08),
+            stop_loss_pct=_env_float("BTC_5MIN_STOP_LOSS_PCT", 0.03),
             max_per_hour=_env_int("BTC_5MIN_MAX_PER_HOUR", MAX_TRADES_PER_HOUR),
             heartbeat_path=os.getenv(
                 "BTC_5MIN_HEARTBEAT_PATH", "/app/data/btc_5min_heartbeat"
@@ -678,6 +685,7 @@ class Btc5MinEngine:
                            "consensus": consensus.get("agreement", 0),
                            "contributing": contributing,
                            "tp_pct_override": self.cfg.take_profit_pct,
+                           "sl_pct_override": self.cfg.stop_loss_pct,
                            "max_hold_seconds": self.cfg.max_hold_seconds},
                 error=f"SHADOW: {side} consensus={direction} conf={confidence:.3f}",
             )
@@ -716,6 +724,7 @@ class Btc5MinEngine:
             response={
                 **(response or {}),
                 "tp_pct_override": self.cfg.take_profit_pct,
+                "sl_pct_override": self.cfg.stop_loss_pct,
                 "max_hold_seconds": self.cfg.max_hold_seconds,
                 "entry_mode": "btc_5min_fast_exit",
             },

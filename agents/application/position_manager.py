@@ -216,10 +216,11 @@ class AggregatedPosition:
     earliest_ts: float       # unix seconds — for max_hold check
     journal_row_ids: list[int] = field(default_factory=list)
     # Manual-entry overrides — encoded in response_json on the originating
-    # filled row (`tp_pct_override`, `no_sl`). When present, position_manager
-    # bypasses the brain's compound-exit logic and uses a simple TP-only
-    # rule. None means "use global config / brain".
+    # filled row (`tp_pct_override`, `sl_pct_override`, `no_sl`). When
+    # present, position_manager bypasses the brain's compound-exit logic
+    # and uses a simple TP/SL rule. None means "use global config / brain".
     tp_pct_override: Optional[float] = None
+    sl_pct_override: Optional[float] = None
     no_sl: bool = False
     max_hold_seconds_override: Optional[int] = None
     # When set, this position is one leg of a straddle. After the first
@@ -433,6 +434,7 @@ class PositionManager:
             # prices are the actual token entry price and must not be inverted
             # for semantic SELL rows.
             tp_override: Optional[float] = None
+            sl_override: Optional[float] = None
             no_sl_flag = False
             max_hold_seconds_override: Optional[int] = None
             straddle_id_val: Optional[str] = None
@@ -444,6 +446,8 @@ class PositionManager:
                     if isinstance(payload, dict):
                         if payload.get("tp_pct_override") is not None:
                             tp_override = float(payload["tp_pct_override"])
+                        if payload.get("sl_pct_override") is not None:
+                            sl_override = float(payload["sl_pct_override"])
                         if payload.get("no_sl"):
                             no_sl_flag = True
                         if payload.get("max_hold_seconds") is not None:
@@ -485,6 +489,7 @@ class PositionManager:
                     earliest_ts=ts,
                     journal_row_ids=[r.get("id")] if r.get("id") else [],
                     tp_pct_override=tp_override,
+                    sl_pct_override=sl_override,
                     no_sl=no_sl_flag,
                     max_hold_seconds_override=max_hold_seconds_override,
                     straddle_id=straddle_id_val,
@@ -504,6 +509,8 @@ class PositionManager:
                 # Preserve any override from any fill on this token.
                 if tp_override is not None and existing.tp_pct_override is None:
                     existing.tp_pct_override = tp_override
+                if sl_override is not None and existing.sl_pct_override is None:
+                    existing.sl_pct_override = sl_override
                 if no_sl_flag:
                     existing.no_sl = True
                 if (
@@ -565,7 +572,16 @@ class PositionManager:
                     )
                     return (None, mid)
                 return ("take_profit", mid)
-            if not pos.no_sl and gain_pct <= -self.cfg.stop_loss_pct:
+            # Per-position SL override (e.g., btc_5min writes tight SL because
+            # 5-min markets need tighter risk control than the global 0.06).
+            # Falls back to cfg.stop_loss_pct when not set, preserving
+            # backward compatibility with manual_entry positions.
+            sl_threshold = (
+                pos.sl_pct_override
+                if pos.sl_pct_override is not None
+                else self.cfg.stop_loss_pct
+            )
+            if not pos.no_sl and gain_pct <= -sl_threshold:
                 return ("stop_loss", mid)
             if (
                 pos.max_hold_seconds_override is not None
