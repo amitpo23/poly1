@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import signal
+import sqlite3
 import time
 import urllib.parse
 import urllib.request
@@ -52,6 +53,7 @@ class OrderbookMonitorConfig:
     heartbeat_path: str = "/app/data/orderbook_monitor_heartbeat"
     clob_url: str = "https://clob.polymarket.com"
     stale_market_grace_sec: int = 300
+    shadow_lookback_hours: int = 24
 
     @classmethod
     def from_env(cls) -> "OrderbookMonitorConfig":
@@ -65,6 +67,7 @@ class OrderbookMonitorConfig:
             ),
             clob_url=os.getenv("ORDERBOOK_MONITOR_CLOB_URL", "https://clob.polymarket.com"),
             stale_market_grace_sec=_env_int("ORDERBOOK_MONITOR_STALE_MARKET_GRACE_SEC", 300),
+            shadow_lookback_hours=_env_int("ORDERBOOK_MONITOR_SHADOW_LOOKBACK_HOURS", 24),
         )
 
 
@@ -243,6 +246,26 @@ class OrderbookMonitorDaemon:
                     "market_id": item.get("market_id"),
                     "token_id": token_id,
                     "outcome": "open_position",
+                })
+        # Recent SHADOW_ENTER tokens — without these, shadow research
+        # markets never accumulate orderbook snapshots, so synthetic
+        # markouts can't be computed and Bayesian calibration stays
+        # starved.
+        try:
+            shadow_items = self.trade_log.recent_shadow_decision_tokens(
+                max_age_hours=int(self.cfg.shadow_lookback_hours)
+            )
+        except (AttributeError, sqlite3.OperationalError) as exc:
+            logger.debug("orderbook_monitor: shadow tokens fetch failed: %s", exc)
+            shadow_items = []
+        for item in shadow_items:
+            token_id = str(item.get("token_id") or "")
+            if token_id and token_id not in seen:
+                seen.add(token_id)
+                result.append({
+                    "market_id": item.get("market_id"),
+                    "token_id": token_id,
+                    "outcome": "shadow_research",
                 })
         return result[: self.cfg.token_limit]
 

@@ -1229,6 +1229,33 @@ class TradeLog:
             row = conn.execute(sql, (*statuses, cutoff)).fetchone()
             return int(row["n"])
 
+    def recent_shadow_decision_tokens(self, max_age_hours: int = 24) -> list:
+        """Token IDs from SHADOW_ENTER decisions in the last N hours that
+        still need markouts (any horizon column NULL).
+
+        Used by orderbook_monitor to extend its watchlist beyond the
+        curated universe + open positions. Without this, shadow markets
+        explored on hypothetical entries never accumulate orderbook
+        snapshots, so update_shadow_markouts can never compute synthetic
+        PnL — the Bayesian calibration sample stays starved.
+
+        Returns dicts with at least token_id and market_id, dedup-keyed
+        by token_id.
+        """
+        sql = (
+            "SELECT DISTINCT token_id, market_id "
+            "FROM decision_journal "
+            "WHERE decision LIKE 'SHADOW_%' "
+            "AND token_id IS NOT NULL AND token_id != '' "
+            "AND ts > datetime('now', ?) "
+            "AND (outcome_1m_json IS NULL OR outcome_3m_json IS NULL "
+            "     OR outcome_5m_json IS NULL OR outcome_15m_json IS NULL)"
+        )
+        cutoff = f"-{int(max_age_hours)} hours"
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, (cutoff,)).fetchall()
+            return [dict(r) for r in rows]
+
     def filled_positions_with_id(self) -> list:
         """Like filled_positions() but includes id, ts, and response_json.
         Used by position_manager to aggregate fills + read per-position
