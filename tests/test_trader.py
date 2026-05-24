@@ -624,18 +624,37 @@ class TestRiskGate(TempDataMixin, unittest.TestCase):
         gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
         self.assertFalse(gate.is_freeze_only_block())
 
-    def test_is_freeze_only_block_false_when_kill_switch(self):
+    def test_is_freeze_only_block_false_when_emergency_kill_switch(self):
+        """An operator/supervisor HALT (without the freeze marker) must
+        veto even shadow logging — it's an emergency stop, not a mode."""
         control_path = self.tmp_path / "runtime_control.json"
         control_path.write_text(json.dumps({
             "mode": "freeze",
             "allowed_live_agents": [],
             "config_hash": "freeze-hash",
         }))
-        Path(self.kill_path).write_text("halt")
+        Path(self.kill_path).write_text("operator emergency halt")
         pm = MagicMock()
         pm.get_usdc_balance.return_value = 100.0
         gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
         self.assertFalse(gate.is_freeze_only_block())
+
+    def test_is_freeze_only_block_true_when_freeze_paired_halt(self):
+        """The HALT file written by `runtime_control.py freeze` contains
+        the FREEZE_HALT_MARKER, so it should NOT block shadow logging."""
+        control_path = self.tmp_path / "runtime_control.json"
+        control_path.write_text(json.dumps({
+            "mode": "freeze",
+            "allowed_live_agents": [],
+            "config_hash": "freeze-hash",
+        }))
+        Path(self.kill_path).write_text(
+            "HALT set by runtime_control.py freeze: no live entry agents..."
+        )
+        pm = MagicMock()
+        pm.get_usdc_balance.return_value = 100.0
+        gate = self._gate(polymarket=pm, runtime_control_file=str(control_path))
+        self.assertTrue(gate.is_freeze_only_block())
 
     def test_is_freeze_only_block_false_when_no_runtime_file(self):
         pm = MagicMock()

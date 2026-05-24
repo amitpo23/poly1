@@ -307,20 +307,21 @@ class RiskGate:
             )
         return max(0.0, available)
 
-    def reason(self, *, skip_runtime: bool = False) -> Optional[str]:
+    def reason(self, *, skip_runtime: bool = False, skip_halt: bool = False) -> Optional[str]:
         """Return None if all gates pass, else a short string describing the first failure.
 
-        ``skip_runtime=True`` bypasses the runtime control-plane check so a
-        caller can ask: "ignoring the freeze flag, is any real risk gate
-        firing?" Used to distinguish a mode block (which should still allow
-        shadow logging) from a true veto (balance, drawdown, kill switch).
+        ``skip_runtime=True`` bypasses the runtime control-plane check.
+        ``skip_halt=True`` bypasses the kill-switch (HALT file) check.
+        Both are used by ``is_freeze_only_block`` to ask: "ignoring the
+        freeze flag and its paired HALT marker, is any real risk gate
+        firing?" Default behaviour (both False) is the production check.
         """
         if not skip_runtime:
             runtime_reason = self.runtime_control_reason()
             if runtime_reason:
                 return runtime_reason
 
-        if self.kill_switch_file.exists():
+        if not skip_halt and self.kill_switch_file.exists():
             return f"kill switch file present: {self.kill_switch_file}"
 
         pm_reason = self.position_manager_guard_reason()
@@ -473,20 +474,34 @@ class RiskGate:
             return False
         return True
 
+    FREEZE_HALT_MARKER = "set by runtime_control.py freeze"
+
     def is_freeze_only_block(self) -> bool:
-        """True iff the only active block is runtime_control mode=freeze.
+        """True iff the only active block is runtime_control mode=freeze
+        (with its paired HALT marker, if present).
 
         Used by entry agents to route to the shadow-log path during freeze
         instead of dropping the decision entirely. Returns False when:
         - runtime control is not in freeze mode (e.g., live/expired probe)
-        - any non-runtime gate (kill switch, balance, drawdown, position
+        - HALT file is present BUT not the one written by the freeze
+          command (operator emergency / supervisor halt — must block all)
+        - any non-runtime, non-HALT gate (balance, drawdown, position
           manager guard) is also blocking — in that case the trade must be
           rejected outright, even for shadow purposes.
         """
         rt = self.runtime_control_reason()
         if rt is None or "mode=freeze" not in rt:
             return False
-        return self.reason(skip_runtime=True) is None
+        if self.kill_switch_file.exists():
+            try:
+                content = self.kill_switch_file.read_text(errors="replace")
+            except OSError:
+                return False
+            if self.FREEZE_HALT_MARKER not in content:
+                # Operator emergency or supervisor halt — not paired with
+                # freeze, must veto even shadow.
+                return False
+        return self.reason(skip_runtime=True, skip_halt=True) is None
 
     def daily_token_usd(self) -> float:
         if not self.llm_usage_file.exists():
