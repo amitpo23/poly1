@@ -271,7 +271,17 @@ class Btc5MinEngine:
         self._market_cache: dict[str, dict] = {}
         self._last_entered_period: int = 0
         self._hour_trades: list[float] = []  # timestamps of trades in last hour
+        self._last_skip_reason: str = ""
         self._bootstrap_feed_history()
+
+    def _log_skip(self, reason: str) -> None:
+        """INFO-log a skip reason once per change. Daemon polls every 2s
+        across 5 assets — without dedupe this would be 150 lines/min.
+        With dedupe: one line per state transition, so silent windows mean
+        'still in same state' instead of 'broken'."""
+        if reason != self._last_skip_reason:
+            logger.info("btc_5min[%s] skip: %s", self.asset, reason)
+            self._last_skip_reason = reason
 
     def _bootstrap_feed_history(self) -> None:
         """Seed 1m BTC candles so the daemon can trade immediately after restart."""
@@ -417,28 +427,45 @@ class Btc5MinEngine:
 
         # Same-period dedupe
         if period_ts == self._last_entered_period:
+            self._log_skip(f"same_period_already_entered period={period_ts}")
             return False
 
         # Timing guard: only enter between entry_window_start and entry_window_end
         elapsed = now - period_ts
         if elapsed < self.cfg.entry_window_start:
+            self._log_skip(
+                f"timing_too_early elapsed={elapsed:.1f}s "
+                f"need>={self.cfg.entry_window_start}s"
+            )
             return False
         if elapsed > self.cfg.entry_window_end:
+            self._log_skip(
+                f"timing_too_late elapsed={elapsed:.1f}s "
+                f"window_end={self.cfg.entry_window_end}s"
+            )
             return False
 
         # Hourly cap
         cutoff = now - 3600
         self._hour_trades = [t for t in self._hour_trades if t > cutoff]
         if len(self._hour_trades) >= self.cfg.max_per_hour:
+            self._log_skip(
+                f"hour_cap {len(self._hour_trades)}/{self.cfg.max_per_hour}"
+            )
             return False
 
         # Cooldown
         if self._hour_trades and now - self._hour_trades[-1] < self.cfg.cooldown_sec:
+            remaining = self.cfg.cooldown_sec - (now - self._hour_trades[-1])
+            self._log_skip(f"cooldown_active remaining={remaining:.0f}s")
             return False
 
         # Risk gate
         if self.risk_gate is not None and not self.risk_gate.ok():
+            # risk_gate.ok() already logs WARNING with the reason; the
+            # WARNING line that fires alongside this INFO is the diagnostic.
             if self.execute or not self.shadow_ignore_risk_gate:
+                self._log_skip("risk_gate_blocked")
                 return False
             logger.warning("btc_5min: risk gate blocked but shadow continues")
 
@@ -477,23 +504,27 @@ class Btc5MinEngine:
         contributing = consensus.get("contributing_count", 0)
 
         if direction == "skip" or contributing < self.cfg.min_consensus:
-            logger.debug(
-                "btc_5min: skip — direction=%s contributing=%d confidence=%.3f",
-                direction, contributing, confidence,
+            self._log_skip(
+                f"consensus_skip direction={direction} "
+                f"contributing={contributing}/{self.cfg.min_consensus} "
+                f"confidence={confidence:.2f}"
             )
             return False
 
         if confidence < self.cfg.min_confidence:
-            logger.debug(
-                "btc_5min: skip — confidence %.3f < %.3f",
-                confidence,
-                self.cfg.min_confidence,
+            self._log_skip(
+                f"low_confidence {confidence:.3f} < {self.cfg.min_confidence}"
             )
             return False
 
         # News veto
         if self._news_veto():
+            self._log_skip("news_veto")
             return False
+
+        # Past every silent skip — about to actually consider an entry.
+        # Reset skip-reason so the NEXT skip is logged even if same string.
+        self._last_skip_reason = ""
 
         # Side mapping: bullish → BUY (Up), bearish → SELL (Down)
         side = "BUY" if direction == "bullish" else "SELL"
