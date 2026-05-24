@@ -442,12 +442,51 @@ class RiskGate:
         expected_hash = str(control.get("config_hash") or "").strip()
         actual_hash = os.getenv("RUNTIME_CONFIG_HASH", "").strip()
         if expected_hash and actual_hash != expected_hash:
+            self._signal_hash_mismatch(agent, expected_hash, actual_hash)
             return (
                 "runtime config hash mismatch: "
                 f"container={actual_hash or '<unset>'} control={expected_hash}"
             )
 
         return None
+
+    def _signal_hash_mismatch(
+        self, agent: str, expected: str, actual: str
+    ) -> None:
+        """Emit a CRITICAL log + write a stale-hash marker file so a
+        supervisor can surface this immediately.
+
+        Hash mismatch means the container is running with a stale env
+        (old learning_band, score floor, allowlist) — silently safe
+        because the gate blocks, but the operator must know to recreate
+        the container. Without a marker, this state hides as one of
+        thousands of WARNINGs.
+
+        The marker filename includes the agent so supervisor scripts
+        can list all stale containers at a glance.
+        """
+        try:
+            marker_dir = self.runtime_control_file.parent
+            agent_slug = agent.replace("/", "_").replace(" ", "_") or "unknown"
+            marker = marker_dir / f"{agent_slug}_HASH_STALE"
+            payload = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "agent": agent,
+                "expected_hash": expected,
+                "actual_hash": actual or "<unset>",
+                "remediation": (
+                    "docker compose up -d --force-recreate <agent_service>"
+                ),
+            }
+            marker_dir.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps(payload))
+        except OSError as exc:
+            logger.debug("failed to write hash-stale marker: %s", exc)
+        logger.critical(
+            "risk_gate HASH STALE: agent=%s expected=%s actual=%s — "
+            "container is running with stale runtime env; force-recreate required",
+            agent, expected, actual or "<unset>",
+        )
 
     def position_manager_guard_reason(self) -> Optional[str]:
         """Block live entries when the exit manager is disabled or stale."""
