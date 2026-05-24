@@ -1191,6 +1191,28 @@ class PositionManager:
             )
             if not partial_exit:
                 self.trade_log.mark_position_closed(pos.token_id, status=status_value)
+                # LEARNING LOOP: annotate the original brain_decisions for this
+                # market so WinRateAdvisor / probability_calibrator can compute
+                # per-source win rate. Without this the meta_brain's reliability
+                # checks always return 0/0 and no source can be solo-eligible.
+                try:
+                    annotated = self.trade_log.annotate_brain_decisions_for_close(
+                        market_id=pos.market_id,
+                        token_id=pos.token_id,
+                        outcome_status=status_value,
+                        pnl_usdc=pnl_usdc_real,
+                    )
+                    if annotated > 0:
+                        logger.info(
+                            "position_manager: annotated %d brain_decision(s) "
+                            "market=%s status=%s pnl=%+.4f",
+                            annotated, pos.market_id[:24], status_value, pnl_usdc_real,
+                        )
+                except Exception:
+                    logger.exception(
+                        "position_manager: brain_decisions annotation failed market=%s",
+                        pos.market_id[:24],
+                    )
             # Straddle TP: remove stop-loss on the partner leg so it can
             # run to its own TP — its cost is already covered by this exit.
             if reason == "take_profit" and pos.straddle_id:
@@ -1257,6 +1279,19 @@ class PositionManager:
                 error=err_str,
             )
             self.trade_log.mark_position_closed(pos.token_id, status=RESOLVED_LOSS)
+            # LEARNING LOOP: annotate brain_decisions for this resolved loss.
+            try:
+                self.trade_log.annotate_brain_decisions_for_close(
+                    market_id=pos.market_id,
+                    token_id=pos.token_id,
+                    outcome_status=RESOLVED_LOSS,
+                    pnl_usdc=-float(pos.total_cost_usdc or 0.0),
+                )
+            except Exception:
+                logger.exception(
+                    "position_manager: resolved_loss annotation failed market=%s",
+                    pos.market_id[:24],
+                )
             return True  # treat as "handled" so errors counter stays clean
 
         # A 400 "no orders found to match" means the FAK did not find

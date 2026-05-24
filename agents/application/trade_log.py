@@ -1959,6 +1959,67 @@ class TradeLog:
                 (outcome_status, outcome_json, int(decision_id)),
             )
 
+    def annotate_brain_decisions_for_close(
+        self,
+        market_id: str,
+        token_id: Optional[str],
+        outcome_status: str,
+        pnl_usdc: Optional[float] = None,
+        max_age_hours: int = 72,
+    ) -> int:
+        """Annotate the brain_decisions row(s) for a market that just closed
+        via TP/SL/timeout/resolution. This is the LEARNING LOOP: the bot's
+        meta_brain reads outcome_status (via WinRateAdvisor) to compute
+        per-source win rate. Without this annotation the brain can't learn.
+
+        We match by (market_id, token_id) when token_id is given (most
+        precise), else market_id only. We only touch rows where outcome_status
+        is currently NULL (idempotent — re-running is safe).
+
+        Returns the number of rows annotated. Bounded by `max_age_hours` so
+        we don't annotate decade-old rows when a market with the same id
+        appears in a new cycle.
+        """
+        outcome_payload = {
+            "source": "annotate_brain_decisions_for_close",
+            "annotated_at": _now(),
+        }
+        if pnl_usdc is not None:
+            outcome_payload["pnl_usdc_real"] = float(pnl_usdc)
+        outcome_json = json.dumps(outcome_payload, default=str)
+        cutoff_iso = (
+            datetime.now(timezone.utc) - timedelta(hours=int(max_age_hours))
+        ).isoformat()
+        with self._lock, self._connect() as conn:
+            if token_id:
+                params = (
+                    outcome_status,
+                    outcome_json,
+                    str(market_id),
+                    str(token_id),
+                    cutoff_iso,
+                )
+                cur = conn.execute(
+                    "UPDATE brain_decisions SET outcome_status = ?, outcome_json = ? "
+                    "WHERE market_id = ? AND token_id = ? "
+                    "AND outcome_status IS NULL AND ts >= ?",
+                    params,
+                )
+            else:
+                params = (
+                    outcome_status,
+                    outcome_json,
+                    str(market_id),
+                    cutoff_iso,
+                )
+                cur = conn.execute(
+                    "UPDATE brain_decisions SET outcome_status = ?, outcome_json = ? "
+                    "WHERE market_id = ? "
+                    "AND outcome_status IS NULL AND ts >= ?",
+                    params,
+                )
+            return cur.rowcount or 0
+
     def insert_decision_reflection(
         self,
         agent: str,
