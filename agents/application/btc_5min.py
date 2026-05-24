@@ -272,16 +272,28 @@ class Btc5MinEngine:
         self._last_entered_period: int = 0
         self._hour_trades: list[float] = []  # timestamps of trades in last hour
         self._last_skip_reason: str = ""
+        self._last_skip_period_ts: int = 0
         self._bootstrap_feed_history()
 
-    def _log_skip(self, reason: str) -> None:
-        """INFO-log a skip reason once per change. Daemon polls every 2s
-        across 5 assets — without dedupe this would be 150 lines/min.
-        With dedupe: one line per state transition, so silent windows mean
-        'still in same state' instead of 'broken'."""
-        if reason != self._last_skip_reason:
+    def _log_skip(self, reason: str, period_ts: int = 0) -> None:
+        """INFO-log a skip reason. Two-tier dedupe:
+        (1) same reason in same period → skip log
+        (2) period changed → always log even if reason matches
+
+        Without (2), an in-window state like 'risk_gate_blocked' that
+        repeats every iteration for 160 seconds collapses to one log
+        line, making it look like the daemon went silent in the middle
+        of the window. Resetting per period gives at least one log
+        line per 5-min cycle per state, so the operator can see
+        what happened in each window.
+        """
+        if (
+            reason != self._last_skip_reason
+            or period_ts != self._last_skip_period_ts
+        ):
             logger.info("btc_5min[%s] skip: %s", self.asset, reason)
             self._last_skip_reason = reason
+            self._last_skip_period_ts = period_ts
 
     def _bootstrap_feed_history(self) -> None:
         """Seed 1m BTC candles so the daemon can trade immediately after restart."""
@@ -427,7 +439,10 @@ class Btc5MinEngine:
 
         # Same-period dedupe
         if period_ts == self._last_entered_period:
-            self._log_skip(f"same_period_already_entered period={period_ts}")
+            self._log_skip(
+                f"same_period_already_entered period={period_ts}",
+                period_ts=period_ts,
+            )
             return False
 
         # Timing guard: only enter between entry_window_start and entry_window_end
@@ -435,13 +450,15 @@ class Btc5MinEngine:
         if elapsed < self.cfg.entry_window_start:
             self._log_skip(
                 f"timing_too_early elapsed={elapsed:.1f}s "
-                f"need>={self.cfg.entry_window_start}s"
+                f"need>={self.cfg.entry_window_start}s",
+                period_ts=period_ts,
             )
             return False
         if elapsed > self.cfg.entry_window_end:
             self._log_skip(
                 f"timing_too_late elapsed={elapsed:.1f}s "
-                f"window_end={self.cfg.entry_window_end}s"
+                f"window_end={self.cfg.entry_window_end}s",
+                period_ts=period_ts,
             )
             return False
 
@@ -450,14 +467,18 @@ class Btc5MinEngine:
         self._hour_trades = [t for t in self._hour_trades if t > cutoff]
         if len(self._hour_trades) >= self.cfg.max_per_hour:
             self._log_skip(
-                f"hour_cap {len(self._hour_trades)}/{self.cfg.max_per_hour}"
+                f"hour_cap {len(self._hour_trades)}/{self.cfg.max_per_hour}",
+                period_ts=period_ts,
             )
             return False
 
         # Cooldown
         if self._hour_trades and now - self._hour_trades[-1] < self.cfg.cooldown_sec:
             remaining = self.cfg.cooldown_sec - (now - self._hour_trades[-1])
-            self._log_skip(f"cooldown_active remaining={remaining:.0f}s")
+            self._log_skip(
+                f"cooldown_active remaining={remaining:.0f}s",
+                period_ts=period_ts,
+            )
             return False
 
         # Risk gate
@@ -465,7 +486,7 @@ class Btc5MinEngine:
             # risk_gate.ok() already logs WARNING with the reason; the
             # WARNING line that fires alongside this INFO is the diagnostic.
             if self.execute or not self.shadow_ignore_risk_gate:
-                self._log_skip("risk_gate_blocked")
+                self._log_skip("risk_gate_blocked", period_ts=period_ts)
                 return False
             logger.warning("btc_5min: risk gate blocked but shadow continues")
 
@@ -507,19 +528,21 @@ class Btc5MinEngine:
             self._log_skip(
                 f"consensus_skip direction={direction} "
                 f"contributing={contributing}/{self.cfg.min_consensus} "
-                f"confidence={confidence:.2f}"
+                f"confidence={confidence:.2f}",
+                period_ts=period_ts,
             )
             return False
 
         if confidence < self.cfg.min_confidence:
             self._log_skip(
-                f"low_confidence {confidence:.3f} < {self.cfg.min_confidence}"
+                f"low_confidence {confidence:.3f} < {self.cfg.min_confidence}",
+                period_ts=period_ts,
             )
             return False
 
         # News veto
         if self._news_veto():
-            self._log_skip("news_veto")
+            self._log_skip("news_veto", period_ts=period_ts)
             return False
 
         # Past every silent skip — about to actually consider an entry.

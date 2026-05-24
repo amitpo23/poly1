@@ -24,6 +24,7 @@ def _make_engine(asset: str = "btc") -> Btc5MinEngine:
     eng.cfg = Btc5MinConfig()
     eng.asset = asset
     eng._last_skip_reason = ""
+    eng._last_skip_period_ts = 0
     return eng
 
 
@@ -41,19 +42,31 @@ class LogSkipTests(unittest.TestCase):
         eng = _make_engine()
         # First call logs.
         with self.assertLogs("agents.application.btc_5min", level="INFO") as cm:
-            eng._log_skip("cooldown_active")
+            eng._log_skip("cooldown_active", period_ts=100)
         self.assertEqual(len(cm.output), 1)
-        # Second call with same reason — assertLogs requires AT LEAST one
-        # record, so we patch logger directly.
+        # Second call with same reason AND same period — should be deduped.
         logger = logging.getLogger("agents.application.btc_5min")
         handler = MagicMock()
         logger.addHandler(handler)
         try:
-            eng._log_skip("cooldown_active")
+            eng._log_skip("cooldown_active", period_ts=100)
         finally:
             logger.removeHandler(handler)
-        # No new emit since reason didn't change.
+        # No new emit since reason+period both unchanged.
         self.assertEqual(handler.handle.call_count, 0)
+
+    def test_same_reason_new_period_logs_again(self):
+        """Critical for in-window visibility: a state that persists
+        across multiple iterations within a 5-min period collapses to
+        one log; but when the period rolls over (every 5 min), the
+        next iteration's log emits even if the reason matches.
+        """
+        eng = _make_engine()
+        with self.assertLogs("agents.application.btc_5min", level="INFO") as cm:
+            eng._log_skip("risk_gate_blocked", period_ts=100)
+            eng._log_skip("risk_gate_blocked", period_ts=100)  # dedup
+            eng._log_skip("risk_gate_blocked", period_ts=400)  # new period, logs
+        self.assertEqual(len(cm.output), 2)
 
     def test_reason_change_logs_again(self):
         eng = _make_engine()
