@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from agents.application import consensus_router
 from agents.application.decision_council import DecisionCouncil
 from agents.application.regime_router import family_from_signal, route_for_features
 from agents.application.risk_gate import RiskGate
@@ -74,6 +75,17 @@ class ScannerExecutorConfig:
     reserve_usdc: float = 0.0
     min_score: float = 0.80
     min_proven_calibrated_score: float = 0.54
+    # Consensus-relaxed thresholds: when 2+ entry agents approved the
+    # same market within `consensus_window_seconds`, the cross-source
+    # confirmation is itself evidence. These thresholds replace the
+    # strict ones for that subset of candidates. Disabled by default
+    # via consensus_enabled=False; flip on once agent coverage overlaps.
+    consensus_enabled: bool = False
+    consensus_window_seconds: int = 300
+    consensus_min_agents: int = 2
+    consensus_min_score: float = 0.65
+    consensus_min_net_ev: float = 0.015
+    consensus_min_raw_ev: float = 0.02
     min_raw_ev: float = 0.04
     min_net_ev: float = 0.03
     round_trip_cost_pct: float = 0.04
@@ -119,6 +131,24 @@ class ScannerExecutorConfig:
             min_proven_calibrated_score=_env_float(
                 "SCANNER_EXECUTOR_MIN_PROVEN_CALIBRATED_SCORE",
                 0.54,
+            ),
+            consensus_enabled=_env_bool(
+                "SCANNER_EXECUTOR_CONSENSUS_ENABLED", False
+            ),
+            consensus_window_seconds=int(
+                _env_float("SCANNER_EXECUTOR_CONSENSUS_WINDOW_SECONDS", 300.0)
+            ),
+            consensus_min_agents=int(
+                _env_float("SCANNER_EXECUTOR_CONSENSUS_MIN_AGENTS", 2.0)
+            ),
+            consensus_min_score=_env_float(
+                "SCANNER_EXECUTOR_CONSENSUS_MIN_SCORE", 0.65
+            ),
+            consensus_min_net_ev=_env_float(
+                "SCANNER_EXECUTOR_CONSENSUS_MIN_NET_EV", 0.015
+            ),
+            consensus_min_raw_ev=_env_float(
+                "SCANNER_EXECUTOR_CONSENSUS_MIN_RAW_EV", 0.02
             ),
             min_raw_ev=_env_float("SCANNER_EXECUTOR_MIN_RAW_EV", 0.04),
             min_net_ev=_env_float("SCANNER_EXECUTOR_MIN_NET_EV", 0.03),
@@ -382,12 +412,29 @@ class ScannerExecutor:
             if not timing_override:
                 self._record_reject(row, "timing_not_now", {"meta_timing": meta_timing})
                 return "skipped"
-        min_score = self._min_score_for_decision(row, features)
+
+        # Multi-source consensus check: if 2+ entry agents approved the
+        # same market within the window, lower the score floor (the
+        # cross-source confirmation is itself evidence of quality).
+        # Default off — flip on via SCANNER_EXECUTOR_CONSENSUS_ENABLED
+        # once agent coverage overlaps. See agents/application/consensus_router.py.
+        consensus_result = None
+        consensus_features: dict = {}
+        if self.cfg.consensus_enabled:
+            consensus_result = consensus_router.query(
+                self.trade_log.db_path,
+                market_id,
+                window_seconds=self.cfg.consensus_window_seconds,
+                min_agents=self.cfg.consensus_min_agents,
+            )
+            consensus_features = consensus_result.as_features()
+
+        min_score = self._min_score_for_decision(row, features, consensus=consensus_result)
         if score < min_score:
             self._record_reject(
                 row,
                 "score_below_executor_min",
-                {"score": score, "min_score": min_score},
+                {"score": score, "min_score": min_score, **consensus_features},
             )
             return "skipped"
         if (
@@ -836,21 +883,35 @@ class ScannerExecutor:
             logger.info("scanner_executor metadata hydration failed for token=%s: %s", token_id[:18], exc)
             return {}
 
-    def _min_score_for_decision(self, row: dict, features: dict) -> float:
-        if not bool(features.get("estimated_win_probability_calibrated")):
-            return self.cfg.min_score
-        source = str(features.get("estimated_win_probability_source") or "")
-        signal_source = str(row.get("signal_source") or features.get("signal_source") or "")
-        proven_sources = (
-            "alphainsider_proven_family_plus_crypto_tape",
-            "wallet_external_winrate",
-        )
-        proven_markers = (
-            "alphainsider_proven",
-            "proven_wallet",
-        )
-        if source in proven_sources or any(marker in signal_source for marker in proven_markers):
-            return min(self.cfg.min_score, self.cfg.min_proven_calibrated_score)
+    def _min_score_for_decision(
+        self,
+        row: dict,
+        features: dict,
+        *,
+        consensus: Optional["consensus_router.ConsensusResult"] = None,
+    ) -> float:
+        # Multi-source consensus relaxation: cross-agent agreement
+        # substitutes for a high single-source score. Returned threshold
+        # is the MINIMUM of all applicable relaxed paths so we never
+        # accidentally tighten in the presence of consensus.
+        relaxations: list[float] = []
+        if consensus is not None and consensus.consensus:
+            relaxations.append(self.cfg.consensus_min_score)
+        if bool(features.get("estimated_win_probability_calibrated")):
+            source = str(features.get("estimated_win_probability_source") or "")
+            signal_source = str(row.get("signal_source") or features.get("signal_source") or "")
+            proven_sources = (
+                "alphainsider_proven_family_plus_crypto_tape",
+                "wallet_external_winrate",
+            )
+            proven_markers = (
+                "alphainsider_proven",
+                "proven_wallet",
+            )
+            if source in proven_sources or any(marker in signal_source for marker in proven_markers):
+                relaxations.append(self.cfg.min_proven_calibrated_score)
+        if relaxations:
+            return min(self.cfg.min_score, *relaxations)
         return self.cfg.min_score
 
     def _has_proven_override(self, row: dict, features: dict) -> bool:

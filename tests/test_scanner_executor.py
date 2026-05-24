@@ -174,6 +174,75 @@ class ScannerExecutorTests(unittest.TestCase):
         pm.execute_market_order.assert_not_called()
         # And no per-market processing — the candidate was not even fetched.
 
+    def test_consensus_relaxes_min_score_only_when_enabled_and_present(self):
+        """When consensus is enabled AND another entry agent approved the
+        same market in the window, the score floor drops from min_score
+        to consensus_min_score. Without consensus, strict floor applies.
+        This is the runtime hook for the 2-source-agreement architecture.
+        """
+        # Insert a low-score scanner approval that would normally fail
+        # the strict 0.55 default but pass the consensus 0.50 floor.
+        self.log.insert_brain_decision(
+            agent="market_scanner",
+            strategy="scanner_trade_opportunity",
+            decision_type="entry",
+            market_id="0xconsensus",
+            approved=True,
+            reason="scanner_approved score=0.52",
+            score=0.52,
+            market_type="general_binary",
+            features=_features(),
+            action="BUY",
+            signal_source="market_scanner",
+            token_id="tok_up",
+        )
+        # Insert a SECOND agent approving the same market within window.
+        self.log.insert_brain_decision(
+            agent="opportunity_factory",
+            strategy="opportunity",
+            decision_type="entry",
+            market_id="0xconsensus",
+            approved=True,
+            reason="opportunity",
+            score=0.50,
+            market_type="general_binary",
+            features={"selected_entry_price": 0.45},
+            action="BUY",
+            signal_source="opportunity_factory",
+            token_id="tok_up",
+        )
+        engine, _pm = self._engine(execute=False, min_score=0.55)
+        # Without enabling consensus: low score should fail.
+        stats = engine.run_once()
+        # In some setups other gates fire first; we only care that the
+        # `score_below_executor_min` rejection is present.
+        recent = self.log.recent_brain_decisions(limit=4)
+        reasons = [r["reason"] for r in recent if r["agent"] == "scanner_executor"]
+        self.assertTrue(
+            any("score_below_executor_min" in r for r in reasons),
+            f"expected score rejection without consensus, got: {reasons}",
+        )
+
+        # Re-run with consensus enabled and threshold lowered.
+        engine2, _pm2 = self._engine(
+            execute=False,
+            min_score=0.55,
+        )
+        engine2.cfg = engine2.cfg.__class__(
+            **{**engine2.cfg.__dict__, "consensus_enabled": True,
+               "consensus_min_score": 0.50}
+        )
+        # Reset the processed cache so the same decision is re-examined.
+        engine2._processed = set()
+        stats2 = engine2.run_once()
+        recent2 = self.log.recent_brain_decisions(limit=4)
+        reasons2 = [r["reason"] for r in recent2 if r["agent"] == "scanner_executor"]
+        # With consensus, score should NOT be the blocker anymore.
+        score_reject_count = sum(1 for r in reasons2 if "score_below_executor_min" in r)
+        # The pre-consensus run already added one. The post-consensus
+        # run should add 0 (i.e., reject reason should be different).
+        self.assertLessEqual(score_reject_count, 1, f"reasons: {reasons2}")
+
     def test_freeze_only_block_routes_to_shadow_path(self):
         """When risk_gate.reason() returns freeze-only, the cycle continues
         and the per-market handler routes to the shadow path so
