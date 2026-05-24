@@ -17,7 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agents.application.probability_calibrator import calibrate
+from agents.application.multi_pipeline_calibrator import multi_pipeline_calibrate
+from agents.application.probability_calibrator import calibrate as _scanner_only_calibrate
 
 
 def main() -> int:
@@ -37,7 +38,12 @@ def main() -> int:
         print(f"db not found: {db_path}", file=sys.stderr)
         return 2
 
-    result = calibrate(str(db_path), days=args.days, max_age_hours=args.max_age_hours)
+    # Full calibration covers all 3 pipelines: scanner_executor (via
+    # decision_journal), direct-execution agents (btc_5min, scalper),
+    # and shadow-research visibility.
+    result = multi_pipeline_calibrate(
+        str(db_path), days=args.days, max_age_hours=args.max_age_hours,
+    )
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +63,8 @@ def main() -> int:
                 "unmatched": result["unmatched"],
                 "n_signal_sources": len(result["per_signal_source"]),
                 "n_source_bands": len(result["per_source_band"]),
+                "n_direct_execution_agents": len(result.get("per_direct_execution_agent", [])),
+                "n_shadow_research_agents": len(result.get("shadow_research_visibility", [])),
             },
             indent=2,
         )
