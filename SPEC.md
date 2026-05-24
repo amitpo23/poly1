@@ -591,6 +591,44 @@ compose profile:
   OKX/Binance funding rate regime classification. Crypto markets only.
   Available under both `external_conviction` and `vibe` compose profiles.
 
+### Brain indicator cycle
+
+`scripts/brain_indicator_cycle.py` is the control-room loop that
+periodically refreshes external indicators, updates shadow markouts,
+runs the market scanner, and dispatches `scanner_executor` (in shadow
+mode unless live dispatch is explicitly enabled). Runs as the
+`brain-indicator-cycle` docker-compose service.
+
+The cycle's step intervals are env-driven so operators can throttle
+individual sub-steps without touching code. All `BRAIN_INDICATOR_*`
+defaults are safe values; lower them for faster reaction at higher
+external-API cost, raise them to conserve budget during measurement.
+
+| Var | Default | Purpose |
+|---|---|---|
+| `BRAIN_INDICATOR_MARKET_UNIVERSE_INTERVAL_SEC` | `300` | Polymarket universe refresh (every 5m) |
+| `BRAIN_INDICATOR_ALPHAINSIDER_INTERVAL_SEC` | `900` | Strategy rankings refresh (every 15m) |
+| `BRAIN_INDICATOR_MARKOUTS_INTERVAL_SEC` | `60` | Mature 1/3/5/15m shadow markouts (every 1m) |
+| `BRAIN_INDICATOR_MARKOUT_DECISIONS` | `SHADOW_ENTER,SHADOW_QUOTE,ENTER` | Decision types eligible for markouts |
+| `BRAIN_INDICATOR_MARKOUT_LIVE_FALLBACK` | `false` | Query live CLOB when `orderbook_snapshots` lacks a historical entry. Off by default to avoid post-hoc staleness; turn on when shadow-only measurement needs broader market coverage (e.g., sports/event markets that the snapshot watch list doesn't track). |
+| `BRAIN_INDICATOR_PROVIDER_SCORECARD_INTERVAL_SEC` | `300` | Provider quality scorecard (every 5m) |
+| `BRAIN_INDICATOR_STRATEGY_SCORECARD_INTERVAL_SEC` | `300` | Strategy quality scorecard (every 5m) |
+| `BRAIN_INDICATOR_OPPORTUNITY_FACTORY_INTERVAL_SEC` | `60` | Strong indicator → opportunity attention (every 1m) |
+| `BRAIN_INDICATOR_MARKET_SCANNER_INTERVAL_SEC` | `60` | Cheap scanner pass (every 1m) |
+| `BRAIN_INDICATOR_DISPATCH_INTERVAL_SEC` | `60` | scanner_executor dispatch (every 1m) |
+| `BRAIN_INDICATOR_BACKUP_INTERVAL_SEC` | `14400` | trade_log.db backup (every 4h; well below 30h preflight threshold) |
+| `BRAIN_INDICATOR_BACKUP_DIR` | `/app/data/backups` | Output directory for SQLite backups |
+| `BRAIN_INDICATOR_BACKUP_KEEP` | `6` | Retain newest N backups (6 × 4h ≈ 24h history). Rotation prevents the ~750MB/backup from filling disk. |
+| `BRAIN_INDICATOR_ALLOW_LIVE_DISPATCH` | `false` | Allow scanner_executor to actually execute orders. When `false`, executor runs in shadow mode (writes SHADOW_ENTER to decision_journal, never calls `polymarket.execute_market_order`). |
+| `BRAIN_INDICATOR_NO_TRADE_GUARD` | `true` | Inverse safety: if `true`, blocks any live dispatch even if `ALLOW_LIVE_DISPATCH=true`. Effectively a kill switch for the cycle's execution path. |
+
+Shadow measurement (Week 1 of the 3-week launch plan) relies on
+`decision_journal` SHADOW_ENTER rows accumulating with their associated
+`outcome_5m_json` etc. populated. `risk_gate.is_freeze_only_block()`
+recognises a paired HALT+freeze and routes scanner_executor decisions
+to the shadow path instead of hard-rejecting them — see §6 *Runtime
+control plane* and `docs/SESSION_2026-05-24_FREEZE_SHADOW_FIX.md`.
+
 ## 8. LLM prompt contract
 
 `prompts.py:one_best_trade` requires the LLM to return JSON of the form:
