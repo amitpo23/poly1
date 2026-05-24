@@ -61,6 +61,7 @@ class BrainIndicatorConfig:
     alphainsider_sort: str = "performance"
     markout_limit: int = 500
     markout_decisions: str = "SHADOW_ENTER,SHADOW_QUOTE,ENTER"
+    markout_live_fallback: bool = False
     strategy_min_decisions: int = 20
     provider_min_matched: int = 1
     scanner_max_candidates: int = 12
@@ -108,6 +109,7 @@ class BrainIndicatorConfig:
                 "BRAIN_INDICATOR_MARKOUT_DECISIONS",
                 "SHADOW_ENTER,SHADOW_QUOTE,ENTER",
             ),
+            markout_live_fallback=_env_bool("BRAIN_INDICATOR_MARKOUT_LIVE_FALLBACK", False),
             strategy_min_decisions=_env_int("BRAIN_INDICATOR_STRATEGY_MIN_DECISIONS", 20),
             provider_min_matched=_env_int("BRAIN_INDICATOR_PROVIDER_MIN_MATCHED", 1),
             scanner_max_candidates=_env_int("BRAIN_INDICATOR_SCANNER_MAX_CANDIDATES", 12),
@@ -197,22 +199,21 @@ def build_steps(cfg: BrainIndicatorConfig) -> list[tuple[str, list[str], dict[st
             {},
         ))
     if cfg.run_markouts:
-        steps.append((
-            "shadow_markouts",
-            [
-                py,
-                "scripts/update_shadow_markouts.py",
-                "--db",
-                cfg.db_path,
-                "--horizons",
-                "1,3,5,15",
-                "--limit",
-                str(cfg.markout_limit),
-                "--decisions",
-                cfg.markout_decisions,
-            ],
-            {},
-        ))
+        markout_cmd = [
+            py,
+            "scripts/update_shadow_markouts.py",
+            "--db",
+            cfg.db_path,
+            "--horizons",
+            "1,3,5,15",
+            "--limit",
+            str(cfg.markout_limit),
+            "--decisions",
+            cfg.markout_decisions,
+        ]
+        if cfg.markout_live_fallback:
+            markout_cmd.append("--live-fallback")
+        steps.append(("shadow_markouts", markout_cmd, {}))
     if cfg.run_provider_scorecard:
         steps.append((
             "provider_scorecard",

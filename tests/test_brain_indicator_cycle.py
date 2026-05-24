@@ -8,6 +8,40 @@ from pathlib import Path
 from scripts.brain_indicator_cycle import BrainIndicatorConfig, build_steps, run_once
 
 
+class MarkoutStepTests(unittest.TestCase):
+    """Markouts step CLI assembly — covers live-fallback toggle."""
+
+    def _cfg(self, **overrides) -> BrainIndicatorConfig:
+        defaults = dict(
+            run_market_universe=False,
+            run_alphainsider=False,
+            run_markouts=True,
+            run_provider_scorecard=False,
+            run_strategy_scorecard=False,
+            run_opportunity_factory=False,
+            run_market_scanner=False,
+            dispatch_scanner_executor=False,
+            run_backup=False,
+            no_trade_guard=True,
+            allow_live_dispatch=False,
+        )
+        defaults.update(overrides)
+        return BrainIndicatorConfig(**defaults)
+
+    def test_markouts_step_default_no_live_fallback(self):
+        steps = build_steps(self._cfg())
+        self.assertEqual(len(steps), 1)
+        name, cmd, _env = steps[0]
+        self.assertEqual(name, "shadow_markouts")
+        self.assertNotIn("--live-fallback", cmd)
+
+    def test_markouts_step_with_live_fallback(self):
+        steps = build_steps(self._cfg(markout_live_fallback=True))
+        name, cmd, _env = steps[0]
+        self.assertEqual(name, "shadow_markouts")
+        self.assertIn("--live-fallback", cmd)
+
+
 class BrainIndicatorCycleTests(unittest.TestCase):
     def test_build_steps_includes_shadow_dispatch_guard(self):
         cfg = BrainIndicatorConfig(
