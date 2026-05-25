@@ -54,6 +54,7 @@ class OrderbookMonitorConfig:
     clob_url: str = "https://clob.polymarket.com"
     stale_market_grace_sec: int = 300
     shadow_lookback_hours: int = 24
+    watch_5min_crypto: bool = True
 
     @classmethod
     def from_env(cls) -> "OrderbookMonitorConfig":
@@ -68,6 +69,9 @@ class OrderbookMonitorConfig:
             clob_url=os.getenv("ORDERBOOK_MONITOR_CLOB_URL", "https://clob.polymarket.com"),
             stale_market_grace_sec=_env_int("ORDERBOOK_MONITOR_STALE_MARKET_GRACE_SEC", 300),
             shadow_lookback_hours=_env_int("ORDERBOOK_MONITOR_SHADOW_LOOKBACK_HOURS", 24),
+            watch_5min_crypto=os.getenv(
+                "ORDERBOOK_MONITOR_WATCH_5MIN_CRYPTO", "true"
+            ).lower() in ("1", "true", "yes"),
         )
 
 
@@ -267,7 +271,65 @@ class OrderbookMonitorDaemon:
                     "token_id": token_id,
                     "outcome": "shadow_research",
                 })
+        # Current 5-min crypto markets — operator 2026-05-25 requested
+        # validation of Polymarket DOWN price bias in the first minute,
+        # which requires sub-minute snapshots on the active 5min market.
+        # Without this, btc_5min markets accumulate ZERO snapshots
+        # (they expire faster than market_universe can index them).
+        if self.cfg.watch_5min_crypto:
+            try:
+                for item in self._current_5min_market_tokens():
+                    token_id = str(item.get("token_id") or "")
+                    if token_id and token_id not in seen:
+                        seen.add(token_id)
+                        result.append({
+                            "market_id": item.get("market_id"),
+                            "token_id": token_id,
+                            "outcome": "btc_5min_window",
+                        })
+            except Exception as exc:
+                logger.debug("orderbook_monitor: 5min token fetch failed: %s", exc)
         return result[: self.cfg.token_limit]
+
+    def _current_5min_market_tokens(self) -> list[dict]:
+        """Query Gamma for active 5-min crypto markets (BTC/ETH/SOL/DOGE/XRP).
+
+        Returns both YES and NO token_ids so both sides can be tracked
+        (BUY DOWN = SELL YES, so we need the NO-side prices too).
+        """
+        period_ts = int(time.time() // 300) * 300
+        assets = ("btc", "eth", "sol", "doge", "xrp")
+        out: list[dict] = []
+        for asset in assets:
+            slug = f"{asset}-updown-5m-{period_ts}"
+            try:
+                params = urllib.parse.urlencode({"slug": slug})
+                url = f"https://gamma-api.polymarket.com/markets?{params}"
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "poly1-orderbook-monitor/1.0",
+                })
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    data = json.loads(r.read())
+            except Exception:
+                continue
+            if not data:
+                continue
+            m = data[0]
+            if not m.get("active", True) or m.get("closed", False):
+                continue
+            try:
+                import ast
+                tokens = ast.literal_eval(m.get("clobTokenIds") or "[]")
+            except Exception:
+                continue
+            for tok in tokens:
+                out.append({
+                    "market_id": str(m.get("id") or ""),
+                    "token_id": str(tok),
+                    "asset": asset,
+                    "slug": slug,
+                })
+        return out
 
     def _heartbeat(self) -> None:
         path = Path(self.cfg.heartbeat_path)

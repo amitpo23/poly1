@@ -127,7 +127,9 @@ class MonitorWatchlistTests(unittest.TestCase):
             OrderbookMonitorConfig,
         )
         mon = OrderbookMonitorDaemon.__new__(OrderbookMonitorDaemon)
-        mon.cfg = OrderbookMonitorConfig(token_limit=10, shadow_lookback_hours=24)
+        mon.cfg = OrderbookMonitorConfig(
+            token_limit=10, shadow_lookback_hours=24, watch_5min_crypto=False
+        )
         mon.trade_log = MagicMock()
         mon.trade_log.market_universe_tokens.return_value = []
         mon.trade_log.filled_positions_with_id.return_value = []
@@ -149,7 +151,7 @@ class MonitorWatchlistTests(unittest.TestCase):
             OrderbookMonitorConfig,
         )
         mon = OrderbookMonitorDaemon.__new__(OrderbookMonitorDaemon)
-        mon.cfg = OrderbookMonitorConfig(token_limit=10)
+        mon.cfg = OrderbookMonitorConfig(token_limit=10, watch_5min_crypto=False)
         mon.trade_log = MagicMock()
         mon.trade_log.market_universe_tokens.return_value = [
             {"market_id": "M1", "token_id": "T1"},
@@ -171,7 +173,7 @@ class MonitorWatchlistTests(unittest.TestCase):
             OrderbookMonitorConfig,
         )
         mon = OrderbookMonitorDaemon.__new__(OrderbookMonitorDaemon)
-        mon.cfg = OrderbookMonitorConfig(token_limit=10)
+        mon.cfg = OrderbookMonitorConfig(token_limit=10, watch_5min_crypto=False)
         mon.trade_log = MagicMock()
         mon.trade_log.market_universe_tokens.return_value = [
             {"market_id": "M1", "token_id": "UNI"},
