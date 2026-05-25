@@ -470,6 +470,8 @@ class Btc5MinTimedDaemon:
             "Btc5MinTimedDaemon: starting execute=%s asset=%s position=$%.2f",
             self.cfg.execute, self.cfg.asset, self.cfg.position_usdc,
         )
+        last_limit_poll = 0.0
+        LIMIT_POLL_INTERVAL = 15  # seconds
         try:
             while not self._stop:
                 try:
@@ -478,6 +480,17 @@ class Btc5MinTimedDaemon:
                         self.engine.fire(phase)
                 except Exception:
                     logger.exception("btc5min_timed cycle failed")
+                # Poll resting LIMIT orders for fills every ~15s. Without
+                # this, MATCHED limits sit silent until something else
+                # closes the position. Discovered in R25: 2 LIMITs hit
+                # MATCHED but the trade_log still showed btc5min_timed_open.
+                now = time.time()
+                if now - last_limit_poll > LIMIT_POLL_INTERVAL:
+                    last_limit_poll = now
+                    try:
+                        self._reconcile_open_limits()
+                    except Exception:
+                        logger.exception("btc5min_timed limit-poll failed (non-fatal)")
                 # heartbeat
                 try:
                     p = Path(self.cfg.heartbeat_path)
@@ -488,6 +501,87 @@ class Btc5MinTimedDaemon:
                 time.sleep(self.cfg.poll_sec)
         finally:
             logger.info("Btc5MinTimedDaemon: exited")
+
+    def _reconcile_open_limits(self) -> None:
+        """Scan btc5min_timed_open positions; if their resting LIMIT TP
+        is MATCHED on Polymarket, write a close row with the realized PnL.
+
+        Bug discovered in R25: limits filled in the book but the local
+        DB still showed btc5min_timed_open → equity reporting wrong.
+        """
+        import json as _json
+        import sqlite3 as _sql
+        with _sql.connect(self.tl.db_path, timeout=5) as conn:
+            conn.row_factory = _sql.Row
+            rows = conn.execute(
+                """
+                SELECT t1.id, t1.market_id, t1.token_id, t1.side, t1.price,
+                       t1.size_usdc, t1.response_json
+                FROM trades t1
+                WHERE t1.status = 'btc5min_timed_open'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM trades t2
+                    WHERE t2.token_id = t1.token_id
+                      AND t2.id > t1.id
+                      AND (t2.status LIKE 'closed_%' OR t2.status LIKE 'resolved_%')
+                  )
+                """
+            ).fetchall()
+        for r in rows:
+            try:
+                resp = _json.loads(r["response_json"] or "{}")
+            except Exception:
+                continue
+            tp_order_id = resp.get("tp_resting_order_id")
+            if not tp_order_id:
+                continue
+            try:
+                order = self.polymarket.client.get_order(tp_order_id)
+            except Exception:
+                continue
+            if not isinstance(order, dict):
+                continue
+            if order.get("status", "").upper() != "MATCHED":
+                continue
+            size_matched = float(order.get("size_matched") or 0)
+            exit_price = float(order.get("price") or 0)
+            if size_matched <= 0 or exit_price <= 0:
+                continue
+            entry_price = float(r["price"])
+            entry_side = resp.get("side", r["side"] or "BUY")
+            our_token_entry = (
+                entry_price if entry_side == "BUY"
+                else max(0.01, 1.0 - entry_price)
+            )
+            proceeds = size_matched * exit_price
+            cost_basis = size_matched * our_token_entry
+            pnl = proceeds - cost_basis
+            close_response = {
+                "source": "btc5min_timed_daemon_poll",
+                "tp_resting_order_id": tp_order_id,
+                "exit_price": exit_price,
+                "shares_sold": size_matched,
+                "actual_proceeds_usdc": round(proceeds, 4),
+                "cost_basis_usdc": round(cost_basis, 4),
+                "pnl_usdc_real": round(pnl, 4),
+                "status": "matched",
+            }
+            cycle_id = f"close:{str(r['token_id'])[:12]}"
+            self.tl.insert_terminal(
+                cycle_id=cycle_id,
+                market_id=str(r["market_id"]),
+                status="closed_take_profit",
+                token_id=str(r["token_id"]),
+                side="SELL",
+                price=exit_price,
+                size_usdc=proceeds,
+                confidence=None,
+                response=close_response,
+            )
+            logger.info(
+                "btc5min_timed reconciled LIMIT fill: id=%s shares=%.4f @ %.4f PnL=$%+.4f",
+                r["id"], size_matched, exit_price, pnl,
+            )
 
 
 if __name__ == "__main__":
