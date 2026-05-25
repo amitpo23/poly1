@@ -1212,6 +1212,10 @@ services:
     command: ["python", "-m", "agents.application.orderbook_monitor"]
     volumes:
       - ./data:/app/data
+      # Mount the live code so updates land without a full rebuild
+      # (added 2026-05-25 for the 5min crypto watchlist extension —
+      # server lacked disk for a clean rebuild).
+      - ./agents/application/orderbook_monitor.py:/app/agents/application/orderbook_monitor.py:ro
     healthcheck:
       test: ["CMD-SHELL",
              "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/orderbook_monitor_heartbeat') < 180\""]
