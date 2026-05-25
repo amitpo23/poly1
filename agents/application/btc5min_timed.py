@@ -382,6 +382,12 @@ class Btc5MinTimedEngine:
             tp_limit_price = round(our_token_entry * (1 + tp_pct), 4)
             # Cap at $0.99 — Polymarket clamps anyway
             tp_limit_price = min(0.99, max(0.02, tp_limit_price))
+            # Wait for entry shares to SETTLE on-chain before placing the
+            # resting SELL. Without this, Polymarket rejects the LIMIT with
+            # "not enough balance / allowance: balance: 0" because the CTF
+            # token transfer from the trade hasn't completed yet.
+            # 3 seconds is enough for builder-relayer settlement in practice.
+            time.sleep(3.0)
             tp_resp = self.polymarket.place_resting_limit(
                 token_id=token_id,
                 size_shares=shares_held,
