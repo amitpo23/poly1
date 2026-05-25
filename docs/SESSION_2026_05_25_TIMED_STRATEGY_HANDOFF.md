@@ -271,3 +271,38 @@ The `tp_resting_order_id` field in `response_json` was observed NULL for all R24
 3. The shares-from-response parsing has an off-by-decimal issue (the SDK may use different scale)
 
 **A 5-minute verification round next session can confirm/deny.**
+
+---
+
+## 📛 Strategy Name: "אסטרטגיית עמית" (Amit's Strategy)
+
+**Official name** as of 2026-05-25: **`Amit's Strategy`** (אסטרטגיית עמית).
+
+The btc5min_timed agent implements this strategy:
+- **Phase 1** (t=0:01): BUY DOWN, TP=+5%, SL=−20%
+- **Phase 2** (t=3:00): BUY UP, TP=+5%, SL=−20%
+- Max hold: 2:00 (auto-close)
+- No signals, no LLM, pure time-based entries
+- Resting LIMIT TP on Polymarket book (when shares ≥ 5)
+
+Conceived by the operator (Amit) on 2026-05-25 after empirical observation
+of Polymarket 5-min binary UI showing consistent DOWN pressure at window
+start and UP volatility in minutes 3:00-4:30.
+
+### Performance Day 1 (2026-05-25)
+- R22: 7 entries, 2 wins +$0.40, 5 stuck (~−$5 unrealized) — pre-fix
+- R23: +$0.545 (1 win) — pre-LIMIT
+- R24-mini: +$0.716 (2W 1L) — first LIMIT infrastructure
+- R25: +$0.944 (3W 0L) — full LIMIT working
+- R26: −$0.166 (1W 1L) — LIMIT min-size constraint exposed
+- **Combined R23-R26 (post-fix): +$2.04**
+
+### Known limitations
+1. LIMIT TP requires shares ≥ 5 (Polymarket minimum); for $1 position fails at prices > $0.20
+2. SL exit still uses FAK fallback — fires late on illiquid losing side
+3. Phase 1 (SELL) limit calculation uses wrong response field (P16)
+
+### Next steps to make Amit's Strategy fully production-ready
+- Fix P16 (SELL shares calculation)
+- Implement resting LIMIT SL (P18) for symmetric exits
+- Consider $3 position size to clear the 5-share minimum (P17)
