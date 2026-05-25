@@ -355,7 +355,12 @@ class Btc5MinTimedEngine:
             "side": side,
             "tp_pct_override": tp_pct,
             "sl_pct_override": sl_pct,
-            "max_hold_seconds": 270,
+            # 120s = exit by t=2:00 from entry. After analysis of Round 22
+            # losses: 5-min binaries blow through SL=20% within 30sec of
+            # adverse move, then reverse, then go to resolution. The TP/SL
+            # window is the first 60-90 sec. Force-close at 2:00 to lock
+            # whatever mean-reverted price exists before the next big move.
+            "max_hold_seconds": 120,
         })
         self.trade_log.mark(pending_id, BTC5MIN_TIMED_OPEN, response=response_data)
 
