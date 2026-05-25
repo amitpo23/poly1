@@ -320,6 +320,51 @@ class Btc5MinTimedV2Engine:
                         self.cfg.asset, label, order_amount)
             return False
 
+        # LAYER 1 GUARD (v2): pre-entry liquidity check.
+        # Operator added 2026-05-25 to prevent stuck positions.
+        # Verifies that IF this trade moves -20% adverse (SL trigger),
+        # there will be enough bid depth on our holding side to FAK-exit.
+        # Without this, the trade would enter a market guaranteed to stick.
+        try:
+            book = self.polymarket.client.get_order_book(str(token_id))
+            bids = []
+            asks = []
+            if hasattr(book, "bids"):
+                bids = [(float(b.price), float(b.size)) for b in (book.bids or [])]
+                asks = [(float(a.price), float(a.size)) for a in (book.asks or [])]
+            elif isinstance(book, dict):
+                bids = [(float(b["price"]), float(b["size"])) for b in (book.get("bids") or [])]
+                asks = [(float(a["price"]), float(a["size"])) for a in (book.get("asks") or [])]
+            best_bid = bids[0][0] if bids else 0
+            best_ask = asks[0][0] if asks else 1
+            spread = best_ask - best_bid
+            if spread > 0.10:
+                logger.info(
+                    "btc5min_timed_v2[%s/%s] LAYER1 skip: spread too wide %.4f",
+                    self.cfg.asset, label, spread,
+                )
+                return False
+            # SL trigger price (for our token, after entry)
+            if side == "BUY":
+                our_token_entry = live_price
+            else:
+                our_token_entry = max(0.01, 1.0 - live_price)
+            sl_trigger_price = our_token_entry * 0.80
+            # Bid depth AT or BELOW sl_trigger (where we'd need to sell)
+            depth_at_sl = sum(s for p, s in bids if p >= sl_trigger_price * 0.5)
+            if depth_at_sl < 2.0:
+                logger.info(
+                    "btc5min_timed_v2[%s/%s] LAYER1 skip: insufficient exit depth "
+                    "%.2f shares < 2.0 at SL zone (trigger=%.4f)",
+                    self.cfg.asset, label, depth_at_sl, sl_trigger_price,
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "btc5min_timed_v2[%s/%s] LAYER1 check failed (proceeding): %s",
+                self.cfg.asset, label, exc,
+            )
+
         recommendation = TradeRecommendation(
             price=live_price,
             size_fraction=0.0,
@@ -676,11 +721,18 @@ class Btc5MinTimedV2Daemon:
                 shares_held = float(r["size_usdc"]) / max(our_token_entry, 0.001)
             shares_held *= 0.97  # safety margin
 
+            # LAYER 2 (v2 expanded 2026-05-25): 5-level cascade catches
+            # liquidity at progressively lower prices. Each level is FAK,
+            # first match wins, others not attempted.
             cascade_prices = [
-                round(best_bid, 4),          # try best bid first
-                round(best_bid * 0.7, 4),    # 30% below if no match
-                round(max(0.02, best_bid * 0.4), 4),  # catastrophe floor
+                round(best_bid, 4),                      # L1: best bid
+                round(best_bid * 0.7, 4),                # L2: -30%
+                round(best_bid * 0.5, 4),                # L3: -50% (NEW)
+                round(max(0.02, best_bid * 0.3), 4),    # L4: -70% (NEW)
+                round(max(0.02, best_bid * 0.1), 4),    # L5: floor
             ]
+            # Dedupe (clamping may have collapsed L4/L5 to same value)
+            cascade_prices = list(dict.fromkeys(cascade_prices))
             logger.warning(
                 "btc5min_timed_v2[id=%s] SL TRIGGERED: bid=%.4f trigger=%.4f cascading FAK",
                 r["id"], best_bid, sl_trigger,
