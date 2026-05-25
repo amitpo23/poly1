@@ -362,6 +362,49 @@ class Btc5MinTimedEngine:
             # whatever mean-reverted price exists before the next big move.
             "max_hold_seconds": 120,
         })
+
+        # CRITICAL FIX (2026-05-25): place a resting LIMIT SELL at TP price
+        # IMMEDIATELY after entry. This is the HFT-style approach — instead
+        # of relying on position_manager polling to detect TP and firing a
+        # FAK (which fails on illiquid binaries), the LIMIT sits in the
+        # book and fills the moment any taker hits it.
+        # Background: Round 22 lost ~$6 because PM's FAK exits never matched.
+        # See agents/application/btc5min_timed.py docstring + commit log.
+        try:
+            # For both phase1 and phase2, we hold the token in `token_id`.
+            # Entry price for THAT token: BUY = live_price; SELL of YES =
+            # we actually hold NO, NO entry ≈ 1 - live_price.
+            if side == "BUY":
+                our_token_entry = live_price
+            else:  # SELL YES = hold NO at (1 - live_price)
+                our_token_entry = max(0.01, 1.0 - live_price)
+            shares_held = order_amount / max(our_token_entry, 0.001)
+            tp_limit_price = round(our_token_entry * (1 + tp_pct), 4)
+            # Cap at $0.99 — Polymarket clamps anyway
+            tp_limit_price = min(0.99, max(0.02, tp_limit_price))
+            tp_resp = self.polymarket.place_resting_limit(
+                token_id=token_id,
+                size_shares=shares_held,
+                limit_price=tp_limit_price,
+                side="SELL",
+            )
+            if isinstance(tp_resp, dict):
+                response_data["tp_resting_order_id"] = tp_resp.get("order_id") or tp_resp.get("orderID")
+                response_data["tp_resting_price"] = tp_limit_price
+                response_data["tp_resting_status"] = tp_resp.get("status")
+                logger.info(
+                    "btc5min_timed[%s/%s] resting TP placed: shares=%.4f @ %.4f order_id=%s",
+                    self.cfg.asset, label, shares_held, tp_limit_price,
+                    response_data.get("tp_resting_order_id"),
+                )
+        except Exception as exc:
+            logger.warning(
+                "btc5min_timed[%s/%s] resting TP placement FAILED: %s — entry stands, "
+                "position_manager FAK fallback will handle exit",
+                self.cfg.asset, label, exc,
+            )
+            response_data["tp_resting_error"] = str(exc)
+
         self.trade_log.mark(pending_id, BTC5MIN_TIMED_OPEN, response=response_data)
 
         if phase == "phase1":

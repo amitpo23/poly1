@@ -607,6 +607,75 @@ class Polymarket:
             OrderArgs(price=price, size=size, side=side, token_id=token_id)
         )
 
+    def place_resting_limit(
+        self,
+        token_id: str,
+        size_shares: float,
+        limit_price: float,
+        side: str = "SELL",
+    ) -> dict:
+        """Place a GTC (Good-Til-Cancel) limit order that REST in the book.
+
+        Added 2026-05-25 for btc5min_timed: after a market-order entry,
+        we want a limit SELL at TP price that fills the moment the
+        market touches our target — without waiting for the position_manager
+        polling cycle to detect TP and fire a FAK that may miss the
+        fleeting opportunity.
+
+        Returns the raw CLOB response. Useful fields:
+          - order_id: identifier to track / cancel later
+          - status: 'live' (resting), 'matched' (immediate fill), 'delayed'
+
+        size_shares is the number of TOKEN shares (NOT USDC). For a $1
+        position bought at $0.50, size_shares = $1 / $0.50 = 2.
+        """
+        if not self.live:
+            logger.info(
+                "place_resting_limit DRYRUN: side=%s token=%s shares=%.4f price=%.4f",
+                side, str(token_id)[:18], size_shares, limit_price,
+            )
+            return {"status": "dryrun", "order_id": f"dry_{int(time.time()*1000)}"}
+        with live_order_lock():
+            resp = self.client.create_and_post_order(
+                OrderArgs(
+                    price=limit_price,
+                    size=size_shares,
+                    side=side,
+                    token_id=str(token_id),
+                ),
+                order_type=OrderType.GTC,
+            )
+        return self._reconcile_delayed_order_response(resp)
+
+    def cancel_order(self, order_id: str) -> dict:
+        """Cancel a resting order by its CLOB order ID."""
+        if not self.live:
+            return {"status": "dryrun_cancel", "order_id": order_id}
+        try:
+            with live_order_lock():
+                resp = self.client.cancel_order(order_id)
+            return resp if isinstance(resp, dict) else {"raw": resp}
+        except Exception as exc:
+            logger.warning("cancel_order failed for %s: %s", order_id, exc)
+            return {"error": str(exc)}
+
+    def get_order_status(self, order_id: str) -> dict:
+        """Query Polymarket for the current state of a resting order.
+
+        Returns dict with at least `status` key. Statuses:
+          - 'LIVE': resting in book
+          - 'MATCHED': filled (partial or full)
+          - 'CANCELED': operator-canceled
+          - 'EXPIRED': time-expired (rare for GTC)
+        """
+        if not self.live:
+            return {"status": "dryrun"}
+        try:
+            return self.client.get_order(order_id) or {"status": "unknown"}
+        except Exception as exc:
+            logger.warning("get_order_status failed for %s: %s", order_id, exc)
+            return {"error": str(exc)}
+
     def sell_shares(
         self,
         token_id: str,
