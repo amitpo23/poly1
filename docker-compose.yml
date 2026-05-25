@@ -139,9 +139,9 @@ services:
       TZ: UTC
       RUNTIME_AGENT: btc5min_timed
       # Operator-requested time-based strategy (added 2026-05-25).
-      # Always starts in dryrun; the explicit toggle is in .env.
-      EXECUTE_BTC5MIN_TIMED: ${EXECUTE_BTC5MIN_TIMED:-false}
-      BTC5MIN_TIMED_POSITION_USDC: ${BTC5MIN_TIMED_POSITION_USDC:-0.20}
+      # EXECUTE_BTC5MIN_TIMED is read from env_file (.env.runtime)
+      # — NOT overridden here, so runtime_control's write to .env.runtime
+      # takes effect on each arm.
       BTC5MIN_TIMED_HEARTBEAT_PATH: /app/data/btc5min_timed_heartbeat
     command: ["python", "-m", "agents.application.btc5min_timed"]
     volumes:
