@@ -220,3 +220,54 @@ Round 24-mini was the first round where this infrastructure ran. The big +$0.977
 ---
 
 _Generated 2026-05-25 14:30 UTC at end of session, just before R24-mini expiry._
+
+
+---
+
+## 10. Version & Provenance
+
+**Document version:** 1.0
+**Code version:** `v0.9.0-timed-strategy-limit-orders`
+**Last git commit:** `ba940ff` (this handoff doc) → tagged for reference
+**Code snapshot:** all changes through commit `473aa7c` (resting LIMIT with takingAmount + 3% safety margin)
+**Session date:** 2026-05-25
+**Session duration:** ~09:00 UTC → 14:30 UTC
+**Rounds covered:** R14 through R24-mini (11 live arms)
+
+### Tag this session for archeology
+```bash
+git tag -a v0.9.0-timed-strategy -m "End of operator timed strategy + limit-order infra build"
+git push origin v0.9.0-timed-strategy
+```
+
+### How to reproduce R24-mini configuration
+```bash
+EXECUTE_BTC5MIN_TIMED=true python3 scripts/runtime_control.py live-hour \
+  --budget 2.0 \
+  --wallet-balance <current> \
+  --minutes 15 \
+  --max-hold-minutes 3 \
+  --max-open 2 \
+  --max-trades-per-hour 6 \
+  --agents btc5min_timed \
+  --position-size-usdc 1.00 \
+  --arm
+echo 'BTC5MIN_TIMED_POSITION_USDC="1.00"' >> deploy/.env.runtime
+docker compose up -d --force-recreate btc5min_timed
+```
+
+### Files comprising this session's deliverable
+```
+agents/application/btc5min_timed.py         (operator strategy, with limit infra)
+agents/polymarket/polymarket.py             (place_resting_limit + cancel + status)
+scripts/btc5min_timed_strategy_backtest.py  (Coinbase proxy backtest)
+docs/SESSION_2026_05_25_TIMED_STRATEGY_HANDOFF.md  (this file)
+```
+
+### Known issue at version freeze
+The `tp_resting_order_id` field in `response_json` was observed NULL for all R24-mini trades, despite the code path being deployed mid-round. Cause not yet root-caused — could be:
+1. Container force-recreate didn't pick up the latest code (verify with `git log` inside container)
+2. The 3-second settlement wait still insufficient on the actual server's blockchain latency
+3. The shares-from-response parsing has an off-by-decimal issue (the SDK may use different scale)
+
+**A 5-minute verification round next session can confirm/deny.**
