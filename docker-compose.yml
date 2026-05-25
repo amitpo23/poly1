@@ -367,6 +367,33 @@ services:
     mem_limit: 512m
     cpus: "0.5"
 
+  live-dashboard:
+    build: .
+    image: poly1:local
+    container_name: poly1-live-dashboard
+    profiles: ["dashboard", "monitoring"]
+    command: python3 scripts/dashboard_server.py --port 8090 --host 0.0.0.0
+    ports:
+      - "8090:8090"
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      DASHBOARD_DB: /app/data/trade_log.db
+      DASHBOARD_SWARM_DB: /swarm/data/swarm.db
+      DASHBOARD_RUNTIME: /app/data/runtime_control.json
+      DASHBOARD_HALT: /app/data/HALT
+      DASHBOARD_HEARTBEATS: /app/data
+      RUNTIME_AGENT: live_dashboard
+    volumes:
+      - ./data:/app/data:ro
+      - ./scripts/dashboard_server.py:/app/scripts/dashboard_server.py:ro
+      - ${SWARM_DATA_PATH:-/srv/swarm/data}:/swarm/data:ro
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: "0.2"
+
   allocator-sync:
     build: .
     image: poly1:local
