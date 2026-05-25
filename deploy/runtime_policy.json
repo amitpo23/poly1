@@ -31,6 +31,11 @@
       "compose_service": "btc5min_timed",
       "compose_profile": ""
     },
+    "btc5min_timed_v2": {
+      "execute_flag": "EXECUTE_BTC5MIN_TIMED_V2",
+      "compose_service": "btc5min_timed_v2",
+      "compose_profile": ""
+    },
     "near_resolution": {
       "execute_flag": "EXECUTE_NEAR_RESOLUTION",
       "reserve_flag": "NEAR_RESOLUTION_RESERVE_USDC",

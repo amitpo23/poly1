@@ -326,6 +326,7 @@ NEWS_SHOCK_OPEN = "news_shock_open"
 WALLET_FOLLOW_OPEN = "wallet_follow_open"
 BTC_5MIN_OPEN = "btc_5min_open"
 BTC5MIN_TIMED_OPEN = "btc5min_timed_open"
+BTC5MIN_TIMED_V2_OPEN = "btc5min_timed_v2_open"
 # Resolution-sync statuses (added 2026-05-08): written when a Polymarket
 # market resolves and on-chain CTF balance hits dust on a token we held.
 # Realized P&L is recorded in `size_usdc` as the payout (shares × $1 if won,
@@ -1284,7 +1285,7 @@ class TradeLog:
         """Like filled_positions() but includes id, ts, and response_json.
         Used by position_manager to aggregate fills + read per-position
         overrides (e.g. tp_pct_override on manual entries)."""
-        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN, BTC_5MIN_OPEN, BTC5MIN_TIMED_OPEN)
+        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN, BTC_5MIN_OPEN, BTC5MIN_TIMED_OPEN, BTC5MIN_TIMED_V2_OPEN)
         terminal_statuses = (
             "closed_take_profit", "closed_stop_loss", "closed_timeout",
             "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",
