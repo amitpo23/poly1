@@ -220,6 +220,10 @@ services:
       # pnl_events when swarm-side markets resolve. Without this, the
       # swarm sub-agents can't be defunded by realized PnL.
       - ${SWARM_DATA_PATH:-/srv/swarm/data}:/app/swarm/data
+      # trade_log.py mount: position_manager needs BTC5MIN_TIMED_OPEN
+      # status to see those positions. Without this, btc5min_timed
+      # entries never get TP/SL exit.
+      - ./agents/application/trade_log.py:/app/agents/application/trade_log.py:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/position_manager_heartbeat') < 120"]
