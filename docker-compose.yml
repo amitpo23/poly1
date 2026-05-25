@@ -389,7 +389,7 @@ services:
     volumes:
       - ./data:/app/data:ro
       - ./scripts/dashboard_server.py:/app/scripts/dashboard_server.py:ro
-      - ${SWARM_DATA_PATH:-/srv/swarm/data}:/swarm/data:ro
+      - ${SWARM_DATA_PATH:-/home/trader/swarm/data}:/swarm/data:ro
     restart: unless-stopped
     mem_limit: 128m
     cpus: "0.2"
