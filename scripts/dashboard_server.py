@@ -29,11 +29,14 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -42,6 +45,134 @@ SWARM_DB_PATH = os.environ.get("DASHBOARD_SWARM_DB", "/home/trader/swarm/data/sw
 RUNTIME_CTRL = os.environ.get("DASHBOARD_RUNTIME", "/srv/poly1/data/runtime_control.json")
 HALT_FILE = os.environ.get("DASHBOARD_HALT", "/srv/poly1/data/HALT")
 HEARTBEAT_DIR = os.environ.get("DASHBOARD_HEARTBEATS", "/srv/poly1/data")
+WALLET_ADDR = (
+    os.environ.get("POLYMARKET_PROXY_ADDRESS")
+    or os.environ.get("POLY1_PROXY_ADDRESS")
+    or os.environ.get("POLY1_WALLET")
+    or os.environ.get("POLYMARKET_DEPOSIT_WALLET")
+    or ""
+).lower()
+GAMMA_URL = "https://gamma-api.polymarket.com"
+DATA_API_URL = "https://data-api.polymarket.com"
+CLOB_URL = "https://clob.polymarket.com"
+
+
+class TTLCache:
+    """Simple thread-safe TTL cache with stale-on-error fallback."""
+    def __init__(self):
+        self._data: dict = {}
+        self._lock = threading.Lock()
+
+    def get_or_fetch(self, key: str, ttl: float, fetch_fn):
+        now = time.time()
+        with self._lock:
+            entry = self._data.get(key)
+            if entry and entry["expires"] > now:
+                return entry["value"]
+        try:
+            value = fetch_fn()
+            with self._lock:
+                self._data[key] = {"value": value, "expires": now + ttl, "stale": False}
+            return value
+        except Exception as exc:
+            with self._lock:
+                if key in self._data:
+                    # Serve stale data with a marker
+                    stale = dict(self._data[key]["value"]) if isinstance(self._data[key]["value"], dict) else self._data[key]["value"]
+                    if isinstance(stale, dict):
+                        stale["_stale"] = True
+                        stale["_error"] = str(exc)[:80]
+                    return stale
+            return {"_error": str(exc)[:80]}
+
+
+CACHE = TTLCache()
+
+
+def _http_get_json(url: str, timeout: float = 4.0) -> dict | list:
+    req = urllib.request.Request(url, headers={"User-Agent": "poly1-dashboard/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read()
+        return json.loads(body.decode("utf-8"))
+
+
+def fetch_markets() -> list:
+    """Fetch active markets from Gamma API, focused on crypto 5min / daily."""
+    params = urlencode({
+        "active": "true",
+        "closed": "false",
+        "limit": "20",
+        "order": "volume24hr",
+        "ascending": "false",
+    })
+    url = f"{GAMMA_URL}/markets?{params}"
+    raw = _http_get_json(url)
+    out = []
+    for m in raw if isinstance(raw, list) else []:
+        try:
+            outcomes = json.loads(m.get("outcomes") or "[]")
+            prices = json.loads(m.get("outcomePrices") or "[]")
+            token_ids = json.loads(m.get("clobTokenIds") or "[]")
+        except Exception:
+            outcomes, prices, token_ids = [], [], []
+        out.append({
+            "question": (m.get("question") or "")[:80],
+            "slug": m.get("slug"),
+            "volume_24h": round(float(m.get("volume24hr") or 0), 2),
+            "liquidity": round(float(m.get("liquidity") or 0), 2),
+            "outcomes": outcomes,
+            "prices": [round(float(p), 4) for p in prices] if prices else [],
+            "token_ids": token_ids[:2] if token_ids else [],
+            "end_date": m.get("endDate"),
+        })
+    return out
+
+
+def fetch_onchain_positions() -> list:
+    """Fetch on-chain CTF positions from Polymarket Data API."""
+    if not WALLET_ADDR:
+        return [{"_error": "no wallet address configured"}]
+    params = urlencode({"user": WALLET_ADDR, "sizeThreshold": "0.01"})
+    url = f"{DATA_API_URL}/positions?{params}"
+    raw = _http_get_json(url, timeout=6.0)
+    out = []
+    for p in raw if isinstance(raw, list) else []:
+        out.append({
+            "title": (p.get("title") or "")[:60],
+            "outcome": p.get("outcome"),
+            "size": round(float(p.get("size") or 0), 3),
+            "avg_price": round(float(p.get("avgPrice") or 0), 4),
+            "cur_price": round(float(p.get("curPrice") or 0), 4),
+            "value": round(float(p.get("currentValue") or 0), 3),
+            "cashPnl": round(float(p.get("cashPnl") or 0), 3),
+            "percentPnl": round(float(p.get("percentPnl") or 0), 2),
+            "redeemable": p.get("redeemable", False),
+            "asset": (p.get("asset") or "")[:20],
+        })
+    out.sort(key=lambda r: -abs(r.get("value", 0)))
+    return out
+
+
+def fetch_orderbook(token_id: str) -> dict:
+    """Fetch the order book for a CLOB token."""
+    url = f"{CLOB_URL}/book?token_id={token_id}"
+    raw = _http_get_json(url, timeout=4.0)
+    bids = raw.get("bids", []) if isinstance(raw, dict) else []
+    asks = raw.get("asks", []) if isinstance(raw, dict) else []
+    # Each level: {"price": "0.95", "size": "20"}
+    pb = [{"price": float(b["price"]), "size": float(b["size"])} for b in bids[:5]]
+    pa = [{"price": float(a["price"]), "size": float(a["size"])} for a in asks[:5]]
+    pb.sort(key=lambda x: -x["price"])  # highest bid first
+    pa.sort(key=lambda x: x["price"])   # lowest ask first
+    best_bid = pb[0]["price"] if pb else None
+    best_ask = pa[0]["price"] if pa else None
+    return {
+        "bids": pb,
+        "asks": pa,
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread": round(best_ask - best_bid, 4) if (best_bid is not None and best_ask is not None) else None,
+    }
 
 
 def _attribute(cycle_id: str) -> str:
@@ -243,6 +374,35 @@ def collect_state() -> dict:
     except Exception as exc:
         out["swarm"] = {"error": str(exc)}
 
+    # Level A: live Polymarket markets (cached 60s)
+    out["markets"] = CACHE.get_or_fetch("markets", 60.0, fetch_markets)
+
+    # Level B: on-chain CTF positions (cached 30s)
+    out["onchain"] = CACHE.get_or_fetch("onchain", 30.0, fetch_onchain_positions)
+
+    # Level C: order books for tokens we have open positions in (cached 15s each)
+    token_ids = list({p["token_id"] for p in [
+        # Need to capture token_id during open_positions loop above — re-query briefly
+    ] if p.get("token_id")})
+    # Simpler: re-derive token_ids from open_rows by hitting DB again with read mode
+    try:
+        with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=3) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT t1.token_id FROM trades t1 WHERE t1.status IN "
+                "('filled','btc_5min_open','btc5min_timed_open','btc5min_timed_v2_open') "
+                "AND NOT EXISTS (SELECT 1 FROM trades t2 WHERE t2.token_id=t1.token_id "
+                "AND t2.id>t1.id AND (t2.status LIKE 'closed_%' OR t2.status LIKE 'resolved_%')) "
+                "LIMIT 8"
+            ).fetchall()
+            token_ids = [r[0] for r in rows if r[0]]
+    except Exception:
+        token_ids = []
+
+    books = {}
+    for tid in token_ids:
+        books[tid] = CACHE.get_or_fetch(f"book:{tid}", 15.0, lambda tid=tid: fetch_orderbook(tid))
+    out["orderbooks"] = books
+
     return out
 
 
@@ -275,6 +435,14 @@ DASHBOARD_HTML = """<!doctype html>
   .stale { color: #f87171; }
   .fresh { color: #34d399; }
   #refresh-status { font-size: 11px; color: #9ca3af; }
+  .books-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .book { border: 1px solid #2d3741; border-radius: 6px; padding: 8px; background: #131820; font-family: ui-monospace, monospace; font-size: 11px; }
+  .book-title { font-weight: 600; color: #9ca3af; margin-bottom: 6px; font-size: 10px; word-break: break-all; }
+  .book-side { display: flex; justify-content: space-between; padding: 2px 4px; }
+  .book-bid { color: #34d399; }
+  .book-ask { color: #f87171; }
+  .book-spread { background: #1f2937; padding: 4px; margin: 4px 0; text-align: center; color: #fbbf24; }
+  .stale-banner { background: #92400e; color: #fef3c7; padding: 2px 6px; border-radius: 3px; font-size: 10px; display: inline-block; }
 </style>
 </head><body>
 <h1>poly1 live dashboard <span id="refresh-status"></span></h1>
@@ -317,6 +485,26 @@ DASHBOARD_HTML = """<!doctype html>
   <div class="card">
     <h2>Swarm (dryrun)</h2>
     <div id="swarm"></div>
+  </div>
+
+  <div class="card full">
+    <h2>📊 Live Polymarket markets (top by 24h volume)</h2>
+    <table id="markets-tbl"><thead><tr>
+      <th>Question</th><th>YES</th><th>NO</th><th>24h vol</th><th>liquidity</th><th>ends</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card full">
+    <h2>🔗 On-chain CTF positions (live from Polymarket)</h2>
+    <div class="label" id="onchain-summary"></div>
+    <table id="onchain-tbl"><thead><tr>
+      <th>Market</th><th>Outcome</th><th>Size</th><th>Avg</th><th>Now</th><th>Value</th><th>PnL $</th><th>PnL %</th><th>Redeem?</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card full">
+    <h2>📖 Live order books (open-position tokens)</h2>
+    <div id="books" class="books-grid"></div>
   </div>
 </div>
 
@@ -420,6 +608,75 @@ async function refresh() {
       '<div>fills: ' + (s.fills !== undefined ? s.fills : '—') + '</div>' +
       '<div>pnl_events: ' + (s.pnl_events !== undefined ? s.pnl_events : '—') + '</div>' +
       '<div>pending: ' + (s.pending_orders ? Object.entries(s.pending_orders).map(([k,v]) => k+':'+v).join(', ') : '—') + '</div>';
+
+    // Live markets
+    const mktBody = document.getElementById('markets-tbl').querySelector('tbody');
+    mktBody.innerHTML = '';
+    const markets = Array.isArray(d.markets) ? d.markets : [];
+    markets.forEach(m => {
+      const yes = (m.prices && m.prices[0]) || '—';
+      const no = (m.prices && m.prices[1]) || '—';
+      const ends = m.end_date ? new Date(m.end_date).toLocaleString() : '—';
+      const row = document.createElement('tr');
+      row.innerHTML =
+        '<td>' + (m.question || '—') + '</td>' +
+        '<td class="pos">' + yes + '</td>' +
+        '<td class="neg">' + no + '</td>' +
+        '<td>$' + (m.volume_24h || 0).toLocaleString() + '</td>' +
+        '<td>$' + (m.liquidity || 0).toLocaleString() + '</td>' +
+        '<td>' + ends + '</td>';
+      mktBody.appendChild(row);
+    });
+
+    // On-chain positions
+    const ocBody = document.getElementById('onchain-tbl').querySelector('tbody');
+    ocBody.innerHTML = '';
+    const oc = Array.isArray(d.onchain) ? d.onchain : [];
+    let ocTotalValue = 0, ocTotalPnl = 0;
+    oc.forEach(p => {
+      ocTotalValue += p.value || 0;
+      ocTotalPnl += p.cashPnl || 0;
+      const row = document.createElement('tr');
+      const pnlCls = (p.cashPnl || 0) >= 0 ? 'pos' : 'neg';
+      row.innerHTML =
+        '<td>' + (p.title || '—') + '</td>' +
+        '<td>' + (p.outcome || '—') + '</td>' +
+        '<td>' + (p.size || 0) + '</td>' +
+        '<td>' + (p.avg_price || '—') + '</td>' +
+        '<td>' + (p.cur_price || '—') + '</td>' +
+        '<td>$' + (p.value || 0).toFixed(3) + '</td>' +
+        '<td class="' + pnlCls + '">$' + (p.cashPnl || 0).toFixed(3) + '</td>' +
+        '<td class="' + pnlCls + '">' + (p.percentPnl || 0).toFixed(1) + '%</td>' +
+        '<td>' + (p.redeemable ? '✅' : '—') + '</td>';
+      ocBody.appendChild(row);
+    });
+    document.getElementById('onchain-summary').textContent =
+      'positions: ' + oc.length + ' · total value: $' + ocTotalValue.toFixed(3) +
+      ' · total unrealized PnL: $' + ocTotalPnl.toFixed(3);
+
+    // Order books
+    const booksDiv = document.getElementById('books');
+    booksDiv.innerHTML = '';
+    const books = d.orderbooks || {};
+    Object.entries(books).forEach(([tid, b]) => {
+      const box = document.createElement('div');
+      box.className = 'book';
+      let html = '<div class="book-title">' + tid.slice(0, 16) + '…</div>';
+      if (b._error) {
+        html += '<div class="neg">err: ' + b._error + '</div>';
+      } else {
+        // asks descending (lowest at bottom near spread)
+        (b.asks || []).slice().reverse().forEach(a => {
+          html += '<div class="book-side book-ask"><span>' + a.price + '</span><span>' + a.size + '</span></div>';
+        });
+        html += '<div class="book-spread">spread ' + (b.spread !== null ? b.spread : '—') + '</div>';
+        (b.bids || []).forEach(bd => {
+          html += '<div class="book-side book-bid"><span>' + bd.price + '</span><span>' + bd.size + '</span></div>';
+        });
+      }
+      box.innerHTML = html;
+      booksDiv.appendChild(box);
+    });
 
   } catch (e) {
     document.getElementById('refresh-status').textContent = '· error: ' + e.message;
