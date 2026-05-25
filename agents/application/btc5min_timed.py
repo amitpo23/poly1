@@ -211,27 +211,166 @@ class Btc5MinTimedEngine:
         else:
             return False
 
+        # Resolve current 5-min market via Gamma
+        market_doc = self._resolve_market(period_ts, slug)
+        if market_doc is None:
+            logger.info("btc5min_timed[%s/%s] skip: no market for %s",
+                        self.cfg.asset, label, slug)
+            return False
+        token_ids = market_doc.get("token_ids", [])
+        if len(token_ids) < 2:
+            logger.info("btc5min_timed[%s/%s] skip: missing tokens",
+                        self.cfg.asset, label)
+            return False
+        # token_ids[0] = YES (UP); token_ids[1] = NO (DOWN)
+        token_id = token_ids[0] if side == "BUY" else token_ids[1]
+
         if not self.cfg.execute:
             logger.info(
-                "btc5min_timed[%s/%s] DRYRUN entry: side=%s tp=%.0f%% sl=%.0f%%",
-                self.cfg.asset, label, side, tp_pct * 100, sl_pct * 100,
+                "btc5min_timed[%s/%s] DRYRUN: side=%s token=%s tp=%.0f%% sl=%.0f%%",
+                self.cfg.asset, label, side, str(token_id)[:18],
+                tp_pct * 100, sl_pct * 100,
             )
             if phase == "phase1":
                 self._cycle.phase1_fired = True
             else:
                 self._cycle.phase2_fired = True
+            self._daily.trades_today += 1
             return True
 
-        # Live execution path — fetch market doc, place order, write trade row.
-        # NOT IMPLEMENTED in this scaffolding — real implementation requires
-        # market resolution + order placement + per-position TP/SL override
-        # via response_json. The operator must wire this before EXECUTE=true.
-        logger.warning(
-            "btc5min_timed[%s/%s] LIVE entry requested but execution not implemented. "
-            "Set EXECUTE_BTC5MIN_TIMED=false until live path is reviewed.",
-            self.cfg.asset, label,
+        return self._fire_live(
+            phase=phase, side=side, label=label, token_id=token_id,
+            market_doc=market_doc, tp_pct=tp_pct, sl_pct=sl_pct,
+            period_ts=period_ts,
         )
-        return False
+
+    def _resolve_market(self, period_ts: int, slug: str):
+        """Fetch the current 5-min market from Gamma API."""
+        try:
+            import urllib.request
+            import json as _json
+            import ast
+            req = urllib.request.Request(
+                f"https://gamma-api.polymarket.com/markets?slug={slug}",
+                headers={"User-Agent": "poly1-btc5min-timed/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = _json.loads(resp.read())
+        except Exception as exc:
+            logger.warning("btc5min_timed: market resolve failed: %s", exc)
+            return None
+        if not data:
+            return None
+        m = data[0]
+        if not m.get("active", True) or m.get("closed", False):
+            return None
+        try:
+            tokens = ast.literal_eval(m.get("clobTokenIds") or "[]")
+            outcomes = ast.literal_eval(m.get("outcomes") or '["Yes","No"]')
+        except Exception:
+            return None
+
+        class _Doc:
+            pass
+        doc = _Doc()
+        doc.dict = lambda: {
+            "metadata": {
+                "id": m["id"],
+                "outcomes": str(outcomes),
+                "clob_token_ids": str(tokens),
+                "outcome_prices": m.get("outcomePrices", '["0.5","0.5"]'),
+            }
+        }
+        return {
+            "market_id": str(m["id"]),
+            "token_ids": [str(t) for t in tokens],
+            "outcomes": outcomes,
+            "doc": doc,
+        }
+
+    def _fire_live(self, *, phase, side, label, token_id, market_doc,
+                   tp_pct, sl_pct, period_ts):
+        """Place a real Polymarket market order with TP/SL override."""
+        from agents.application.trade_log import BTC5MIN_TIMED_OPEN
+        from agents.utils.objects import TradeRecommendation
+
+        market_id = market_doc["market_id"]
+        if self.trade_log.has_filled_position_for_market(market_id):
+            logger.info("btc5min_timed[%s/%s] skip: already holds %s",
+                        self.cfg.asset, label, market_id)
+            return False
+
+        try:
+            live_price, fillable_usdc, _avg = (
+                self.polymarket._fillable_market_buy(
+                    token_id, self.cfg.position_usdc,
+                )
+            )
+        except Exception as exc:
+            logger.info("btc5min_timed[%s/%s] skip: book err: %s",
+                        self.cfg.asset, label, exc)
+            return False
+        if live_price <= 0 or live_price >= 1:
+            logger.info("btc5min_timed[%s/%s] skip: bad price %.4f",
+                        self.cfg.asset, label, live_price)
+            return False
+        order_amount = min(self.cfg.position_usdc, fillable_usdc)
+        if order_amount < 0.10:
+            logger.info("btc5min_timed[%s/%s] skip: tiny fillable $%.4f",
+                        self.cfg.asset, label, order_amount)
+            return False
+
+        recommendation = TradeRecommendation(
+            price=live_price,
+            size_fraction=0.0,
+            side=side,
+            confidence=0.50,
+            amount_usdc=order_amount,
+        )
+        cycle_id = f"btc5min_timed:{phase}:{period_ts}"
+        pending_id = self.trade_log.insert_pending(
+            cycle_id=cycle_id, market_id=market_id, token_id=token_id,
+            side=side, price=live_price, size_usdc=order_amount,
+            confidence=0.50,
+        )
+        try:
+            response = self.polymarket.execute_market_order(
+                (market_doc["doc"], 0.0), recommendation,
+            )
+        except Exception as exc:
+            self.trade_log.mark(pending_id, "failed",
+                                error=f"execute_market_order raised: {exc}")
+            logger.warning("btc5min_timed[%s/%s] live entry failed: %s",
+                           self.cfg.asset, label, exc)
+            return False
+        if not response or response.get("status") not in ("matched", "filled"):
+            self.trade_log.mark(pending_id, "failed",
+                                response=response, error="entry not matched")
+            return False
+
+        response_data = dict(response) if isinstance(response, dict) else {}
+        response_data.update({
+            "phase": phase,
+            "label": label,
+            "side": side,
+            "tp_pct_override": tp_pct,
+            "sl_pct_override": sl_pct,
+            "max_hold_seconds": 270,
+        })
+        self.trade_log.mark(pending_id, BTC5MIN_TIMED_OPEN, response=response_data)
+
+        if phase == "phase1":
+            self._cycle.phase1_fired = True
+        else:
+            self._cycle.phase2_fired = True
+        self._daily.trades_today += 1
+
+        logger.info(
+            "btc5min_timed[%s/%s] LIVE ENTERED side=%s price=%.4f size=$%.2f tp=%.0f%% sl=%.0f%%",
+            self.cfg.asset, label, side, live_price, order_amount,
+            tp_pct * 100, sl_pct * 100,
+        )
+        return True
 
 
 class Btc5MinTimedDaemon:

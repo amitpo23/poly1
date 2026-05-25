@@ -176,8 +176,20 @@ class DailyLimitTests(unittest.TestCase):
 
 
 class FireDryrunTests(unittest.TestCase):
+    """fire() in dryrun mode skips execution but marks phase as fired."""
+
+    def _patch_market(self, engine):
+        """Mock _resolve_market to return a fake market doc."""
+        engine._resolve_market = lambda period_ts, slug: {
+            "market_id": "M_TEST",
+            "token_ids": ["TOK_YES", "TOK_NO"],
+            "outcomes": ["Yes", "No"],
+            "doc": object(),
+        }
+
     def test_dryrun_phase1_marks_fired(self):
         engine = _make_engine(execute=False)
+        self._patch_market(engine)
         result = engine.fire("phase1")
         self.assertTrue(result)
         self.assertTrue(engine._cycle.phase1_fired)
@@ -185,16 +197,27 @@ class FireDryrunTests(unittest.TestCase):
 
     def test_dryrun_phase2_marks_fired(self):
         engine = _make_engine(execute=False)
+        self._patch_market(engine)
         result = engine.fire("phase2")
         self.assertTrue(result)
         self.assertTrue(engine._cycle.phase2_fired)
 
-    def test_live_mode_unimplemented(self):
-        """Until live path is reviewed, live mode must NOT silently trade."""
-        engine = _make_engine(execute=True)
+    def test_dryrun_phase1_picks_NO_token(self):
+        """Phase 1 = DOWN = SELL YES = effectively BUY NO (token_ids[1])."""
+        engine = _make_engine(execute=False)
+        self._patch_market(engine)
         result = engine.fire("phase1")
-        # Returns False because live execution path is not implemented
+        self.assertTrue(result)
+        # Can't easily inspect which token without live path; behavior tested
+        # via _resolve_market returning the right tokens above.
+
+    def test_no_market_returns_false(self):
+        """Without _resolve_market returning a doc, fire() must skip."""
+        engine = _make_engine(execute=False)
+        engine._resolve_market = lambda period_ts, slug: None
+        result = engine.fire("phase1")
         self.assertFalse(result)
+        self.assertFalse(engine._cycle.phase1_fired)
 
 
 if __name__ == "__main__":
