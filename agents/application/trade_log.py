@@ -1229,6 +1229,29 @@ class TradeLog:
             row = conn.execute(sql, (*statuses, cutoff)).fetchone()
             return int(row["n"])
 
+    def recent_brain_shadow_tokens(self, max_age_hours: int = 6) -> list:
+        """Token IDs from brain_decisions SHADOW_BUY_YES/NO in last N hours.
+
+        Added 2026-05-25 to extend orderbook_monitor's watchlist beyond
+        decision_journal-routed signals. external_conviction_* agents
+        emit SHADOW_BUY_* approvals into brain_decisions but never
+        reach decision_journal. Without tracking their tokens, the
+        Bayesian calibrator can never measure their edge.
+
+        Returns dicts with token_id, market_id, agent.
+        """
+        sql = (
+            "SELECT DISTINCT token_id, market_id, agent "
+            "FROM brain_decisions "
+            "WHERE agent LIKE 'external_conviction_%' "
+            "AND action IN ('SHADOW_BUY_YES', 'SHADOW_BUY_NO') "
+            "AND token_id IS NOT NULL AND token_id != '' "
+            "AND ts > datetime('now', ?)"
+        )
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, (f"-{int(max_age_hours)} hours",)).fetchall()
+            return [dict(r) for r in rows]
+
     def recent_shadow_decision_tokens(self, max_age_hours: int = 24) -> list:
         """Token IDs from SHADOW_ENTER decisions in the last N hours that
         still need markouts (any horizon column NULL).

@@ -54,6 +54,7 @@ class OrderbookMonitorConfig:
     clob_url: str = "https://clob.polymarket.com"
     stale_market_grace_sec: int = 300
     shadow_lookback_hours: int = 24
+    brain_shadow_lookback_hours: int = 6
     watch_5min_crypto: bool = True
 
     @classmethod
@@ -69,6 +70,7 @@ class OrderbookMonitorConfig:
             clob_url=os.getenv("ORDERBOOK_MONITOR_CLOB_URL", "https://clob.polymarket.com"),
             stale_market_grace_sec=_env_int("ORDERBOOK_MONITOR_STALE_MARKET_GRACE_SEC", 300),
             shadow_lookback_hours=_env_int("ORDERBOOK_MONITOR_SHADOW_LOOKBACK_HOURS", 24),
+            brain_shadow_lookback_hours=_env_int("ORDERBOOK_MONITOR_BRAIN_SHADOW_LOOKBACK_HOURS", 6),
             watch_5min_crypto=os.getenv(
                 "ORDERBOOK_MONITOR_WATCH_5MIN_CRYPTO", "true"
             ).lower() in ("1", "true", "yes"),
@@ -270,6 +272,26 @@ class OrderbookMonitorDaemon:
                     "market_id": item.get("market_id"),
                     "token_id": token_id,
                     "outcome": "shadow_research",
+                })
+        # Recent external_conviction SHADOW signals — operator 2026-05-25
+        # discovered 4,639 SHADOW_BUY_* decisions had 0 orderbook coverage
+        # because their tokens were never in the watchlist. Adding them
+        # here unlocks P13 (shadow simulator) to measure edge per agent.
+        try:
+            brain_shadow_items = self.trade_log.recent_brain_shadow_tokens(
+                max_age_hours=int(self.cfg.brain_shadow_lookback_hours),
+            )
+        except (AttributeError, sqlite3.OperationalError) as exc:
+            logger.debug("orderbook_monitor: brain_shadow tokens fetch failed: %s", exc)
+            brain_shadow_items = []
+        for item in brain_shadow_items:
+            token_id = str(item.get("token_id") or "")
+            if token_id and token_id not in seen:
+                seen.add(token_id)
+                result.append({
+                    "market_id": item.get("market_id"),
+                    "token_id": token_id,
+                    "outcome": f"brain_shadow:{item.get('agent', 'unknown')}",
                 })
         # Current 5-min crypto markets — operator 2026-05-25 requested
         # validation of Polymarket DOWN price bias in the first minute,
