@@ -146,6 +146,10 @@ services:
     command: ["python", "-m", "agents.application.btc5min_timed"]
     volumes:
       - ./data:/app/data
+      # Mount the live code so the agent picks up the new module without
+      # requiring a full image rebuild (which the server lacked disk for
+      # on 2026-05-25). The :ro flag keeps the host file immutable.
+      - ./agents/application/btc5min_timed.py:/app/agents/application/btc5min_timed.py:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/btc5min_timed_heartbeat') < 30"]
