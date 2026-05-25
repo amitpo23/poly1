@@ -685,7 +685,7 @@ class Btc5MinTimedV2Daemon:
                 "btc5min_timed_v2[id=%s] SL TRIGGERED: bid=%.4f trigger=%.4f cascading FAK",
                 r["id"], best_bid, sl_trigger,
             )
-            from py_clob_client.clob_types import OrderArgs, OrderType
+            from py_clob_client_v2.clob_types import OrderArgs, OrderType
             for level, price in enumerate(cascade_prices, 1):
                 try:
                     with __import__("agents.polymarket.polymarket", fromlist=["live_order_lock"]).live_order_lock():
