@@ -512,16 +512,19 @@ class Btc5MinEngine:
             min_winrate=self.cfg.min_universe_winrate,
             require_top_rank=True,
         ):
-            logger.info(
-                "btc_5min: skip — %s not in focused top universe >= %.2f",
-                slug,
-                self.cfg.min_universe_winrate,
+            self._log_skip(
+                f"universe_top_required slug={slug} "
+                f"min_wr={self.cfg.min_universe_winrate:.2f}",
+                period_ts=period_ts,
             )
             return False
 
         market_doc = self._resolve_current_5min_market(period_ts)
         if market_doc is None:
-            logger.info("btc_5min: no market found for period %d", period_ts)
+            self._log_skip(
+                f"market_doc_missing period={period_ts} slug={slug}",
+                period_ts=period_ts,
+            )
             return False
 
         if self.cfg.straddle_enabled:

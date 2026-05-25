@@ -1202,8 +1202,19 @@ class ScannerExecutor:
             return 0.0
         return remaining
 
+    # Reasons that should NOT trigger market quarantine. Adversarial
+    # review 2026-05-25 #5: bayesian_edge_below_threshold is a function
+    # of calibration data, not market quality. Quarantining the market
+    # blocks ALL agents (incl. future re-evaluation when calibration
+    # updates) for 1h after 5 rejects. Calibration-based rejects should
+    # let the market be re-evaluated naturally as the data evolves.
+    _QUARANTINE_EXEMPT_REASONS = frozenset({
+        "market_recent_reject_quarantine",
+        "bayesian_edge_below_threshold",
+    })
+
     def _remember_reject(self, market_id: str, reason: str) -> None:
-        if reason == "market_recent_reject_quarantine":
+        if reason in self._QUARANTINE_EXEMPT_REASONS:
             return
         threshold = int(self.cfg.repeat_reject_quarantine_threshold or 0)
         if threshold <= 0:

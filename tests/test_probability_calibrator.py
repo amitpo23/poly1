@@ -190,6 +190,92 @@ class CalibrateEndToEndTests(unittest.TestCase):
         self.assertEqual(stat.losses, 4)
         self.assertAlmostEqual(stat.winrate, 0.6, places=2)
 
+    def test_3way_segmentation_exposes_asymmetric_edge(self):
+        """Added 2026-05-25 after empirical finding: per_source_band
+        aggregates BUY+SELL and can hide a positive-EV BUY subset
+        inside a negative aggregate. per_source_band_action exposes it.
+        """
+        # 7 alphainsider BUY @ 0.55 closes: 5 wins, 2 losses (clearly +EV)
+        for i in range(5):
+            _add_decision(
+                self.conn, self.now - timedelta(minutes=30 + i),
+                f"BW{i}", f"BWT{i}", "BUY", "alphainsider_proven",
+                entry_price=0.55,
+            )
+            _add_close(
+                self.conn, self.now - timedelta(minutes=10 + i),
+                f"BW{i}", f"BWT{i}", "closed_take_profit",
+            )
+        for i in range(2):
+            _add_decision(
+                self.conn, self.now - timedelta(minutes=40 + i),
+                f"BL{i}", f"BLT{i}", "BUY", "alphainsider_proven",
+                entry_price=0.55,
+            )
+            _add_close(
+                self.conn, self.now - timedelta(minutes=20 + i),
+                f"BL{i}", f"BLT{i}", "closed_stop_loss",
+            )
+        # 5 alphainsider SELL @ 0.55 closes: 1 win, 4 losses (clearly -EV)
+        _add_decision(
+            self.conn, self.now - timedelta(minutes=50),
+            "SW1", "SWT1", "SELL", "alphainsider_proven",
+            entry_price=0.55,
+        )
+        _add_close(
+            self.conn, self.now - timedelta(minutes=15),
+            "SW1", "SWT1", "closed_take_profit",
+        )
+        for i in range(4):
+            _add_decision(
+                self.conn, self.now - timedelta(minutes=55 + i),
+                f"SL{i}", f"SLT{i}", "SELL", "alphainsider_proven",
+                entry_price=0.55,
+            )
+            _add_close(
+                self.conn, self.now - timedelta(minutes=25 + i),
+                f"SL{i}", f"SLT{i}", "closed_stop_loss",
+            )
+        self.conn.commit()
+        cal = calibrate(self.db, days=7)
+        # Aggregate per_source_band: 6 wins / 12 total = 50%
+        agg = lookup_winrate(
+            cal, signal_source="alphainsider_proven",
+            price_band="0.55-0.64", min_samples=5,
+            action=None,
+        )
+        self.assertIsNotNone(agg)
+        self.assertEqual(agg.wins + agg.losses, 12)
+        # 3-way lookup for BUY only: 5/7 = ~71%
+        buy_stat = lookup_winrate(
+            cal, signal_source="alphainsider_proven",
+            price_band="0.55-0.64", action="BUY", min_samples=5,
+        )
+        self.assertIsNotNone(buy_stat)
+        self.assertEqual(buy_stat.wins, 5)
+        self.assertEqual(buy_stat.losses, 2)
+        self.assertAlmostEqual(buy_stat.winrate, 5/7, places=2)
+        # The 3-way must be DIFFERENT from the aggregate — that's the
+        # whole point of the new dimension.
+        self.assertNotEqual(buy_stat.winrate, agg.winrate)
+
+    def test_per_source_band_action_in_json(self):
+        """Verify calibrate() output includes the new top-level key."""
+        for i in range(5):
+            _add_decision(
+                self.conn, self.now - timedelta(minutes=30 + i),
+                f"X{i}", f"XT{i}", "BUY", "src1", entry_price=0.45,
+            )
+            _add_close(
+                self.conn, self.now - timedelta(minutes=10 + i),
+                f"X{i}", f"XT{i}", "closed_take_profit",
+            )
+        self.conn.commit()
+        cal = calibrate(self.db, days=7)
+        self.assertIn("per_source_band_action", cal)
+        keys = [e["key"] for e in cal["per_source_band_action"]]
+        self.assertIn("src1|0.40-0.49|BUY", keys)
+
     def test_lookup_returns_none_below_min_samples(self):
         _add_decision(
             self.conn, self.now - timedelta(minutes=30),

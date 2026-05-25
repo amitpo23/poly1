@@ -565,6 +565,12 @@ class ResolutionSync:
                 "total_cost_usdc": round(total_cost, 4),
                 "payout_usdc": round(payout, 4),
                 "realized_pnl_usdc": round(pnl, 4),
+                # Canonical field name read by probability_calibrator and
+                # multi_pipeline_calibrator. Without this, resolved_*
+                # trades have NULL pnl_usdc_real → silently excluded
+                # from EV calibration. Discovered in adversarial review
+                # 2026-05-25.
+                "pnl_usdc_real": round(pnl, 4),
             },
         )
         logger.info(

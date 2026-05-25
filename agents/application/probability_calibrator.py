@@ -283,6 +283,11 @@ def calibrate(db_path: str, *, days: int = 30, max_age_hours: int = 48) -> dict:
         per_action: dict[str, list[float]] = {}
         per_band: dict[str, list[float]] = {}
         per_source_band: dict[str, list[float]] = {}
+        # 3-way segmentation added 2026-05-25 after empirical finding:
+        # per_source_band aggregates BUY+SELL, hiding asymmetric edges.
+        # Example: alphainsider × 0.40-0.49 = -EV aggregate, but BUY
+        # subset is +$0.040/trade (n=22). 3-way exposes this.
+        per_source_band_action: dict[str, list[float]] = {}
         matched = 0
         unmatched = 0
         for close in closes:
@@ -314,6 +319,7 @@ def calibrate(db_path: str, *, days: int = 30, max_age_hours: int = 48) -> dict:
                 (per_action, action),
                 (per_band, band),
                 (per_source_band, f"{source}|{band}"),
+                (per_source_band_action, f"{source}|{band}|{action}"),
             ):
                 # [wins, losses, sum_win_pnl, sum_loss_pnl]
                 bucket.setdefault(key, [0, 0, 0.0, 0.0])
@@ -348,6 +354,9 @@ def calibrate(db_path: str, *, days: int = 30, max_age_hours: int = 48) -> dict:
         "per_action": _build(per_action, "action"),
         "per_price_band": _build(per_band, "price_band"),
         "per_source_band": _build(per_source_band, "source|band"),
+        "per_source_band_action": _build(
+            per_source_band_action, "source|band|action"
+        ),
     }
 
 
@@ -379,6 +388,17 @@ def lookup_winrate(
                 )
         return None
 
+    # Most-specific: source × band × action (3-way, added 2026-05-25)
+    # Reveals asymmetric edges that get aggregated away in source|band.
+    # The per_source_band_action key may not exist in older calibration
+    # JSON files — guard with `.get()` for backward compat.
+    if signal_source and price_band and action:
+        s = _find(
+            calibration.get("per_source_band_action", []),
+            f"{signal_source}|{price_band}|{action}",
+        )
+        if s:
+            return s
     if signal_source and price_band:
         s = _find(calibration["per_source_band"], f"{signal_source}|{price_band}")
         if s:
