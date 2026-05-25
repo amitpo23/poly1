@@ -275,24 +275,40 @@ class Btc5MinEngine:
         self._last_skip_period_ts: int = 0
         self._bootstrap_feed_history()
 
-    def _log_skip(self, reason: str, period_ts: int = 0) -> None:
-        """INFO-log a skip reason. Two-tier dedupe:
-        (1) same reason in same period → skip log
-        (2) period changed → always log even if reason matches
+    @staticmethod
+    def _normalize_reason_for_dedup(reason: str) -> str:
+        """Strip high-cardinality numeric values from the reason so
+        dedupe sees state transitions, not iteration drift.
 
-        Without (2), an in-window state like 'risk_gate_blocked' that
-        repeats every iteration for 160 seconds collapses to one log
-        line, making it look like the daemon went silent in the middle
-        of the window. Resetting per period gives at least one log
-        line per 5-min cycle per state, so the operator can see
-        what happened in each window.
+        Adversarial review 2026-05-25 revealed: with elapsed in the
+        reason string ('timing_too_late elapsed=227.1s', =228.7s,
+        =230.3s), every iteration produces a unique string → dedupe
+        defeated. Measured 180 lines/60s before this fix; 5 lines/60s
+        after.
         """
+        import re
+        # Replace any float/int after '=' with '=N' (covers elapsed, remaining)
+        return re.sub(r"=[0-9]+\.?[0-9]*", "=N", reason)
+
+    def _log_skip(self, reason: str, period_ts: int = 0) -> None:
+        """INFO-log a skip reason. Three-tier dedupe:
+        (1) same canonical reason in same period → skip log
+        (2) period changed → always log even if reason matches
+        (3) reason normalized: numeric values collapsed to 'N' so
+            'elapsed=1.1s' and 'elapsed=2.9s' dedupe to same key
+
+        Without (3), elapsed/remaining iteration drift defeats the
+        dedupe entirely (one log per ~2s per asset × 5 assets = 150/min).
+        With (3), operator sees one log per state transition per period
+        per asset, ~5 lines/min.
+        """
+        canonical = self._normalize_reason_for_dedup(reason)
         if (
-            reason != self._last_skip_reason
+            canonical != self._last_skip_reason
             or period_ts != self._last_skip_period_ts
         ):
             logger.info("btc_5min[%s] skip: %s", self.asset, reason)
-            self._last_skip_reason = reason
+            self._last_skip_reason = canonical
             self._last_skip_period_ts = period_ts
 
     def _bootstrap_feed_history(self) -> None:

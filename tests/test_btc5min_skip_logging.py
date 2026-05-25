@@ -87,6 +87,45 @@ class LogSkipTests(unittest.TestCase):
         )
 
 
+class NormalizeReasonTests(unittest.TestCase):
+    """Adversarial review 2026-05-25 finding Y1: elapsed in reason
+    defeated dedupe. Verify the normalization strips numeric values."""
+
+    def test_strips_elapsed_seconds(self):
+        from agents.application.btc_5min import Btc5MinEngine
+        n = Btc5MinEngine._normalize_reason_for_dedup
+        # Two reasons that differ only by elapsed value should collapse.
+        self.assertEqual(
+            n("timing_too_late elapsed=227.1s window_end=180s"),
+            n("timing_too_late elapsed=228.7s window_end=180s"),
+        )
+        # And to the canonical form.
+        self.assertEqual(
+            n("timing_too_late elapsed=227.1s window_end=180s"),
+            "timing_too_late elapsed=Ns window_end=Ns",
+        )
+
+    def test_distinct_states_still_distinct(self):
+        from agents.application.btc_5min import Btc5MinEngine
+        n = Btc5MinEngine._normalize_reason_for_dedup
+        self.assertNotEqual(
+            n("timing_too_early elapsed=5s"),
+            n("timing_too_late elapsed=200s"),
+        )
+
+    def test_dedupe_collapses_iteration_drift(self):
+        """End-to-end: 100 iterations with drifting elapsed → 1 log."""
+        eng = _make_engine()
+        with self.assertLogs("agents.application.btc_5min", level="INFO") as cm:
+            for i in range(100):
+                eng._log_skip(
+                    f"timing_too_late elapsed={180.0 + i * 0.5}s window_end=180s",
+                    period_ts=12345,
+                )
+        # Only first iteration emits; remaining 99 dedupe.
+        self.assertEqual(len(cm.output), 1)
+
+
 class HasMethodTests(unittest.TestCase):
     """Sanity: the engine actually exposes the new method."""
 
