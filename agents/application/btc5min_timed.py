@@ -378,7 +378,22 @@ class Btc5MinTimedEngine:
                 our_token_entry = live_price
             else:  # SELL YES = hold NO at (1 - live_price)
                 our_token_entry = max(0.01, 1.0 - live_price)
-            shares_held = order_amount / max(our_token_entry, 0.001)
+            # Use ACTUAL filled shares from response, not estimated.
+            # For BUY: takingAmount = shares; for SELL YES: makingAmount = NO shares.
+            # Apply 3% safety margin to absorb settlement rounding /
+            # micro-fees that cause "balance 2.08 vs order 2.12" rejections.
+            raw = response.get("raw", {}) if isinstance(response, dict) else {}
+            try:
+                if side == "BUY":
+                    actual_shares = float(raw.get("takingAmount") or 0)
+                else:
+                    actual_shares = float(raw.get("makingAmount") or 0)
+            except (ValueError, TypeError):
+                actual_shares = 0
+            if actual_shares > 0:
+                shares_held = actual_shares * 0.97  # 3% margin for fees/rounding
+            else:
+                shares_held = (order_amount / max(our_token_entry, 0.001)) * 0.97
             tp_limit_price = round(our_token_entry * (1 + tp_pct), 4)
             # Cap at $0.99 — Polymarket clamps anyway
             tp_limit_price = min(0.99, max(0.02, tp_limit_price))
