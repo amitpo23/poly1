@@ -228,8 +228,15 @@ class ResolutionSync:
     def _synthesize_dust_loss_outcome(self, token_id: str) -> dict:
         """Build a resolved_loss outcome for dust terminator path. We
         treat the position as a total write-off because we hold no
-        useful shares and the market hasn't produced a payout."""
+        useful shares and the market hasn't produced a payout.
+
+        Both 'status' (consumed at line 556 by trade_log.insert_terminal)
+        AND 'status_key' (annotation hook) are needed. Until 2026-05-25
+        only status_key was set → KeyError on every dust resolution
+        attempt. Spotted during Round 15 debug.
+        """
         return {
+            "status": "resolved_loss",
             "status_key": "resolved_loss",
             "market_id": "",
             "payout_per_share": 0.0,
