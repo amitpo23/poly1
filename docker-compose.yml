@@ -126,6 +126,41 @@ services:
     stop_grace_period: 30s
     profiles: ["btc_5min"]
 
+  btc5min_timed:
+    build: .
+    image: poly1:local
+    container_name: poly1-btc5min-timed
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: btc5min_timed
+      # Operator-requested time-based strategy (added 2026-05-25).
+      # Always starts in dryrun; the explicit toggle is in .env.
+      EXECUTE_BTC5MIN_TIMED: ${EXECUTE_BTC5MIN_TIMED:-false}
+      BTC5MIN_TIMED_POSITION_USDC: ${BTC5MIN_TIMED_POSITION_USDC:-0.20}
+      BTC5MIN_TIMED_HEARTBEAT_PATH: /app/data/btc5min_timed_heartbeat
+    command: ["python", "-m", "agents.application.btc5min_timed"]
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/btc5min_timed_heartbeat') < 30"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 128m
+    cpus: "0.10"
+    stop_grace_period: 15s
+
   hermes-forecast:
     build: .
     image: poly1:local
