@@ -348,6 +348,15 @@ class Btc5MinTimedEngine:
                                 response=response, error="entry not matched")
             return False
 
+        # Compute dynamic max_hold so we always close ≥30s before market
+        # resolves. Cycle resolves at period_ts + 300; safe close target
+        # is period_ts + 270. For Phase 1 (entry ~t=1s) the 120s cap wins;
+        # for Phase 2 (entry t=180s) this caps at ~90s — exactly the
+        # window operator specified.
+        safe_close_deadline = period_ts + 270
+        seconds_to_safe_close = safe_close_deadline - time.time()
+        max_hold = max(15, min(120, int(seconds_to_safe_close)))
+
         response_data = dict(response) if isinstance(response, dict) else {}
         response_data.update({
             "phase": phase,
@@ -355,12 +364,10 @@ class Btc5MinTimedEngine:
             "side": side,
             "tp_pct_override": tp_pct,
             "sl_pct_override": sl_pct,
-            # 120s = exit by t=2:00 from entry. After analysis of Round 22
-            # losses: 5-min binaries blow through SL=20% within 30sec of
-            # adverse move, then reverse, then go to resolution. The TP/SL
-            # window is the first 60-90 sec. Force-close at 2:00 to lock
-            # whatever mean-reverted price exists before the next big move.
-            "max_hold_seconds": 120,
+            # Was hardcoded 120s — bug: Phase 2 entries at t=180s + 120s =
+            # close at t=300s, exactly when market resolves. Operator
+            # caught this on R31. Fix: dynamic cap to (resolution - 30s).
+            "max_hold_seconds": max_hold,
         })
 
         # CRITICAL FIX (2026-05-25): place a resting LIMIT SELL at TP price
