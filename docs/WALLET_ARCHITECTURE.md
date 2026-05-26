@@ -1,26 +1,43 @@
 # poly1 Wallet Architecture — operational guide
 
-Last updated: 2026-05-26 (Path B migration to social-login proxy)
+Last updated: 2026-05-26 (consolidated via `setup_deposit_wallet.py`)
 
 ## TL;DR
 
-The bot uses **3 addresses** that work together. Confusion comes from
-mixing them up — read this when in doubt.
+The bot uses **3 derived addresses** from a single EOA private key.
+They have specific roles in Polymarket's CLOB v2 architecture.
 
-| Address | What it is | Where it's set | Holds funds? |
-|---|---|---|---|
-| **EOA** (signer) | Derived from `POLYGON_WALLET_PRIVATE_KEY`. Signs orders. | `.env` private key | No (no USDC, no positions) |
-| **FUNDER / DEPOSIT_WALLET** (proxy) | The Polymarket proxy. Holds USDC and CTF positions. | `POLYMARKET_DEPOSIT_WALLET` in `.env` | **Yes** (everything lives here) |
-| **BUILDER_ADDRESS** | Fee attribution recipient. | `POLYMARKET_BUILDER_ADDRESS` in `.env` | No |
+| Address | Role | Holds funds? |
+|---|---|---|
+| **EOA** (signer) | Signs orders. Has no positions or pUSD itself. | No |
+| **legacy_proxy** | Polymarket Privy proxy. Where the UI's "Deposit" button sends funds for accounts that log in via social (Google/email). | Sometimes — until consolidated to deposit_wallet |
+| **deposit_wallet** | The proper CLOB v2 trading address. Holds pUSD and CTF positions. Bot trades from here. | **Yes** — everything lives here once consolidated |
 
-## Current state (2026-05-26)
+`POLYMARKET_DEPOSIT_WALLET` in `.env` must always point to the
+deposit_wallet, not the legacy_proxy. The bot's `Polymarket.funder` is
+the deposit_wallet.
+
+## How funds flow
+
+1. User clicks "Deposit" in Polymarket UI → USDC lands in the
+   **legacy_proxy** (because the UI is built on Privy).
+2. Bot can't trade from legacy_proxy under CLOB v2 — it needs the
+   deposit_wallet.
+3. Run `scripts/python/setup_deposit_wallet.py` with `EXECUTE=true` to
+   sweep pUSD from legacy_proxy → deposit_wallet (gasless via Builder
+   relayer).
+
+## Current state (2026-05-26, post-migration)
 
 ```
-EOA:             0x14a2E262fCE33BbeF4cb507Df0caEE343412c55d   (signer)
-FUNDER:          0x84fa6ea1E274B73C81D61cFF28dc1F8e05136882   (NEW proxy, $83.08, Google-login)
-DEPOSIT_WALLET:  0x16577fEc75797Cd59D01CB6e8518Df6a4B2c04Cb   (OLD proxy, 32 stuck positions, $4 USDC.e)
-BUILDER_ADDRESS: 0x84fa6ea1E274B73C81D61cFF28dc1F8e05136882   (NEW)
+EOA:             0x14a2E262fCE33BbeF4cb507Df0caEE343412c55d   (signer, no balance)
+legacy_proxy:    0x84fa6ea1E274B73C81D61cFF28dc1F8e05136882   (drained, $0)
+deposit_wallet:  0x16577fEc75797Cd59D01CB6e8518Df6a4B2c04Cb   ($90.12 pUSD + 32 CTF positions)
 ```
+
+The 32 CTF positions at deposit_wallet are the bot's actual trading
+history; 10 of them are redeemable winnings worth $11.21 — see Step 3
+below for recovery instructions.
 
 ## How `self.funder` resolves in code
 

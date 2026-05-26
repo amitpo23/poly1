@@ -386,8 +386,6 @@ services:
       DASHBOARD_HALT: /app/data/HALT
       DASHBOARD_HEARTBEATS: /app/data
       RUNTIME_AGENT: live_dashboard
-      # explicit precedence: dashboard always uses the bot's actual funder/proxy
-      POLYMARKET_PROXY_ADDRESS: "0x84fa6ea1E274B73C81D61cFF28dc1F8e05136882"
     volumes:
       - ./data:/app/data:ro
       - ./scripts/dashboard_server.py:/app/scripts/dashboard_server.py:ro
