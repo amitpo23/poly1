@@ -649,6 +649,9 @@ DASHBOARD_HTML = """<!doctype html>
   .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
   .stale { color: var(--neg); } .fresh { color: var(--pos); }
   #refresh-status { font-size: 10px; color: var(--muted); margin-left: 12px; }
+  .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--pos); margin-right: 6px; vertical-align: middle; animation: pulse 1.4s infinite; box-shadow: 0 0 8px var(--pos); }
+  .live-dot.stale { background: var(--neg); box-shadow: 0 0 8px var(--neg); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   .chart-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; min-height: 280px; }
   .gauge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
   .gauge-box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
@@ -691,6 +694,7 @@ DASHBOARD_HTML = """<!doctype html>
     <h1>📈 poly1 trading terminal</h1>
     <span id="hero-mode" class="hero-badge hero-mode-freeze">—</span>
     <span id="hero-halt" class="hero-badge hero-halt" style="display:none">HALT</span>
+    <span class="live-dot" id="live-dot"></span>
     <span id="refresh-status"></span>
   </div>
   <div class="hero-metrics">
@@ -1013,12 +1017,15 @@ function drawGauge(divId, value, title, subtitle) {
 
 // ========== Main status refresh ==========
 let lastStatus = null;
+let lastRefreshTs = Date.now();
 async function refresh() {
   try {
     const r = await fetch('/api/status?t=' + Date.now());
     const d = await r.json();
     lastStatus = d;
-    document.getElementById('refresh-status').textContent = '· refresh ' + new Date(d.ts).toLocaleTimeString();
+    lastRefreshTs = Date.now();
+    document.getElementById('live-dot').classList.remove('stale');
+    document.getElementById('refresh-status').textContent = '· LIVE · ' + new Date(d.ts).toLocaleTimeString();
 
     // Hero
     const rt = d.runtime || {};
@@ -1049,45 +1056,41 @@ async function refresh() {
       '<div style="margin-top:8px"><span class="pill">' + (d.recent_trades || []).filter(t => t.status === 'closed_take_profit').length + ' TP today</span> ' +
       '<span class="pill">' + (d.recent_trades || []).filter(t => t.status === 'closed_stop_loss').length + ' SL today</span></div>';
 
-    // Agents table
-    const agentsBody = document.getElementById('agents-tbl').querySelector('tbody');
-    agentsBody.innerHTML = '';
+    // Agents table — atomic update (build HTML, assign once → no flicker)
+    let agentsHtml = '';
     Object.entries(d.agents || {}).sort((a, b) => (b[1].net_pnl||0) - (a[1].net_pnl||0))
       .forEach(([name, st]) => {
-        const row = document.createElement('tr');
         const pnlCls = (st.net_pnl||0) >= 0 ? 'pos' : 'neg';
-        row.innerHTML =
-          '<td><strong>' + name + '</strong></td>' +
+        agentsHtml +=
+          '<tr><td><strong>' + name + '</strong></td>' +
           '<td class="mono">' + (st.entries_today || 0) + '</td>' +
           '<td class="mono pos">' + (st.wins || 0) + '</td>' +
           '<td class="mono neg">' + (st.losses || 0) + '</td>' +
           '<td class="mono">' + ((st.wr || 0) * 100).toFixed(0) + '%</td>' +
-          '<td class="mono ' + pnlCls + '">$' + (st.net_pnl || 0).toFixed(3) + '</td>';
-        agentsBody.appendChild(row);
+          '<td class="mono ' + pnlCls + '">$' + (st.net_pnl || 0).toFixed(3) + '</td></tr>';
       });
+    if (!agentsHtml) agentsHtml = '<tr><td colspan="6" class="label" style="text-align:center;padding:16px">no agent activity today</td></tr>';
+    document.getElementById('agents-tbl').querySelector('tbody').innerHTML = agentsHtml;
 
-    // Open positions
-    const openBody = document.getElementById('open-tbl').querySelector('tbody');
-    openBody.innerHTML = '';
+    // Open positions — atomic
+    let openHtml = '';
     (d.open_positions || []).forEach(p => {
-      const row = document.createElement('tr');
       const sideCls = p.side === 'BUY' ? 'pos' : 'neg';
-      row.innerHTML =
-        '<td class="mono">' + p.id + '</td>' +
+      openHtml +=
+        '<tr><td class="mono">' + p.id + '</td>' +
         '<td class="mono">' + p.ts.slice(11, 19) + '</td>' +
         '<td>' + p.agent + '</td>' +
         '<td class="mono ' + sideCls + '">' + p.side + '</td>' +
         '<td class="mono">' + p.entry + '</td>' +
         '<td class="mono">' + (p.current_bid !== null ? p.current_bid : '—') + '</td>' +
-        '<td class="mono">$' + p.size_usdc + '</td>';
-      openBody.appendChild(row);
+        '<td class="mono">$' + p.size_usdc + '</td></tr>';
     });
+    if (!openHtml) openHtml = '<tr><td colspan="7" class="label" style="text-align:center;padding:16px">no open positions</td></tr>';
+    document.getElementById('open-tbl').querySelector('tbody').innerHTML = openHtml;
 
-    // Recent trades
-    const recBody = document.getElementById('recent-tbl').querySelector('tbody');
-    recBody.innerHTML = '';
+    // Recent trades — atomic
+    let recHtml = '';
     (d.recent_trades || []).forEach(t => {
-      const row = document.createElement('tr');
       let badge = '';
       if (t.status === 'closed_take_profit') badge = '<span class="badge b-tp">TP</span>';
       else if (t.status === 'closed_stop_loss') badge = '<span class="badge b-sl">SL</span>';
@@ -1101,24 +1104,25 @@ async function refresh() {
         const cls2 = t.pnl_usdc >= 0 ? 'pos' : 'neg';
         pnlHtml = '<span class="mono ' + cls2 + '">$' + t.pnl_usdc.toFixed(3) + '</span>';
       }
-      row.innerHTML =
-        '<td class="mono">' + t.id + '</td>' +
+      recHtml +=
+        '<tr><td class="mono">' + t.id + '</td>' +
         '<td class="mono">' + t.ts.slice(11, 19) + '</td>' +
         '<td>' + t.agent + '</td>' +
         '<td class="mono">' + (t.side || '—') + '</td>' +
         '<td>' + badge + '</td>' +
         '<td class="mono">' + (t.price || '—') + '</td>' +
-        '<td>' + pnlHtml + '</td>';
-      recBody.appendChild(row);
+        '<td>' + pnlHtml + '</td></tr>';
     });
+    if (!recHtml) recHtml = '<tr><td colspan="7" class="label" style="text-align:center;padding:16px">no trades yet</td></tr>';
+    document.getElementById('recent-tbl').querySelector('tbody').innerHTML = recHtml;
 
-    // Heartbeats
-    const hbDiv = document.getElementById('hb');
-    hbDiv.innerHTML = '';
+    // Heartbeats — atomic
+    let hbHtml = '';
     Object.entries(d.heartbeats || {}).sort().forEach(([name, age]) => {
       const cls = age < 60 ? 'fresh' : 'stale';
-      hbDiv.innerHTML += '<div class="' + cls + '" style="padding:2px 0">' + name + ': <span class="mono">' + age.toFixed(0) + 's</span></div>';
+      hbHtml += '<div class="' + cls + '" style="padding:2px 0">' + name + ': <span class="mono">' + age.toFixed(0) + 's</span></div>';
     });
+    document.getElementById('hb').innerHTML = hbHtml || '<div class="label">no heartbeats</div>';
 
     // Swarm
     const s = d.swarm || {};
@@ -1127,37 +1131,33 @@ async function refresh() {
       '<div><span class="label">pnl events:</span> ' + (s.pnl_events !== undefined ? s.pnl_events : '—') + '</div>' +
       '<div class="label" style="margin-top:6px">pending: ' + (s.pending_orders ? Object.entries(s.pending_orders).map(([k,v]) => k+':'+v).join(', ') : '—') + '</div>';
 
-    // Live markets
-    const mktBody = document.getElementById('markets-tbl').querySelector('tbody');
-    mktBody.innerHTML = '';
+    // Live markets — atomic
+    let mktHtml = '';
     const markets = Array.isArray(d.markets) ? d.markets : [];
     markets.forEach(m => {
       const yes = (m.prices && m.prices[0]) || '—';
       const no = (m.prices && m.prices[1]) || '—';
       const ends = m.end_date ? new Date(m.end_date).toLocaleString() : '—';
-      const row = document.createElement('tr');
-      row.innerHTML =
-        '<td>' + (m.question || '—') + '</td>' +
+      mktHtml +=
+        '<tr><td>' + (m.question || '—') + '</td>' +
         '<td class="mono pos">' + yes + '</td>' +
         '<td class="mono neg">' + no + '</td>' +
         '<td class="mono">$' + (m.volume_24h || 0).toLocaleString() + '</td>' +
         '<td class="mono">$' + (m.liquidity || 0).toLocaleString() + '</td>' +
-        '<td class="mono" style="font-size:10px">' + ends + '</td>';
-      mktBody.appendChild(row);
+        '<td class="mono" style="font-size:10px">' + ends + '</td></tr>';
     });
+    if (!mktHtml) mktHtml = '<tr><td colspan="6" class="label" style="text-align:center;padding:16px">loading markets…</td></tr>';
+    document.getElementById('markets-tbl').querySelector('tbody').innerHTML = mktHtml;
 
-    // On-chain positions
-    const ocBody = document.getElementById('onchain-tbl').querySelector('tbody');
-    ocBody.innerHTML = '';
-    let ocTotalValue = 0, ocTotalPnl = 0, redeemableCt = 0;
+    // On-chain positions — atomic
+    let ocHtml = '', ocTotalValue = 0, ocTotalPnl = 0, redeemableCt = 0;
     oc.forEach(p => {
       ocTotalValue += p.value || 0;
       ocTotalPnl += p.cashPnl || 0;
       if (p.redeemable) redeemableCt++;
-      const row = document.createElement('tr');
       const pnlCls = (p.cashPnl || 0) >= 0 ? 'pos' : 'neg';
-      row.innerHTML =
-        '<td>' + (p.title || '—') + '</td>' +
+      ocHtml +=
+        '<tr><td>' + (p.title || '—') + '</td>' +
         '<td>' + (p.outcome || '—') + '</td>' +
         '<td class="mono">' + (p.size || 0) + '</td>' +
         '<td class="mono">' + (p.avg_price || '—') + '</td>' +
@@ -1165,9 +1165,10 @@ async function refresh() {
         '<td class="mono">$' + (p.value || 0).toFixed(3) + '</td>' +
         '<td class="mono ' + pnlCls + '">$' + (p.cashPnl || 0).toFixed(3) + '</td>' +
         '<td class="mono ' + pnlCls + '">' + (p.percentPnl || 0).toFixed(1) + '%</td>' +
-        '<td>' + (p.redeemable ? '✅' : '—') + '</td>';
-      ocBody.appendChild(row);
+        '<td>' + (p.redeemable ? '✅' : '—') + '</td></tr>';
     });
+    if (!ocHtml) ocHtml = '<tr><td colspan="9" class="label" style="text-align:center;padding:16px">no on-chain positions</td></tr>';
+    document.getElementById('onchain-tbl').querySelector('tbody').innerHTML = ocHtml;
     document.getElementById('onchain-summary-card').innerHTML =
       '<div class="metric-lg">' + oc.length + '</div><div class="label">total positions</div>' +
       '<div style="margin-top:10px;display:flex;gap:14px">' +
@@ -1176,37 +1177,43 @@ async function refresh() {
       '<div><div class="metric">' + redeemableCt + '</div><div class="label">redeemable</div></div>' +
       '</div>';
 
-    // Order books
-    const booksDiv = document.getElementById('books');
-    booksDiv.innerHTML = '';
+    // Order books — atomic per-book HTML, single container assign
+    let booksHtml = '';
     const books = d.orderbooks || {};
     Object.entries(books).forEach(([tid, b]) => {
-      const box = document.createElement('div');
-      box.className = 'book';
-      let html = '<div class="book-title">' + tid.slice(0, 20) + '…</div>';
+      let inner = '<div class="book-title">' + tid.slice(0, 20) + '…</div>';
       if (b._error) {
-        html += '<div class="neg">err: ' + b._error + '</div>';
+        inner += '<div class="neg">err: ' + b._error + '</div>';
       } else {
         (b.asks || []).slice().reverse().forEach(a => {
-          html += '<div class="book-side book-ask"><span>' + a.price + '</span><span>' + a.size + '</span></div>';
+          inner += '<div class="book-side book-ask"><span>' + a.price + '</span><span>' + a.size + '</span></div>';
         });
-        html += '<div class="book-spread">spread ' + (b.spread !== null ? b.spread : '—') + '</div>';
+        inner += '<div class="book-spread">spread ' + (b.spread !== null ? b.spread : '—') + '</div>';
         (b.bids || []).forEach(bd => {
-          html += '<div class="book-side book-bid"><span>' + bd.price + '</span><span>' + bd.size + '</span></div>';
+          inner += '<div class="book-side book-bid"><span>' + bd.price + '</span><span>' + bd.size + '</span></div>';
         });
       }
-      box.innerHTML = html;
-      booksDiv.appendChild(box);
+      booksHtml += '<div class="book">' + inner + '</div>';
     });
+    if (!booksHtml) booksHtml = '<div class="label" style="grid-column:1/-1;text-align:center;padding:20px">no open positions to show order books for</div>';
+    document.getElementById('books').innerHTML = booksHtml;
 
     // If on a tab that uses lastStatus, redraw
     if (currentTab === 'portfolio') drawAllocationChart();
     if (currentTab === 'agents') drawAgentGauges();
 
   } catch (e) {
+    document.getElementById('live-dot').classList.add('stale');
     document.getElementById('refresh-status').textContent = '· error: ' + e.message;
   }
 }
+
+// Stale detector — if no refresh in 12s, mark dot red
+setInterval(() => {
+  if (Date.now() - lastRefreshTs > 12000) {
+    document.getElementById('live-dot').classList.add('stale');
+  }
+}, 2000);
 
 // ========== Macro (yfinance) ==========
 let macroData = null;
@@ -1215,27 +1222,28 @@ async function refreshMacro() {
     const r = await fetch('/api/macro?t=' + Date.now());
     const d = await r.json();
     macroData = d;
-    // Cards
-    const cardsDiv = document.getElementById('macro-cards');
-    cardsDiv.innerHTML = '';
+    // Cards — atomic (build HTML, assign once)
     const order = ['BTC-USD', 'ETH-USD', 'SOL-USD', '^GSPC', '^NDX', '^VIX', '^TNX', 'DX-Y.NYB', 'GC=F'];
+    const sparkUpdates = [];
+    let cardsHtml = '';
     order.forEach(sym => {
       const m = d[sym];
       if (!m || m.error) return;
       const sparkId = 'spark-' + sym.replace(/[\^=\.\-]/g, '_');
       const chg = m.change_pct || 0;
       const chgCls = chg >= 0 ? 'pos' : 'neg';
-      const card = document.createElement('div');
-      card.className = 'macro-card';
-      card.innerHTML =
+      cardsHtml +=
+        '<div class="macro-card">' +
         '<div class="sym">' + sym + '</div>' +
         '<div class="name">' + (m.name || '').slice(0, 24) + '</div>' +
-        '<div class="price">' + (m.price !== null ? m.price.toFixed(sym.startsWith('^') ? 2 : 2) : '—') + '</div>' +
+        '<div class="price">' + (m.price !== null ? m.price.toFixed(2) : '—') + '</div>' +
         '<div class="delta ' + chgCls + '">' + (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%</div>' +
-        '<div id="' + sparkId + '" style="height:40px;margin-top:4px"></div>';
-      cardsDiv.appendChild(card);
-      setTimeout(() => drawSparkline(sparkId, m.bars, chg >= 0 ? '#34d399' : '#f87171'), 0);
+        '<div id="' + sparkId + '" style="height:40px;margin-top:4px"></div>' +
+        '</div>';
+      sparkUpdates.push({ id: sparkId, bars: m.bars, color: chg >= 0 ? '#34d399' : '#f87171' });
     });
+    document.getElementById('macro-cards').innerHTML = cardsHtml;
+    sparkUpdates.forEach(s => drawSparkline(s.id, s.bars, s.color));
     // Charts
     if (d['^VIX']) drawPriceChart('chart-vix', d['^VIX'].bars, 'VIX (volatility)');
     if (d['^TNX']) drawPriceChart('chart-tnx', d['^TNX'].bars, '10Y yield');
