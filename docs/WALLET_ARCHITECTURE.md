@@ -82,19 +82,41 @@ print('balance:', p.get_usdc_balance())
 # expected: funder=0x84fa6ea1..., balance≈$83
 ```
 
-### Step 3 (optional — clean up the old proxy)
+### Step 3 (optional — recover ~$16 from the old proxy)
 
-The old proxy `0x16577fEc...` has 32 positions ($11 of which is current
-value) and $4 in USDC.e. Most are stuck losing markets, but a few may
-be redeemable on win.
+**Migration completed 2026-05-26** with the new proxy live. The old
+proxy `0x16577fEc...` was left in place with recoverable funds.
 
-To clean up:
-- The user signs in to Polymarket UI with the *old* account login.
-- Polymarket UI shows a "Claim" button on any resolved-winning markets.
-- Withdraw remaining USDC.e to the new proxy or any wallet.
+Audit (2026-05-26):
 
-Not urgent — the old proxy is now disconnected from the bot's runtime,
-so it costs nothing to leave the positions sitting there.
+| Category | Count | Value |
+|---|---|---|
+| Redeemable (resolved wins) | 10 | $11.21 |
+| Tradeable (still has bid) | 1 | $0.70 |
+| Worthless (resolved against us) | 22 | $0.01 |
+| USDC.e cash sitting in proxy | — | $4.19 |
+| **Total recoverable** | | **~$16.10** |
+
+**Two recovery paths:**
+
+1. **Via Polymarket UI** (simpler if you can access the old account):
+   - Log into Polymarket UI with whatever credentials originally
+     created the old proxy. The 10 winning positions will show
+     "Claim" buttons.
+   - After claiming → click Withdraw → send all USDC to the new
+     proxy `0x84fa6ea1...`.
+
+2. **Programmatic** (uses the bot's EOA which signs for both proxies):
+   - Temporarily set `POLYMARKET_DEPOSIT_WALLET=0x16577fEc...`.
+   - Run a one-shot script that:
+     a. Calls `redeemPositions(conditionId, indexSets)` on the CTF
+        contract `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` for
+        each of the 10 winning conditionIds. Their conditionIds are
+        listed in the migration audit `data/old_proxy_audit_2026_05_26.json`.
+     b. Transfers all USDC.e from old proxy to new proxy.
+   - Restore `POLYMARKET_DEPOSIT_WALLET=0x84fa6ea1...` and restart.
+
+Either path is deferrable — the funds aren't going anywhere.
 
 ## Why Path B beats Path A (one-time withdraw)
 
