@@ -73,6 +73,11 @@ class Btc5MinTimedConfig:
     phase2_entry_offset_sec: int = 180     # t=3:00
     phase2_tp_pct: float = 0.05            # +5%
     phase2_sl_pct: float = 0.20            # -20%
+    # NEW (2026-05-26): Phase 2 momentum gate. After 21 resolved trades
+    # showed Phase 2 winrate=19% (vs Phase 1 at 56%), gating Phase 2 by
+    # momentum is required. Skip Phase 2 entry unless the UP/YES token
+    # price at t=180 is >= this threshold (UP showing momentum).
+    phase2_min_momentum_price: float = 0.55
     # Common
     no_entry_after_sec: int = 270          # don't enter after t=4:30
     poll_sec: int = 2
@@ -92,6 +97,9 @@ class Btc5MinTimedConfig:
             phase2_entry_offset_sec=_env_int("BTC5MIN_TIMED_PHASE2_OFFSET_SEC", 180),
             phase2_tp_pct=_env_float("BTC5MIN_TIMED_PHASE2_TP_PCT", 0.05),
             phase2_sl_pct=_env_float("BTC5MIN_TIMED_PHASE2_SL_PCT", 0.20),
+            phase2_min_momentum_price=_env_float(
+                "BTC5MIN_TIMED_PHASE2_MIN_MOMENTUM_PRICE", 0.55
+            ),
             no_entry_after_sec=_env_int("BTC5MIN_TIMED_NO_ENTRY_AFTER_SEC", 270),
             poll_sec=_env_int("BTC5MIN_TIMED_POLL_SEC", 2),
             asset=os.getenv("BTC5MIN_TIMED_ASSET", "btc").lower(),
@@ -319,6 +327,22 @@ class Btc5MinTimedEngine:
             logger.info("btc5min_timed[%s/%s] skip: tiny fillable $%.4f",
                         self.cfg.asset, label, order_amount)
             return False
+
+        # Phase 2 momentum gate (2026-05-26): historical Phase 2 WR=19%.
+        # Only enter UP if UP/YES token shows clear momentum at t=180.
+        # live_price for Phase 2 (BUY YES) is the YES (UP) token price —
+        # require it to be >= phase2_min_momentum_price (default 0.55).
+        if phase == "phase2":
+            min_mom = self.cfg.phase2_min_momentum_price
+            if live_price < min_mom:
+                logger.info(
+                    "btc5min_timed[%s/%s] phase2 SKIP (no momentum): "
+                    "YES=%.4f < threshold=%.4f",
+                    self.cfg.asset, label, live_price, min_mom,
+                )
+                # Mark fired so we don't retry within this cycle.
+                self._cycle.phase2_fired = True
+                return False
 
         recommendation = TradeRecommendation(
             price=live_price,
