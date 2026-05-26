@@ -181,6 +181,9 @@ services:
       TZ: UTC
       RUNTIME_AGENT: btc5min_timed_v2
       BTC5MIN_TIMED_V2_HEARTBEAT_PATH: /app/data/btc5min_timed_v2_heartbeat
+      # v2-only override: allow smaller orders so we can run $0.50 trades.
+      # This affects ONLY the v2 container; other agents keep $1 min.
+      POLYMARKET_MIN_ORDER_USDC: "0.50"
     command: ["python", "-m", "agents.application.btc5min_timed_v2"]
     volumes:
       - ./data:/app/data
