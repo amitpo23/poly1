@@ -331,24 +331,54 @@ def claude_analyze(prompt_text: str, dashboard_state: dict) -> dict:
         return {"error": str(exc)[:200]}
 
 
+_UUID_RE = __import__("re").compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+
+
 def _attribute(cycle_id: str) -> str:
     """Map cycle_id prefix to a readable agent label."""
     if not cycle_id:
         return "(none)"
-    if cycle_id.startswith("btc5min_timed_v2:"):
-        return "amit_v2"
-    if cycle_id.startswith("btc5min_timed:"):
-        return "amit_v1"
-    if cycle_id.startswith("btc_5min:"):
-        return "btc_5min"
-    if cycle_id.startswith("scanner_executor:"):
-        return "scanner_executor"
-    if cycle_id.startswith("close:"):
-        return "close"
-    if cycle_id.startswith("scalper"):
-        return "scalper"
-    if cycle_id.startswith("near_resolution"):
-        return "near_resolution"
+    # Order matters: more-specific prefixes first.
+    prefix_map = (
+        ("btc5min_timed_v2:", "amit_v2"),
+        ("btc5min_timed:", "amit_v1"),
+        ("btc_5min:", "btc_5min"),
+        ("btc_daily:", "btc_daily"),
+        ("scanner_executor:", "scanner_executor"),
+        ("trader:", "trader"),
+        ("trading_supervisor:", "supervisor"),
+        ("close:", "close"),
+        ("scalper", "scalper"),
+        ("near_resolution", "near_resolution"),
+        ("news_shock", "news_shock"),
+        ("external_conviction_api", "ec_api"),
+        ("external_conviction_polifly", "ec_polifly"),
+        ("external_conviction_whale", "ec_whale"),
+        ("external_conviction_divergence", "ec_divergence"),
+        ("external_conviction_debate", "ec_debate"),
+        ("external_conviction_aggregator", "ec_aggregator"),
+        ("external_conviction_tradingview", "ec_tradingview"),
+        ("external_conviction_crypto_tape", "ec_crypto_tape"),
+        ("external_conviction_alpaca", "ec_alpaca"),
+        ("external_conviction_openbb", "ec_openbb"),
+        ("external_conviction_technical", "ec_technical"),
+        ("external_conviction_gdelt", "ec_gdelt"),
+        ("external_conviction_crypto_deriv", "ec_crypto_deriv"),
+        ("external_conviction:", "ec_main"),
+        ("opportunity_factory", "opportunity_factory"),
+        ("resolution_sync", "resolution_sync"),
+        ("phantom_sweep", "phantom_sweep"),
+        ("market_scanner", "market_scanner"),
+        ("brain_indicator", "brain_indicator"),
+    )
+    for prefix, label in prefix_map:
+        if cycle_id.startswith(prefix):
+            return label
+    # UUID-style cycle_ids are wallet_follow's signature.
+    if _UUID_RE.match(cycle_id):
+        return "wallet_follow"
     return cycle_id.split(":")[0] if ":" in cycle_id else cycle_id
 
 
