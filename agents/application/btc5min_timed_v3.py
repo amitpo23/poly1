@@ -41,6 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from agents.utils.ws_book_feed import WSBookFeed
+
 logger = logging.getLogger(__name__)
 
 
@@ -202,6 +204,9 @@ class Btc5MinTimedV3Engine:
         self._cycle: CycleState = CycleState()
         self._daily: DailyState = DailyState(date_key=self._today_key())
         self._market_cache: dict[int, dict] = {}
+        # WebSocket book feed — sub-100ms real-time mid price tracking.
+        # Started lazily on first cycle that resolves a YES token.
+        self._ws_feed: Optional[WSBookFeed] = None
 
     @staticmethod
     def _today_key() -> str:
@@ -296,30 +301,32 @@ class Btc5MinTimedV3Engine:
             if len(tokens) < 1:
                 return None
             self._cycle.yes_token_id = str(tokens[0])  # outcome[0] = YES/UP
+            # Subscribe to this token on the WS feed (sub-100ms updates)
+            if self._ws_feed is None:
+                self._ws_feed = WSBookFeed(
+                    asset_ids=[self._cycle.yes_token_id],
+                    history_window_sec=max(60.0, self.cfg.spike_window_sec + 10.0),
+                )
+                self._ws_feed.start()
+            else:
+                self._ws_feed.add_asset(self._cycle.yes_token_id)
 
-        # Sample current mid
-        try:
-            book = self.polymarket.client.get_order_book(self._cycle.yes_token_id)
-            bids = [(float(b.price), float(b.size)) for b in (book.bids or [])]
-            asks = [(float(a.price), float(a.size)) for a in (book.asks or [])]
-            if not bids or not asks:
-                return None
-            best_bid = max(p for p, _ in bids)
-            best_ask = min(p for p, _ in asks)
-            mid = (best_bid + best_ask) / 2.0
-        except Exception:
+        # Use WS feed history instead of HTTP polling. The feed maintains
+        # a per-asset rolling buffer of (ts, mid) tuples updated by
+        # push events at sub-100ms latency.
+        wall_history = self._ws_feed.history(self._cycle.yes_token_id)
+        if len(wall_history) < 2:
             return None
 
-        # Append to history, prune older than spike_window_sec
-        self._cycle.price_history.append((elapsed, mid))
-        cutoff = elapsed - self.cfg.spike_window_sec
-        self._cycle.price_history = [
-            (t, p) for t, p in self._cycle.price_history if t >= cutoff
-        ]
-        if len(self._cycle.price_history) < 2:
+        # Translate wall-clock history → in-cycle (offset, mid) and limit
+        # to the spike window.
+        window_start = time.time() - self.cfg.spike_window_sec
+        windowed = [(ts, p) for ts, p in wall_history if ts >= window_start]
+        if len(windowed) < 2:
             return None
 
-        base = self._cycle.price_history[0][1]
+        base = windowed[0][1]
+        mid = windowed[-1][1]
         if base <= 0:
             return None
         change = (mid - base) / base
