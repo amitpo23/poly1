@@ -153,6 +153,7 @@ services:
       # trade_log.py mount: btc5min_timed needs BTC5MIN_TIMED_OPEN constant
       # added in same commit. Without this mount, ImportError on first fire().
       - ./agents/application/trade_log.py:/app/agents/application/trade_log.py:ro
+      - ./agents/polymarket/polymarket.py:/app/agents/polymarket/polymarket.py:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/btc5min_timed_heartbeat') < 30"]
@@ -189,9 +190,46 @@ services:
       - ./data:/app/data
       - ./agents/application/btc5min_timed_v2.py:/app/agents/application/btc5min_timed_v2.py:ro
       - ./agents/application/trade_log.py:/app/agents/application/trade_log.py:ro
+      - ./agents/polymarket/polymarket.py:/app/agents/polymarket/polymarket.py:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/btc5min_timed_v2_heartbeat') < 30"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 128m
+    cpus: "0.10"
+    stop_grace_period: 15s
+
+  btc5min_timed_v3:
+    build: .
+    image: poly1:local
+    container_name: poly1-btc5min-timed-v3
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: btc5min_timed_v3
+      BTC5MIN_TIMED_V3_HEARTBEAT_PATH: /app/data/btc5min_timed_v3_heartbeat
+      # v3-only override: allow $0.50 trades
+      POLYMARKET_MIN_ORDER_USDC: "0.50"
+    command: ["python", "-m", "agents.application.btc5min_timed_v3"]
+    volumes:
+      - ./data:/app/data
+      - ./agents/application/btc5min_timed_v3.py:/app/agents/application/btc5min_timed_v3.py:ro
+      - ./agents/application/trade_log.py:/app/agents/application/trade_log.py:ro
+      - ./agents/polymarket/polymarket.py:/app/agents/polymarket/polymarket.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/btc5min_timed_v3_heartbeat') < 30"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -260,6 +298,7 @@ services:
       # status to see those positions. Without this, btc5min_timed
       # entries never get TP/SL exit.
       - ./agents/application/trade_log.py:/app/agents/application/trade_log.py:ro
+      - ./agents/application/position_manager.py:/app/agents/application/position_manager.py:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/position_manager_heartbeat') < 120"]
@@ -605,6 +644,7 @@ services:
     command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
     volumes:
       - ./data:/app/data
+      - ./agents/application/external_conviction.py:/app/agents/application/external_conviction.py:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_heartbeat') < 14400"]
@@ -1010,6 +1050,62 @@ services:
     stop_grace_period: 30s
     profiles: ["external_conviction"]
 
+  external-conviction-crypto-tape-long:
+    build: .
+    image: poly1:local
+    container_name: poly1-external-conviction-crypto-tape-long
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+      - deploy/.env.runtime
+    environment:
+      TZ: UTC
+      RUNTIME_AGENT: external_conviction_crypto_tape_long
+      EXTERNAL_CONVICTION_AGENT_NAME: external_conviction_crypto_tape_long
+      EXTERNAL_CONVICTION_STRATEGY_NAME: crypto_exchange_tape_event_probability_long
+      EXTERNAL_CONVICTION_PROVIDER: crypto_exchange_tape
+      EXTERNAL_CONVICTION_POLL_SEC: "60"
+      EXTERNAL_CONVICTION_OUTPUT_PATH: /app/data/external_convictions_crypto_tape_long.jsonl
+      EXTERNAL_CONVICTION_HEARTBEAT_PATH: /app/data/external_conviction_crypto_tape_long_heartbeat
+      EXTERNAL_CONVICTION_ALLOWED_SIDE: ""
+      EXTERNAL_CONVICTION_MIN_LIVE_ENTRY_PRICE: "0.05"
+      EXTERNAL_CONVICTION_MAX_LIVE_ENTRY_PRICE: "0.95"
+      EXTERNAL_CONVICTION_MAX_HOLD_MINUTES: "180"
+      EXTERNAL_CONVICTION_MAX_OPEN_POSITIONS: "1"
+      EXTERNAL_CONVICTION_MAX_LIVE_TRADES_PER_CYCLE: "1"
+      EXTERNAL_CONVICTION_POSITION_SIZE_USDC: "1.00"
+      EXTERNAL_CONVICTION_MIN_CONFIDENCE: "0.70"
+      EXTERNAL_CONVICTION_TAKE_PROFIT_PCT: "0.08"
+      EXTERNAL_CONVICTION_STOP_LOSS_PCT: "0.03"
+      EXTERNAL_CONVICTION_ALLOW_HORIZON_TOO_LONG: "true"
+      MIN_EXITABLE_ENTRY_USDC: "0.50"
+      MIN_EXIT_NOTIONAL_USDC: "0.50"
+      POLYMARKET_MIN_ORDER_USDC: "0.50"
+      CRYPTO_TAPE_CACHE_SEC: "15"
+      CRYPTO_TAPE_TIMEOUT_SEC: "4"
+      CRYPTO_TAPE_INTERVAL: "1m"
+      CRYPTO_TAPE_BAR_LIMIT: "30"
+    command: ["python", "-m", "agents.application.external_conviction", "--daemon"]
+    volumes:
+      - ./data:/app/data
+      - ./agents/application/external_conviction.py:/app/agents/application/external_conviction.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import os, time; assert time.time() - os.path.getmtime('/app/data/external_conviction_crypto_tape_long_heartbeat') < 240"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 256m
+    cpus: "0.25"
+    stop_grace_period: 30s
+    profiles: ["external_conviction"]
+
   external-conviction-technical:
     build: .
     image: poly1:local
@@ -1166,9 +1262,13 @@ services:
     environment:
       TZ: UTC
       RUNTIME_AGENT: scanner_executor
+      SCANNER_EXECUTOR_PROVEN_SEGMENT_ONLY: "false"
+      SEGMENT_SCORECARD_PATH: "/app/data/segment_scorecard.json"
     command: ["python", "-m", "agents.application.scanner_executor"]
     volumes:
       - ./data:/app/data
+      - ./agents/application/scanner_executor.py:/app/agents/application/scanner_executor.py:ro
+      - ./agents/application/trade_log.py:/app/agents/application/trade_log.py:ro
     healthcheck:
       test: ["CMD-SHELL",
              "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/scanner_executor_heartbeat') < 60\""]
@@ -1204,22 +1304,37 @@ services:
       BRAIN_INDICATOR_ENABLE_LLM: "false"
       BRAIN_INDICATOR_MARKET_UNIVERSE_INTERVAL_SEC: "300"
       BRAIN_INDICATOR_ALPHAINSIDER_INTERVAL_SEC: "900"
+      BRAIN_INDICATOR_RUN_SHADOW_BRAIN_SYNC: "true"
+      BRAIN_INDICATOR_SHADOW_BRAIN_SYNC_INTERVAL_SEC: "60"
       BRAIN_INDICATOR_MARKOUTS_INTERVAL_SEC: "60"
       BRAIN_INDICATOR_MARKOUT_DECISIONS: "SHADOW_ENTER,SHADOW_QUOTE,ENTER"
+      BRAIN_INDICATOR_MARKOUT_LIVE_FALLBACK: "false"
       BRAIN_INDICATOR_PROVIDER_SCORECARD_INTERVAL_SEC: "300"
       BRAIN_INDICATOR_STRATEGY_SCORECARD_INTERVAL_SEC: "300"
+      BRAIN_INDICATOR_RUN_SEGMENT_SCORECARD: "true"
+      BRAIN_INDICATOR_SEGMENT_SCORECARD_INTERVAL_SEC: "300"
       BRAIN_INDICATOR_OPPORTUNITY_FACTORY_INTERVAL_SEC: "60"
       BRAIN_INDICATOR_MARKET_SCANNER_INTERVAL_SEC: "60"
       BRAIN_INDICATOR_SCANNER_EXECUTOR_INTERVAL_SEC: "60"
       BRAIN_INDICATOR_TAVILY_DAILY_LIMIT: "1"
       EXECUTE: "false"
       EXECUTE_SCANNER_EXECUTOR: "false"
+      SCANNER_EXECUTOR_PROVEN_SEGMENT_ONLY: "false"
+      SEGMENT_SCORECARD_PATH: "/app/data/segment_scorecard.json"
     command: ["python", "scripts/brain_indicator_cycle.py", "--daemon"]
     volumes:
       - ./data:/app/data
+      - ./scripts/brain_indicator_cycle.py:/app/scripts/brain_indicator_cycle.py:ro
+      - ./scripts/sync_shadow_brain_decisions.py:/app/scripts/sync_shadow_brain_decisions.py:ro
+      - ./scripts/update_shadow_markouts.py:/app/scripts/update_shadow_markouts.py:ro
+      - ./scripts/segment_scorecard.py:/app/scripts/segment_scorecard.py:ro
+      - ./scripts/python/backup_trade_log.py:/app/scripts/python/backup_trade_log.py:ro
+      - ./scripts/trading_stability_preflight.py:/app/scripts/trading_stability_preflight.py:ro
+      - ./agents/application/scanner_executor.py:/app/agents/application/scanner_executor.py:ro
+      - ./agents/application/trade_log.py:/app/agents/application/trade_log.py:ro
     healthcheck:
       test: ["CMD-SHELL",
-             "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/brain_indicator_cycle_heartbeat') < 180\""]
+             "python -c \"import os, time; assert time.time() - os.path.getmtime('/app/data/brain_indicator_cycle_heartbeat') < 600\""]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -1278,6 +1393,9 @@ services:
     environment:
       TZ: UTC
       RUNTIME_AGENT: orderbook_monitor
+      ORDERBOOK_MONITOR_TOKEN_LIMIT: "200"
+      ORDERBOOK_MONITOR_SHADOW_LOOKBACK_HOURS: "2"
+      ORDERBOOK_MONITOR_BRAIN_SHADOW_LOOKBACK_HOURS: "2"
       ORDERBOOK_MONITOR_PRUNE_MINUTES: "1440"
     command: ["python", "-m", "agents.application.orderbook_monitor"]
     volumes:

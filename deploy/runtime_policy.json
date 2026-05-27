@@ -36,6 +36,11 @@
       "compose_service": "btc5min_timed_v2",
       "compose_profile": ""
     },
+    "btc5min_timed_v3": {
+      "execute_flag": "EXECUTE_BTC5MIN_TIMED_V3",
+      "compose_service": "btc5min_timed_v3",
+      "compose_profile": ""
+    },
     "near_resolution": {
       "execute_flag": "EXECUTE_NEAR_RESOLUTION",
       "reserve_flag": "NEAR_RESOLUTION_RESERVE_USDC",
@@ -106,6 +111,12 @@
       "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
       "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
       "compose_service": "external-conviction-crypto-tape",
+      "compose_profile": "external_conviction"
+    },
+    "external_conviction_crypto_tape_long": {
+      "execute_flag": "EXECUTE_EXTERNAL_CONVICTION",
+      "reserve_flag": "EXTERNAL_CONVICTION_RESERVE_USDC",
+      "compose_service": "external-conviction-crypto-tape-long",
       "compose_profile": "external_conviction"
     },
     "external_conviction_alpaca": {

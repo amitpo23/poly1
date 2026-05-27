@@ -147,6 +147,10 @@ CREATE INDEX IF NOT EXISTS idx_decision_journal_ts ON decision_journal(ts);
 CREATE INDEX IF NOT EXISTS idx_decision_journal_market_ts ON decision_journal(market_id, ts);
 CREATE INDEX IF NOT EXISTS idx_decision_journal_source_ts ON decision_journal(signal_source, ts);
 CREATE INDEX IF NOT EXISTS idx_decision_journal_decision_ts ON decision_journal(decision, ts);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_decision_id_agent_strategy
+    ON decision_journal(decision_id, agent, strategy);
+CREATE INDEX IF NOT EXISTS idx_brain_decisions_shadow_sync
+    ON brain_decisions(approved, action, ts, token_id, agent);
 
 CREATE TABLE IF NOT EXISTS wallet_signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -327,6 +331,7 @@ WALLET_FOLLOW_OPEN = "wallet_follow_open"
 BTC_5MIN_OPEN = "btc_5min_open"
 BTC5MIN_TIMED_OPEN = "btc5min_timed_open"
 BTC5MIN_TIMED_V2_OPEN = "btc5min_timed_v2_open"
+BTC5MIN_TIMED_V3_OPEN = "btc5min_timed_v3_open"
 # Resolution-sync statuses (added 2026-05-08): written when a Polymarket
 # market resolves and on-chain CTF balance hits dust on a token we held.
 # Realized P&L is recorded in `size_usdc` as the payout (shares × $1 if won,
@@ -1232,23 +1237,29 @@ class TradeLog:
             return int(row["n"])
 
     def recent_brain_shadow_tokens(self, max_age_hours: int = 6) -> list:
-        """Token IDs from brain_decisions SHADOW_BUY_YES/NO in last N hours.
+        """Token IDs from approved brain_decisions in last N hours.
 
-        Added 2026-05-25 to extend orderbook_monitor's watchlist beyond
-        decision_journal-routed signals. external_conviction_* agents
-        emit SHADOW_BUY_* approvals into brain_decisions but never
-        reach decision_journal. Without tracking their tokens, the
-        Bayesian calibrator can never measure their edge.
+        Extends orderbook_monitor's watchlist beyond decision_journal-routed
+        signals. Research agents can approve shadow BUY/SELL ideas in
+        brain_decisions before they are promoted to executor candidates; those
+        tokens still need snapshots so markouts can measure their edge.
 
         Returns dicts with token_id, market_id, agent.
         """
         sql = (
-            "SELECT DISTINCT token_id, market_id, agent "
-            "FROM brain_decisions "
-            "WHERE agent LIKE 'external_conviction_%' "
-            "AND action IN ('SHADOW_BUY_YES', 'SHADOW_BUY_NO') "
+            "SELECT token_id, market_id, agent "
+            "FROM ("
+            "  SELECT token_id, market_id, agent, MAX(ts) AS latest_ts "
+            "  FROM brain_decisions "
+            "  WHERE approved = 1 "
+            "AND agent NOT IN ('scanner_executor', 'position_manager', 'position_manager_llm') "
+            "AND action IN ('SHADOW_BUY_YES', 'SHADOW_BUY_NO', 'BUY', 'SELL') "
             "AND token_id IS NOT NULL AND token_id != '' "
-            "AND ts > datetime('now', ?)"
+            "AND ts > datetime('now', ?) "
+            "  GROUP BY token_id, market_id, agent"
+            ") "
+            "ORDER BY latest_ts DESC "
+            "LIMIT 200"
         )
         with self._lock, self._connect() as conn:
             rows = conn.execute(sql, (f"-{int(max_age_hours)} hours",)).fetchall()
@@ -1268,13 +1279,19 @@ class TradeLog:
         by token_id.
         """
         sql = (
-            "SELECT DISTINCT token_id, market_id "
-            "FROM decision_journal "
-            "WHERE decision LIKE 'SHADOW_%' "
+            "SELECT token_id, market_id "
+            "FROM ("
+            "  SELECT token_id, market_id, MAX(ts) AS latest_ts "
+            "  FROM decision_journal "
+            "  WHERE decision LIKE 'SHADOW_%' "
             "AND token_id IS NOT NULL AND token_id != '' "
             "AND ts > datetime('now', ?) "
             "AND (outcome_1m_json IS NULL OR outcome_3m_json IS NULL "
-            "     OR outcome_5m_json IS NULL OR outcome_15m_json IS NULL)"
+            "     OR outcome_5m_json IS NULL OR outcome_15m_json IS NULL) "
+            "  GROUP BY token_id, market_id"
+            ") "
+            "ORDER BY latest_ts DESC "
+            "LIMIT 200"
         )
         cutoff = f"-{int(max_age_hours)} hours"
         with self._lock, self._connect() as conn:
@@ -1285,7 +1302,7 @@ class TradeLog:
         """Like filled_positions() but includes id, ts, and response_json.
         Used by position_manager to aggregate fills + read per-position
         overrides (e.g. tp_pct_override on manual entries)."""
-        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN, BTC_5MIN_OPEN, BTC5MIN_TIMED_OPEN, BTC5MIN_TIMED_V2_OPEN)
+        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN, BTC_5MIN_OPEN, BTC5MIN_TIMED_OPEN, BTC5MIN_TIMED_V2_OPEN, BTC5MIN_TIMED_V3_OPEN)
         terminal_statuses = (
             "closed_take_profit", "closed_stop_loss", "closed_timeout",
             "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",

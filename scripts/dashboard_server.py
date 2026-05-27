@@ -342,6 +342,7 @@ def _attribute(cycle_id: str) -> str:
         return "(none)"
     # Order matters: more-specific prefixes first.
     prefix_map = (
+        ("btc5min_timed_v3:", "amit_v3"),
         ("btc5min_timed_v2:", "amit_v2"),
         ("btc5min_timed:", "amit_v1"),
         ("btc_5min:", "btc_5min"),
