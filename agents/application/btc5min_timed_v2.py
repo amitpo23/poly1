@@ -66,18 +66,34 @@ class Btc5MinTimedV2Config:
     max_trades_per_day: int = 10
     halt_after_losses: int = 3
     # Phase 1: DOWN at start
-    phase1_entry_offset_sec: int = 1       # t=0:01
+    phase1_entry_offset_sec: float = 1.0   # t=0:01
     phase1_tp_pct: float = 0.05            # +5%
     phase1_sl_pct: float = 0.20            # -20%
     # Phase 2: UP at minute 3
-    phase2_entry_offset_sec: int = 180     # t=3:00
+    phase2_entry_offset_sec: float = 180.0 # t=3:00
     phase2_tp_pct: float = 0.05            # +5%
     phase2_sl_pct: float = 0.20            # -20%
     # Phase 2 momentum gate (2026-05-26)
     phase2_min_momentum_price: float = 0.55
+    # Data-driven gates (2026-05-27, from liquidity_analyzer on 41 closed trades)
+    # Phase 1 measured WR=35%, fill rate=39% — disable by default.
+    phase1_disabled: bool = True
+    # Hours-of-day (UTC) when trading is permitted. Data shows WR=65% in
+    # 11-17 UTC vs WR=8% outside. Inclusive both ends.
+    trade_hour_start_utc: int = 11
+    trade_hour_end_utc: int = 17
+    # Spread cap (fraction) — analyzer showed >2% spread removes net losers.
+    max_spread_pct: float = 0.02
     # Common
     no_entry_after_sec: int = 270          # don't enter after t=4:30
-    poll_sec: int = 2
+    poll_sec: float = 2.0
+    fast_preload_enabled: bool = False
+    fast_preload_seconds: float = 25.0
+    fast_poll_sec: float = 0.05
+    fast_boundary_window_sec: float = 2.0
+    max_entry_attempts_per_phase: int = 1
+    force_phase1_down_first_second: bool = False
+    phase1_entry_window_sec: float = 1.0
     asset: str = "btc"                     # market asset (BTC/ETH/SOL)
     heartbeat_path: str = "/app/data/btc5min_timed_v2_heartbeat"
 
@@ -88,17 +104,30 @@ class Btc5MinTimedV2Config:
             position_usdc=_env_float("BTC5MIN_TIMED_V2_POSITION_USDC", 0.20),
             max_trades_per_day=_env_int("BTC5MIN_TIMED_V2_MAX_TRADES_PER_DAY", 10),
             halt_after_losses=_env_int("BTC5MIN_TIMED_V2_HALT_AFTER_LOSSES", 3),
-            phase1_entry_offset_sec=_env_int("BTC5MIN_TIMED_V2_PHASE1_OFFSET_SEC", 1),
+            phase1_entry_offset_sec=_env_float("BTC5MIN_TIMED_V2_PHASE1_OFFSET_SEC", 1.0),
             phase1_tp_pct=_env_float("BTC5MIN_TIMED_V2_PHASE1_TP_PCT", 0.05),
             phase1_sl_pct=_env_float("BTC5MIN_TIMED_V2_PHASE1_SL_PCT", 0.20),
-            phase2_entry_offset_sec=_env_int("BTC5MIN_TIMED_V2_PHASE2_OFFSET_SEC", 180),
+            phase2_entry_offset_sec=_env_float("BTC5MIN_TIMED_V2_PHASE2_OFFSET_SEC", 180.0),
             phase2_tp_pct=_env_float("BTC5MIN_TIMED_V2_PHASE2_TP_PCT", 0.05),
             phase2_sl_pct=_env_float("BTC5MIN_TIMED_V2_PHASE2_SL_PCT", 0.20),
             phase2_min_momentum_price=_env_float(
                 "BTC5MIN_TIMED_V2_PHASE2_MIN_MOMENTUM_PRICE", 0.55
             ),
+            phase1_disabled=_env_bool("BTC5MIN_TIMED_V2_PHASE1_DISABLED", True),
+            trade_hour_start_utc=_env_int("BTC5MIN_TIMED_V2_HOUR_START_UTC", 11),
+            trade_hour_end_utc=_env_int("BTC5MIN_TIMED_V2_HOUR_END_UTC", 17),
+            max_spread_pct=_env_float("BTC5MIN_TIMED_V2_MAX_SPREAD_PCT", 0.02),
             no_entry_after_sec=_env_int("BTC5MIN_TIMED_V2_NO_ENTRY_AFTER_SEC", 270),
-            poll_sec=_env_int("BTC5MIN_TIMED_V2_POLL_SEC", 2),
+            poll_sec=_env_float("BTC5MIN_TIMED_V2_POLL_SEC", 2.0),
+            fast_preload_enabled=_env_bool("BTC5MIN_TIMED_V2_FAST_PRELOAD_ENABLED", False),
+            fast_preload_seconds=_env_float("BTC5MIN_TIMED_V2_FAST_PRELOAD_SECONDS", 25.0),
+            fast_poll_sec=_env_float("BTC5MIN_TIMED_V2_FAST_POLL_SEC", 0.05),
+            fast_boundary_window_sec=_env_float("BTC5MIN_TIMED_V2_FAST_BOUNDARY_WINDOW_SEC", 2.0),
+            max_entry_attempts_per_phase=_env_int("BTC5MIN_TIMED_V2_MAX_ENTRY_ATTEMPTS_PER_PHASE", 1),
+            force_phase1_down_first_second=_env_bool(
+                "BTC5MIN_TIMED_V2_FORCE_PHASE1_DOWN_FIRST_SECOND", False
+            ),
+            phase1_entry_window_sec=_env_float("BTC5MIN_TIMED_V2_PHASE1_ENTRY_WINDOW_SEC", 1.0),
             asset=os.getenv("BTC5MIN_TIMED_V2_ASSET", "btc").lower(),
             heartbeat_path=os.getenv("BTC5MIN_TIMED_V2_HEARTBEAT_PATH", "/app/data/btc5min_timed_v2_heartbeat"),
         )
@@ -120,6 +149,8 @@ class CycleState:
     period_ts: int = 0
     phase1_fired: bool = False
     phase2_fired: bool = False
+    phase1_attempts: int = 0
+    phase2_attempts: int = 0
 
 
 @dataclass
@@ -147,6 +178,7 @@ class Btc5MinTimedV2Engine:
         self.cfg = cfg
         self._cycle: CycleState = CycleState()
         self._daily: DailyState = DailyState(date_key=self._today_key())
+        self._market_cache: dict[int, dict] = {}
 
     @staticmethod
     def _today_key() -> str:
@@ -160,6 +192,32 @@ class Btc5MinTimedV2Engine:
     def _refresh_cycle(self, period_ts: int) -> None:
         if period_ts != self._cycle.period_ts:
             self._cycle = CycleState(period_ts=period_ts)
+
+    def preload_next_market(self) -> None:
+        """Resolve and warm the next 5-minute market before the boundary."""
+        if not self.cfg.fast_preload_enabled:
+            return
+        now = time.time()
+        current = _current_period_ts()
+        next_period = current + 300
+        if next_period in self._market_cache:
+            return
+        if next_period - now > self.cfg.fast_preload_seconds:
+            return
+        slug = _format_slug(next_period, self.cfg.asset)
+        market_doc = self._resolve_market(next_period, slug)
+        if market_doc is None:
+            return
+        self._market_cache[next_period] = market_doc
+        token_ids = market_doc.get("token_ids") or []
+        if len(token_ids) >= 2:
+            try:
+                self.polymarket._fillable_market_buy(str(token_ids[1]), self.cfg.position_usdc)
+            except Exception as exc:
+                logger.info("btc5min_timed_v2 fast preload book warmup skipped: %s", exc)
+        for key in list(self._market_cache):
+            if key < current - 300:
+                self._market_cache.pop(key, None)
 
     def maybe_enter(self) -> Optional[str]:
         """Check timing; return 'phase1', 'phase2', or None.
@@ -182,17 +240,35 @@ class Btc5MinTimedV2Engine:
         if elapsed > self.cfg.no_entry_after_sec:
             return None
 
+        # Hour-of-day gate (2026-05-27, data-driven): analyzer showed WR=65%
+        # in [11,17] UTC vs WR=8% outside. Block entries outside the window.
+        hour_utc = datetime.now(timezone.utc).hour
+        if not (self.cfg.trade_hour_start_utc <= hour_utc <= self.cfg.trade_hour_end_utc):
+            return None
+
         # Risk gate first (runtime control, balance, etc.)
         if self.risk_gate is not None and not self.risk_gate.ok():
             return None
 
-        # Phase 1: BUY DOWN at t=0:01
-        if not self._cycle.phase1_fired:
+        # Phase 1: BUY DOWN at t=0:01 — disabled by default per analyzer
+        # (WR=35%, fill rate=39% — structurally unprofitable).
+        if not self.cfg.phase1_disabled and (
+            not self._cycle.phase1_fired
+            and self._cycle.phase1_attempts < self.cfg.max_entry_attempts_per_phase
+        ):
+            if (
+                self.cfg.force_phase1_down_first_second
+                and 0 <= elapsed <= self.cfg.phase1_entry_window_sec
+            ):
+                return "phase1"
             if abs(elapsed - self.cfg.phase1_entry_offset_sec) < self.cfg.poll_sec:
                 return "phase1"
 
-        # Phase 2: BUY UP at t=3:00
-        if not self._cycle.phase2_fired:
+        # Phase 2: BUY UP at t=3:00 — primary edge (WR=62%, fill rate=92%)
+        if (
+            not self._cycle.phase2_fired
+            and self._cycle.phase2_attempts < self.cfg.max_entry_attempts_per_phase
+        ):
             if abs(elapsed - self.cfg.phase2_entry_offset_sec) < self.cfg.poll_sec:
                 return "phase2"
 
@@ -202,6 +278,10 @@ class Btc5MinTimedV2Engine:
         """Attempt entry for phase. Returns True if filled."""
         period_ts = _current_period_ts()
         slug = _format_slug(period_ts, self.cfg.asset)
+        if phase == "phase1":
+            self._cycle.phase1_attempts += 1
+        elif phase == "phase2":
+            self._cycle.phase2_attempts += 1
 
         if phase == "phase1":
             side = "SELL"   # SELL YES = BUY NO = bet DOWN
@@ -217,7 +297,9 @@ class Btc5MinTimedV2Engine:
             return False
 
         # Resolve current 5-min market via Gamma
-        market_doc = self._resolve_market(period_ts, slug)
+        market_doc = self._market_cache.get(period_ts)
+        if market_doc is None:
+            market_doc = self._resolve_market(period_ts, slug)
         if market_doc is None:
             logger.info("btc5min_timed_v2[%s/%s] skip: no market for %s",
                         self.cfg.asset, label, slug)
@@ -306,9 +388,15 @@ class Btc5MinTimedV2Engine:
             return False
 
         try:
+            force_phase1 = (
+                phase == "phase1" and self.cfg.force_phase1_down_first_second
+            )
             live_price, fillable_usdc, _avg = (
                 self.polymarket._fillable_market_buy(
                     token_id, self.cfg.position_usdc,
+                    min_entry_price=0.0 if force_phase1 else None,
+                    min_bid_depth_usdc=0.0 if force_phase1 else None,
+                    max_spread_pct=1.0 if force_phase1 else None,
                 )
             )
         except Exception as exc:
@@ -324,6 +412,7 @@ class Btc5MinTimedV2Engine:
             logger.info("btc5min_timed_v2[%s/%s] skip: tiny fillable $%.4f",
                         self.cfg.asset, label, order_amount)
             return False
+        recommendation_price = live_price if side == "BUY" else 1.0 - live_price
 
         # Phase 2 momentum gate (2026-05-26): historical Phase 2 WR=19%.
         # Only enter UP if UP/YES token shows clear momentum at t=180.
@@ -343,48 +432,46 @@ class Btc5MinTimedV2Engine:
         # Verifies that IF this trade moves -20% adverse (SL trigger),
         # there will be enough bid depth on our holding side to FAK-exit.
         # Without this, the trade would enter a market guaranteed to stick.
-        try:
-            book = self.polymarket.client.get_order_book(str(token_id))
-            bids = []
-            asks = []
-            if hasattr(book, "bids"):
-                bids = [(float(b.price), float(b.size)) for b in (book.bids or [])]
-                asks = [(float(a.price), float(a.size)) for a in (book.asks or [])]
-            elif isinstance(book, dict):
-                bids = [(float(b["price"]), float(b["size"])) for b in (book.get("bids") or [])]
-                asks = [(float(a["price"]), float(a["size"])) for a in (book.get("asks") or [])]
-            best_bid = bids[0][0] if bids else 0
-            best_ask = asks[0][0] if asks else 1
-            spread = best_ask - best_bid
-            if spread > 0.10:
-                logger.info(
-                    "btc5min_timed_v2[%s/%s] LAYER1 skip: spread too wide %.4f",
-                    self.cfg.asset, label, spread,
-                )
-                return False
-            # SL trigger price (for our token, after entry)
-            if side == "BUY":
+        if not force_phase1:
+            try:
+                book = self.polymarket.client.get_order_book(str(token_id))
+                bids = []
+                asks = []
+                if hasattr(book, "bids"):
+                    bids = [(float(b.price), float(b.size)) for b in (book.bids or [])]
+                    asks = [(float(a.price), float(a.size)) for a in (book.asks or [])]
+                elif isinstance(book, dict):
+                    bids = [(float(b["price"]), float(b["size"])) for b in (book.get("bids") or [])]
+                    asks = [(float(a["price"]), float(a["size"])) for a in (book.get("asks") or [])]
+                best_bid = bids[0][0] if bids else 0
+                best_ask = asks[0][0] if asks else 1
+                spread = best_ask - best_bid
+                if spread > self.cfg.max_spread_pct:
+                    logger.info(
+                        "btc5min_timed_v2[%s/%s] LAYER1 skip: spread too wide %.4f > %.4f",
+                        self.cfg.asset, label, spread, self.cfg.max_spread_pct,
+                    )
+                    return False
+                # SL trigger price (for our token, after entry)
                 our_token_entry = live_price
-            else:
-                our_token_entry = max(0.01, 1.0 - live_price)
-            sl_trigger_price = our_token_entry * 0.80
-            # Bid depth AT or BELOW sl_trigger (where we'd need to sell)
-            depth_at_sl = sum(s for p, s in bids if p >= sl_trigger_price * 0.5)
-            if depth_at_sl < 2.0:
-                logger.info(
-                    "btc5min_timed_v2[%s/%s] LAYER1 skip: insufficient exit depth "
-                    "%.2f shares < 2.0 at SL zone (trigger=%.4f)",
-                    self.cfg.asset, label, depth_at_sl, sl_trigger_price,
+                sl_trigger_price = our_token_entry * 0.80
+                # Bid depth AT or BELOW sl_trigger (where we'd need to sell)
+                depth_at_sl = sum(s for p, s in bids if p >= sl_trigger_price * 0.5)
+                if depth_at_sl < 2.0:
+                    logger.info(
+                        "btc5min_timed_v2[%s/%s] LAYER1 skip: insufficient exit depth "
+                        "%.2f shares < 2.0 at SL zone (trigger=%.4f)",
+                        self.cfg.asset, label, depth_at_sl, sl_trigger_price,
+                    )
+                    return False
+            except Exception as exc:
+                logger.warning(
+                    "btc5min_timed_v2[%s/%s] LAYER1 check failed (proceeding): %s",
+                    self.cfg.asset, label, exc,
                 )
-                return False
-        except Exception as exc:
-            logger.warning(
-                "btc5min_timed_v2[%s/%s] LAYER1 check failed (proceeding): %s",
-                self.cfg.asset, label, exc,
-            )
 
         recommendation = TradeRecommendation(
-            price=live_price,
+            price=recommendation_price,
             size_fraction=0.0,
             side=side,
             confidence=0.50,
@@ -393,12 +480,17 @@ class Btc5MinTimedV2Engine:
         cycle_id = f"btc5min_timed_v2:{phase}:{period_ts}"
         pending_id = self.trade_log.insert_pending(
             cycle_id=cycle_id, market_id=market_id, token_id=token_id,
-            side=side, price=live_price, size_usdc=order_amount,
+            side=side, price=recommendation_price, size_usdc=order_amount,
             confidence=0.50,
         )
         try:
             response = self.polymarket.execute_market_order(
-                (market_doc["doc"], 0.0), recommendation,
+                (market_doc["doc"], 0.0),
+                recommendation,
+                min_entry_price=0.0 if force_phase1 else None,
+                min_bid_depth_usdc=0.0 if force_phase1 else None,
+                max_spread_pct=1.0 if force_phase1 else None,
+                max_slippage=1.0 if force_phase1 else None,
             )
         except Exception as exc:
             self.trade_log.mark(pending_id, "failed",
@@ -425,6 +517,7 @@ class Btc5MinTimedV2Engine:
             "phase": phase,
             "label": label,
             "side": side,
+            "actual_entry_price": live_price,
             "tp_pct_override": tp_pct,
             "sl_pct_override": sl_pct,
             # Was hardcoded 120s — bug: Phase 2 entries at t=180s + 120s =
@@ -441,13 +534,8 @@ class Btc5MinTimedV2Engine:
         # Background: Round 22 lost ~$6 because PM's FAK exits never matched.
         # See agents/application/btc5min_timed_v2.py docstring + commit log.
         try:
-            # For both phase1 and phase2, we hold the token in `token_id`.
-            # Entry price for THAT token: BUY = live_price; SELL of YES =
-            # we actually hold NO, NO entry ≈ 1 - live_price.
-            if side == "BUY":
-                our_token_entry = live_price
-            else:  # SELL YES = hold NO at (1 - live_price)
-                our_token_entry = max(0.01, 1.0 - live_price)
+            # We hold `token_id` either way; live_price is that token's entry.
+            our_token_entry = live_price
             # Use ACTUAL filled shares from response, not estimated.
             # For BUY: takingAmount = shares; for SELL YES: makingAmount = NO shares.
             # Apply 3% safety margin to absorb settlement rounding /
@@ -547,6 +635,7 @@ class Btc5MinTimedV2Daemon:
         try:
             while not self._stop:
                 try:
+                    self.engine.preload_next_market()
                     phase = self.engine.maybe_enter()
                     if phase:
                         self.engine.fire(phase)
@@ -580,7 +669,15 @@ class Btc5MinTimedV2Daemon:
                     p.touch()
                 except Exception:
                     pass
-                time.sleep(self.cfg.poll_sec)
+                elapsed = time.time() - _current_period_ts()
+                near_boundary = (
+                    elapsed <= self.cfg.fast_boundary_window_sec
+                    or elapsed >= 300 - self.cfg.fast_preload_seconds
+                )
+                sleep_for = self.cfg.fast_poll_sec if (
+                    self.cfg.fast_preload_enabled and near_boundary
+                ) else self.cfg.poll_sec
+                time.sleep(max(0.01, sleep_for))
         finally:
             logger.info("Btc5MinTimedV2Daemon: exited")
 
