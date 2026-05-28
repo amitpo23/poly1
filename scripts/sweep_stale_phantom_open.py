@@ -39,6 +39,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agents.application.trade_log import (
     BTC_5MIN_OPEN,
     BTC_DAILY_OPEN,
+    BTC5MIN_TIMED_OPEN,
+    BTC5MIN_TIMED_V2_OPEN,
+    BTC5MIN_TIMED_V3_OPEN,
+    DAILY_3H_FADE_OPEN,
     FILLED,
     NEAR_RESOLUTION_OPEN,
     NEWS_SHOCK_OPEN,
@@ -48,12 +52,16 @@ from agents.application.trade_log import (
 )
 
 
-# Statuses that mean "we opened a position" — match resolution_sync.OPEN_STATUSES
-# but also include BTC_5MIN_OPEN (which the resolution_sync missed).
+# Statuses that mean "we opened a position" — full list, kept in sync with
+# trade_log.filled_positions_with_id open_statuses.
 OPEN_STATUSES = (
     FILLED,
     BTC_5MIN_OPEN,
     BTC_DAILY_OPEN,
+    BTC5MIN_TIMED_OPEN,
+    BTC5MIN_TIMED_V2_OPEN,
+    BTC5MIN_TIMED_V3_OPEN,
+    DAILY_3H_FADE_OPEN,
     SCALPER_LEG,
     NEAR_RESOLUTION_OPEN,
     NEWS_SHOCK_OPEN,
@@ -99,21 +107,13 @@ def _decide_outcome(
         )
         if resolved:
             # Check if we held the winning token. Pull our entries to see.
+            ph = ",".join("?" for _ in OPEN_STATUSES)
             with log._lock, log._connect() as conn:
                 rows = conn.execute(
-                    "SELECT side, token_id FROM trades "
-                    "WHERE token_id = ? AND status IN (?, ?, ?, ?, ?, ?, ?) "
-                    "ORDER BY id LIMIT 1",
-                    (
-                        token_id,
-                        FILLED,
-                        BTC_5MIN_OPEN,
-                        BTC_DAILY_OPEN,
-                        SCALPER_LEG,
-                        NEAR_RESOLUTION_OPEN,
-                        NEWS_SHOCK_OPEN,
-                        WALLET_FOLLOW_OPEN,
-                    ),
+                    f"SELECT side, token_id FROM trades "
+                    f"WHERE token_id = ? AND status IN ({ph}) "
+                    f"ORDER BY id LIMIT 1",
+                    (token_id, *OPEN_STATUSES),
                 ).fetchone()
             if not rows:
                 return "resolved_loss", "no entry rows found"
@@ -132,21 +132,13 @@ def _decide_outcome(
         return None, f"too_young_{age_hours:.0f}h"
 
     # Pull the entry size+price to estimate current value
+    ph = ",".join("?" for _ in OPEN_STATUSES)
     with log._lock, log._connect() as conn:
         row = conn.execute(
-            "SELECT side, price, size_usdc FROM trades "
-            "WHERE token_id = ? AND status IN (?, ?, ?, ?, ?, ?, ?) "
-            "ORDER BY id LIMIT 1",
-            (
-                token_id,
-                FILLED,
-                BTC_5MIN_OPEN,
-                BTC_DAILY_OPEN,
-                SCALPER_LEG,
-                NEAR_RESOLUTION_OPEN,
-                NEWS_SHOCK_OPEN,
-                WALLET_FOLLOW_OPEN,
-            ),
+            f"SELECT side, price, size_usdc FROM trades "
+            f"WHERE token_id = ? AND status IN ({ph}) "
+            f"ORDER BY id LIMIT 1",
+            (token_id, *OPEN_STATUSES),
         ).fetchone()
     if not row:
         return "resolved_loss", "no entry row, journal artefact"

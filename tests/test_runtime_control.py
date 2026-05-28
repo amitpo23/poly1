@@ -127,7 +127,7 @@ class RuntimeControlTests(unittest.TestCase):
             self.assertIn('SCANNER_EXECUTOR_MAX_IMMEDIATE_EXIT_LOSS_PCT="0.10"', env_text)
             self.assertIn('SCANNER_EXECUTOR_MIN_RAW_EV="0.015"', env_text)
             self.assertIn('SCANNER_EXECUTOR_MIN_NET_EV="0.005"', env_text)
-            self.assertIn('SCANNER_EXECUTOR_BATCH_LIMIT="200"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_BATCH_LIMIT="50"', env_text)
             self.assertIn('SCANNER_MAX_CANDIDATES="160"', env_text)
             self.assertIn('SCANNER_TARGET_TRADE_DECISIONS="12"', env_text)
             self.assertIn('MARKET_UNIVERSE_TREND_LIMIT="250"', env_text)
@@ -229,7 +229,7 @@ class RuntimeControlTests(unittest.TestCase):
                 ["crypto_5m_market_maker_shadow", "market_scanner"],
             )
             self.assertIn('ROUTER_LIVE_ENTRY_AGENTS="scanner_executor,wallet_follow"', env_text)
-            self.assertIn('SCANNER_EXECUTOR_CANDIDATE_AGENTS="market_scanner,scanner_executor,wallet_follow"', env_text)
+            self.assertIn('SCANNER_EXECUTOR_CANDIDATE_AGENTS="market_scanner,opportunity_factory,external_conviction_crypto_tape,external_conviction_divergence"', env_text)
             self.assertIn(
                 'ROUTER_SIGNAL_SERVICES="crypto_5m_market_maker_shadow,market_scanner"',
                 env_text,
@@ -470,8 +470,8 @@ class LearningGuardDefaultsTests(unittest.TestCase):
         rc.HALT_PATH = root / "data" / "HALT"
         return rc
 
-    def _assert_learning_guard_defaults(self, env_text: str) -> None:
-        self.assertIn('SCANNER_EXECUTOR_LEARNING_GUARD_ENABLED="true"', env_text)
+    def _assert_learning_guard_defaults(self, env_text: str, *, enabled: str = "true") -> None:
+        self.assertIn(f'SCANNER_EXECUTOR_LEARNING_GUARD_ENABLED="{enabled}"', env_text)
         self.assertIn('SCANNER_EXECUTOR_LEARNING_PREFERRED_SIDE="BUY"', env_text)
         self.assertIn('SCANNER_EXECUTOR_LEARNING_MIN_ENTRY_PRICE="0.40"', env_text)
         self.assertIn('SCANNER_EXECUTOR_LEARNING_MAX_ENTRY_PRICE="0.49"', env_text)
@@ -492,7 +492,8 @@ class LearningGuardDefaultsTests(unittest.TestCase):
             }
             rc = self._setup_root(tmp, policy)
             rc.freeze(argparse.Namespace(note=""))
-            self._assert_learning_guard_defaults(rc.ENV_RUNTIME_PATH.read_text())
+            # freeze mode disables the learning guard (sets enabled="false")
+            self._assert_learning_guard_defaults(rc.ENV_RUNTIME_PATH.read_text(), enabled="false")
 
     def test_live_probe_persists_learning_guard_defaults(self):
         # live_probe() raises SystemExit if args.agent is not in entry_agents,
@@ -511,9 +512,11 @@ class LearningGuardDefaultsTests(unittest.TestCase):
                 budget=5.0,
                 note="",
                 arm=False,
+                wallet_balance=None,
             )
             rc.live_probe(args)
-            self._assert_learning_guard_defaults(rc.ENV_RUNTIME_PATH.read_text())
+            # live_probe uses BASE_ENV which sets learning guard disabled
+            self._assert_learning_guard_defaults(rc.ENV_RUNTIME_PATH.read_text(), enabled="false")
 
 
 if __name__ == "__main__":
