@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 RECONNECT_DELAY_SEC = 2.0
 SUBSCRIBE_TIMEOUT_SEC = 5.0
+# Polymarket sends a `book` snapshot only on subscribe; subsequent updates
+# arrive as `price_change` deltas which we don't fully replay. So we force
+# a fresh subscribe periodically to keep mid + history in sync.
+PERIODIC_RESUBSCRIBE_SEC = 15.0
 
 
 @dataclass
@@ -185,15 +189,23 @@ class WSBookFeed:
             self.connected = True
             logger.info("ws_book_feed connected to %s", WS_URL)
             await self._resubscribe(list(self._asset_ids))
+            last_periodic_resub = time.time()
             while not self._stop_event.is_set():
                 try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                    raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+                    self._handle_message(raw)
                 except asyncio.TimeoutError:
-                    # No msg in 30s — likely book is quiet but connection alive
-                    continue
+                    pass
                 except ConnectionClosed:
                     break
-                self._handle_message(raw)
+                # Force a fresh book snapshot every PERIODIC_RESUBSCRIBE_SEC.
+                # Without this, price_change deltas arrive but we don't
+                # replay them onto the book → history stays stuck on the
+                # initial snapshot. Discovered 2026-05-27 when v3 only
+                # fired spikes in the first cycle then went silent.
+                if time.time() - last_periodic_resub >= PERIODIC_RESUBSCRIBE_SEC:
+                    await self._resubscribe(list(self._asset_ids))
+                    last_periodic_resub = time.time()
 
     async def _resubscribe(self, asset_ids: list[str]) -> None:
         if not self._ws or not asset_ids:

@@ -203,6 +203,16 @@ CREATE TABLE IF NOT EXISTS market_quarantine (
 );
 CREATE INDEX IF NOT EXISTS idx_market_quarantine_ts ON market_quarantine(last_seen_ts);
 
+CREATE TABLE IF NOT EXISTS execution_locks (
+    lock_key TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    token_id TEXT,
+    reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_execution_locks_ts ON execution_locks(ts);
+
 CREATE TABLE IF NOT EXISTS agent_promotion_ledger (
     agent TEXT PRIMARY KEY,
     state TEXT NOT NULL,
@@ -332,6 +342,7 @@ BTC_5MIN_OPEN = "btc_5min_open"
 BTC5MIN_TIMED_OPEN = "btc5min_timed_open"
 BTC5MIN_TIMED_V2_OPEN = "btc5min_timed_v2_open"
 BTC5MIN_TIMED_V3_OPEN = "btc5min_timed_v3_open"
+DAILY_3H_FADE_OPEN = "daily_3h_fade_open"
 # Resolution-sync statuses (added 2026-05-08): written when a Polymarket
 # market resolves and on-chain CTF balance hits dust on a token we held.
 # Realized P&L is recorded in `size_usdc` as the payout (shares × $1 if won,
@@ -1161,6 +1172,43 @@ class TradeLog:
             )
             return cur.lastrowid
 
+    def acquire_execution_lock(
+        self,
+        *,
+        lock_key: str,
+        agent: str,
+        market_id: str,
+        token_id: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Atomically reserve a live execution key across processes.
+
+        This protects hot paths where both a polling service and a WS-triggered
+        service can observe the same approved decision before either one has
+        written a filled trade. The lock is intentionally durable: a single
+        source decision should not send a second live order after any attempt.
+        """
+        with self._lock, self._connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO execution_locks
+                        (lock_key, ts, agent, market_id, token_id, reason)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(lock_key),
+                        _now(),
+                        str(agent),
+                        str(market_id),
+                        str(token_id) if token_id is not None else None,
+                        reason,
+                    ),
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
     def mark(
         self,
         trade_id: int,
@@ -1302,7 +1350,7 @@ class TradeLog:
         """Like filled_positions() but includes id, ts, and response_json.
         Used by position_manager to aggregate fills + read per-position
         overrides (e.g. tp_pct_override on manual entries)."""
-        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN, BTC_5MIN_OPEN, BTC5MIN_TIMED_OPEN, BTC5MIN_TIMED_V2_OPEN, BTC5MIN_TIMED_V3_OPEN)
+        open_statuses = (FILLED, BTC_DAILY_OPEN, NEAR_RESOLUTION_OPEN, NEWS_SHOCK_OPEN, WALLET_FOLLOW_OPEN, BTC_5MIN_OPEN, BTC5MIN_TIMED_OPEN, BTC5MIN_TIMED_V2_OPEN, BTC5MIN_TIMED_V3_OPEN, DAILY_3H_FADE_OPEN)
         terminal_statuses = (
             "closed_take_profit", "closed_stop_loss", "closed_timeout",
             "closed_dust", "resolved_yes", "resolved_no", "resolved_loss",

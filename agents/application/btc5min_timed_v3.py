@@ -396,6 +396,15 @@ class Btc5MinTimedV3Engine:
         # token_ids[0] = YES (UP); token_ids[1] = NO (DOWN)
         token_id = token_ids[0] if side == "BUY" else token_ids[1]
 
+        # Bug B fix: update spike state for shadow alternation. Real fire path
+        # updates these inside _fire_live AFTER order success; in shadow we
+        # need them set now or alternation rule never triggers.
+        if phase in ("spike_up", "spike_down"):
+            now_offset = time.time() - period_ts
+            self._cycle.entry_count += 1
+            self._cycle.last_spike_direction = spike_direction
+            self._cycle.last_fire_offset = now_offset
+
         if not self.cfg.execute:
             logger.info(
                 "btc5min_timed_v3[%s/%s] DRYRUN: side=%s token=%s tp=%.0f%% sl=%.0f%%",
