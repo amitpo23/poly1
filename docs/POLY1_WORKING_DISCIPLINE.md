@@ -94,7 +94,7 @@ authorization" לבקשת המפעיל.
 
 **אסור:** push אוטומטי, גם אם המפעיל אמר "go" ל־commit עצמו.
 
-**Server is canonical:** `trader@83.229.82.193:/srv/poly1` הוא source of truth ל־runtime.
+**Server is canonical:** `root@167.233.27.32:/srv/poly1` (alias `ssh poly1`) הוא source of truth ל־runtime. השרת הקודם (Kamatera `trader@83.229.82.193`) הוחלף ב-2026-05-28 — ראה `docs/HETZNER_SERVER_ACCESS.md` לרענון מלא.
 Local הוא staging/dev/review בלבד. ה־server נשמר נקי דרך `scripts/verify_server_source_of_truth.sh`
 (חוץ מ־`deploy/.env.runtime` המאושר).
 
@@ -153,7 +153,7 @@ Local הוא staging/dev/review בלבד. ה־server נשמר נקי דרך `scr
 
 1. SSH check:
    ```bash
-   ssh trader@83.229.82.193 'cd /srv/poly1 && git log -1 --oneline && \
+   ssh poly1 'cd /srv/poly1 && git log -1 --oneline && \
      python3 scripts/runtime_control.py status && \
      ls -la data/HALT'
    ```
@@ -162,6 +162,38 @@ Local הוא staging/dev/review בלבד. ה־server נשמר נקי דרך `scr
 3. רק אם מאמתים — ממשיכים לעבודה החדשה.
 
 **מטרה:** לא לעבוד בעיוור. אם משהו זז מאז הסשן הקודם — acknowledgment ראשון.
+
+## חוק 8 — Live Runtime Truth Must Be Checked Inside Containers
+
+נוסף 2026-05-27 אחרי live discovery שבו `.env.runtime` היה נכון, אבל
+`docker-compose.yml` hardcoded ערך מנוגד ולכן הקונטיינר רץ עם gate שגוי.
+
+לפני אמירה שהמסחר "עובד תקין" או שכל הסוכנים "פעילים", חובה לבדוק בשרת:
+
+```bash
+python3 scripts/runtime_control.py status
+docker compose ps <services>
+docker compose logs --since=5m --tail=120 trading-supervisor
+docker compose exec -T <service> printenv | grep '<RELEVANT_ENV_PREFIX>'
+```
+
+אם בוצע hotfix לקוד שמורץ בקונטיינר, חובה לוודא שהקובץ באמת קיים בתוך
+`/app/...` בקונטיינר:
+
+```bash
+docker compose exec -T <service> grep -n '<new-code-marker>' /app/path/to/file.py
+```
+
+כל position שנפתח live חייב supervisor-visible exit path:
+
+- `position_manager` healthy.
+- אין `data/HALT`.
+- קיימת החלטת exit/HOLD ב־`brain_decisions` עבור הפוזיציה, או שה-supervisor
+  מדווח `ok`.
+
+אין להסיק "אין סיגנלים" רק כי אין עסקאות. קודם מסווגים את החסימה:
+אין candidates, quality gate, learning guard, orderbook/EV, risk/HALT,
+max-open, או compose override.
 
 ---
 
@@ -182,7 +214,7 @@ Local הוא staging/dev/review בלבד. ה־server נשמר נקי דרך `scr
 git checkout <tag-or-branch>
 
 # בשרת (רק אחרי "deploy" מפורש)
-ssh trader@83.229.82.193 'cd /srv/poly1 && git fetch && git checkout <tag>'
+ssh poly1 'cd /srv/poly1 && git fetch && git checkout <tag>'
 ```
 
 **Restore SQLite:** `/srv/poly1/data/backups/` בשרת — backups לילית
@@ -210,3 +242,4 @@ ad-hoc override:
 |---|---|---|
 | 2026-05-23 | יצירה ראשונה (7 כללים, version mgmt, חריגים) | המפעיל |
 | 2026-05-23 | חוק 2 הורחב: diff verification חובה + 4-criteria standing authorization | המפעיל |
+| 2026-05-27 | חוק 8 נוסף: live runtime truth נבדק בתוך containers + exit-path evidence | המפעיל |
