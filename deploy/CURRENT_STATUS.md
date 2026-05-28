@@ -97,7 +97,7 @@ Before the next live run:
 5. Monitor with `live_equity_guard.py`; drawdown comparisons must use equity,
    not cash.
 
-Detailed handoff: `docs/SESSION_2026-05-20_CONTEXT_HANDOFF.md`.
+Detailed handoff: `docs/archive/sessions/2026-05/SESSION_2026-05-20_CONTEXT_HANDOFF.md`.
 
 ## 2026-05-19 Source Of Truth Lock
 
@@ -403,7 +403,7 @@ Tavily confidence crosses 0.65 threshold on a real event.
   reconciliation. Exit/settlement handling is still needed before that
   market should be reused.
 
-See `docs/SESSION_2026-05-11_AGENT_TRADING_STABILIZATION.md` for previous session.
+See `docs/archive/sessions/2026-05/SESSION_2026-05-11_AGENT_TRADING_STABILIZATION.md` for previous session.
 
 ## Latest changes (2026-05-11, agent trading stabilization)
 
@@ -462,7 +462,7 @@ ready for live capital.
 - Do not flip swarm to live until OpportunityRouter emits `live_probe`
   and the exit agent has a matching exit thesis.
 
-See `docs/SESSION_2026-05-11_AGENT_TRADING_STABILIZATION.md`.
+See `docs/archive/sessions/2026-05/SESSION_2026-05-11_AGENT_TRADING_STABILIZATION.md`.
 
 ## Latest changes (2026-05-10 evening, manual_entry + momentum)
 
@@ -539,7 +539,7 @@ rows. **Does NOT auto-activate any agent** — surfaces candidates for
 human review + backtest. Replaces the "auto-tuner" pattern that bit
 us with scalper yesterday.
 
-See `docs/SESSION_2026-05-10_SCOUT_PLAN.md` for the full plan.
+See `docs/archive/sessions/2026-05/SESSION_2026-05-10_SCOUT_PLAN.md` for the full plan.
 
 ## Earlier changes (afternoon 2026-05-09, exhaustive strategy sweep)
 
@@ -569,7 +569,7 @@ markets aged 90-180d returned data). Can't validate longer windows.
 
 **Decision:** btc_daily remains the only strategy with stable
 backtest evidence (60.7% / 30d). Everything else fails. swarm stays
-in dryrun. See `docs/SESSION_2026-05-09_MARKET_SWEEP.md`.
+in dryrun. See `docs/archive/sessions/2026-05/SESSION_2026-05-09_MARKET_SWEEP.md`.
 
 ## Earlier (morning 2026-05-09, MR backtest + alerting layer)
 
@@ -579,7 +579,7 @@ Three concrete outcomes this morning:
    replaces the verbose 30-min cron with diff-driven alerts. Silent on
    no-change; alerts on new fills, container down, RECONCILE_NEEDED,
    MAY_HAVE_FIRED. Cron updated to fire short prompt (`שקט.` when no
-   change). See `docs/SESSION_2026-05-09_ALERTING_LAYER.md`.
+   change). See `docs/archive/sessions/2026-05/SESSION_2026-05-09_ALERTING_LAYER.md`.
 
 2. **swarm dryrun discovery** — `.env` says `BOT_MODE=live` but the
    running container reports `mode=dryrun` (env drift, never recreated
@@ -611,7 +611,7 @@ all parameter variants once realistic spreads/fees were modeled."
 - BOT_MODE flip blocked until any swarm strategy passes 65% WR with
   realistic slippage
 
-See `docs/SESSION_2026-05-09_MR_BACKTEST.md`.
+See `docs/archive/sessions/2026-05/SESSION_2026-05-09_MR_BACKTEST.md`.
 
 ## Earlier (late evening 2026-05-08, scalper disabled — backtest correction)
 
@@ -797,7 +797,7 @@ btc_daily parameter changes.
 ---
 
 
-- `docs/SESSION_2026-05-08_INFRA_FIXES.md` — full action log including the
+- `docs/archive/sessions/2026-05/SESSION_2026-05-08_INFRA_FIXES.md` — full action log including the
   self-investigation that drove these decisions.
 - **Two infrastructure fixes** (build before more strategy work):
   1. **resolution_sync** (`agents/application/resolution_sync.py`, ~280
@@ -846,7 +846,7 @@ btc_daily parameter changes.
 
 Latest session (evening 2026-05-07, allocator auto-sync + dust-bug fix):
 
-- `docs/SESSION_2026-05-07_ALLOCATOR_AUTO_SYNC.md` — full session log.
+- `docs/archive/sessions/2026-05/SESSION_2026-05-07_ALLOCATOR_AUTO_SYNC.md` — full session log.
 - **Bug fix**: `position_manager._already_closed` was returning True
   forever after a tiny dust-close ($0.0034 timeout fill on token
   `115755`) marked the position closed in the journal even though
@@ -986,7 +986,7 @@ Latest session (morning 2026-05-07, MarketBrain first slice):
 
 Latest session (morning 2026-05-07, exit-logic activation + first SL closes):
 
-- `docs/SESSION_2026-05-07_EXIT_LOGIC_ACTIVATION.md` — full action log.
+- `docs/archive/sessions/2026-05/SESSION_2026-05-07_EXIT_LOGIC_ACTIVATION.md` — full action log.
 - Built `agents/application/position_manager.py` (~400 lines) +
   `tests/test_position_manager.py` (13 tests). 10% symmetric TP/SL,
   720h max hold, 60s poll. Activated as `position_manager` service
@@ -1018,7 +1018,7 @@ Latest dashboard/swarm handoff:
 
 Latest research/review handoff:
 
-- `docs/POLYAGENT_REVIEW_2026-05-06.md` — PolyAgent read-only review;
+- `docs/archive/postmortems/POLYAGENT_REVIEW_2026-05-06.md` — PolyAgent read-only review;
   added `news_signals` table + dry-run news classification module
   (no live wiring to executor or risk gate).
 
@@ -1405,7 +1405,7 @@ reject_live_backtest_required | final_score=0.086 | risk_score=0.64 |
 approved_for_live=0
 ```
 
-Full handoff: `docs/SESSION_2026-05-11_RESEARCH_COMMITTEE.md`.
+Full handoff: `docs/archive/sessions/2026-05/SESSION_2026-05-11_RESEARCH_COMMITTEE.md`.
 
 Tail logs:
 

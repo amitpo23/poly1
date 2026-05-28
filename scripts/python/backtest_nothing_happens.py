@@ -11,7 +11,7 @@ Mimics swarm's ``NothingHappensConfig`` defaults exactly:
   - exit: hold to resolution (CTF redemption, no slippage)
   - position size: $1 (the live config)
 
-Per `docs/SESSION_2026-05-10_SCOUT_PLAN.md` Step 4: this is the gate
+Per `docs/archive/sessions/2026-05/SESSION_2026-05-10_SCOUT_PLAN.md` Step 4: this is the gate
 that decides whether nothing_happens flips BOT_MODE=live. We split
 the 90-day window into 3×30-day buckets and require ALL three to
 exceed 55% WR with n≥30 settled trades. (The 90-day average alone

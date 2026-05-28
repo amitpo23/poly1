@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """scout.py — hourly scanner that surfaces market opportunities.
 
-Per `docs/SESSION_2026-05-10_SCOUT_PLAN.md`: this is read-only,
+Per `docs/archive/sessions/2026-05/SESSION_2026-05-10_SCOUT_PLAN.md`: this is read-only,
 opportunity-surfacing infrastructure. **It does NOT auto-activate
 any agent**, modify .env, or change BOT_MODE. Workflow:
 
