@@ -2,9 +2,10 @@
 
 **Audience:** every coding agent (Claude Code, Codex, Cursor, others) that needs to interact with poly1's production server.
 
-**Migrated:** 2026-05-28 (from Kamatera `83.229.82.193` to Hetzner `167.233.27.32`).
+**Migrated:** 2026-05-28 (Kamatera `83.229.82.193` → Hetzner Falkenstein `167.233.27.32`).
+**Re-migrated:** 2026-05-29 (Hetzner Falkenstein `167.233.27.32` → Hetzner Helsinki `95.217.236.163`) — Polymarket CLOB geoblocks Germany. Falkenstein is **deleted**.
 
-This doc supersedes any older references to Kamatera. If you see `83.229.82.193` or `trader@83.229.82.193` in code/docs, that is the **old** server (kept up as fallback for 24-48h after migration, then terminated by the operator).
+This doc supersedes any older references. If you see `83.229.82.193`, `trader@83.229.82.193`, or `167.233.27.32` in code/docs, those are the **old** servers. The current production host is `95.217.236.163` and the alias is `ssh poly1`.
 
 ---
 
@@ -25,15 +26,16 @@ The bot is **HALT + freeze** by default. **Never** `EXECUTE=true`, `runtime_cont
 | Field | Value |
 |---|---|
 | Host alias | `poly1` (configured in your `~/.ssh/config`) |
-| HostName | `167.233.27.32` |
+| HostName | `95.217.236.163` |
 | User | `root` |
 | Key | `~/.ssh/id_ed25519` (key fingerprint matches `poly1-deploy`) |
 | Port | 22 (default) |
+| Location | Hetzner Helsinki (FI) — picked specifically because Finland is **not** on Polymarket's CLOB geoblock list (see §11) |
 
-The alias was registered by `scripts/migrate_to_hetzner.sh` step 8.5. If `ssh poly1` fails:
+The alias was registered by `scripts/migrate_to_hetzner.sh` step 8.5 and updated by `Edit ~/.ssh/config` during the 2026-05-29 re-migration. If `ssh poly1` fails:
 ```bash
 grep -A5 "^Host poly1" ~/.ssh/config         # verify alias exists
-ssh root@167.233.27.32 'hostname'             # fall back to raw IP
+ssh root@95.217.236.163 'hostname'           # fall back to raw IP
 ```
 
 If neither works, the operator either rotated the IP (check Hetzner Console) or removed the alias (re-run migration script's step 8.5 against the current IP).
@@ -227,6 +229,39 @@ For all four: tell the operator. Do not attempt to bypass.
 
 ---
 
-## 11. After-action: was anything missed by this doc?
+## 11. Polymarket CLOB geoblock — do not migrate to a blocked region
+
+Polymarket's CLOB blocks order submissions from certain countries with HTTP 403. The bot can still REDEEM and SWEEP (Builder relayer paths) from any region — but BUY and SELL via the CLOB break.
+
+**Canonical list:** `https://docs.polymarket.com/developers/CLOB/geoblock`
+
+**Confirmed blocked as of 2026-05-29** (do not host here): Australia, Belgium, Belarus, Burundi, Central African Republic, Congo, Cuba, **Germany (DE) — incl. all Hetzner DE locations Falkenstein + Nuremberg**, Eritrea, Ethiopia, UK, Iran, Iraq, Italy, Lebanon, Libya, Myanmar, Nicaragua, **Netherlands (NL)**, North Korea, Russia, Somalia, Sudan, Syria, South Sudan, **USA — incl. Hetzner US locations Hillsboro + Ashburn**, Venezuela, Yemen, Zimbabwe.
+
+**Close-only (can SELL but not BUY):** Poland, Singapore — incl. Hetzner Singapore.
+
+**Allowed and tested:** Finland (FI — current Helsinki host).
+
+**Detection test from the server** (5 seconds, no auth needed):
+```bash
+curl -s -o /dev/null -w "POST /order: %{http_code}\n" --max-time 8 -X POST https://clob.polymarket.com/order -H "Content-Type: application/json" -d "{}"
+# 401 = geoblock OK (auth missing — that's expected)
+# 403 = geoblocked, this region is unusable for live trading
+```
+
+If the test returns 403, the bot must be re-migrated to an allowed region. The 2026-05-29 session migrated Falkenstein → Helsinki in ~30 minutes end-to-end using the same pattern as `migrate_to_hetzner.sh` but with `KAMATERA_HOST` substituted for the source Hetzner box. See `docs/SESSION_2026-05-29_*.md` for the full play-by-play if you need to repeat it.
+
+---
+
+## 12. Recovering positions / cash from the deposit wallet
+
+The bot's `scripts/python/redeem_winnings.py` returns `$0 redeemed` even when transactions succeed on-chain — root cause is an EC-point compression mismatch between off-chain positionId derivation and what `CTF.redeemPositions` derives on-chain. **Don't rely on it.**
+
+For the working flow (move tokens to legacy_proxy → Polymarket UI Redeem → sweep pUSD back), see `docs/WALLET_RECOVERY_FLOW.md`. It's a clean three-step procedure that has been verified twice (2026-05-26 + 2026-05-29).
+
+For closing **active** positions (markets not yet resolved), use `bot.sell_shares(token_id, shares, limit_price, OrderType.FAK)` directly. This only works from a CLOB-allowed region — see §11.
+
+---
+
+## 13. After-action: was anything missed by this doc?
 
 If you're a future agent and you find yourself doing something on Hetzner that this doc doesn't cover, append a section here in your session's PR. The goal is that the next agent's first question ("how do I talk to the server?") has a complete answer.

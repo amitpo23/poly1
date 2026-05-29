@@ -94,7 +94,7 @@ authorization" לבקשת המפעיל.
 
 **אסור:** push אוטומטי, גם אם המפעיל אמר "go" ל־commit עצמו.
 
-**Server is canonical:** `root@167.233.27.32:/srv/poly1` (alias `ssh poly1`) הוא source of truth ל־runtime. השרת הקודם (Kamatera `trader@83.229.82.193`) הוחלף ב-2026-05-28 — ראה `docs/HETZNER_SERVER_ACCESS.md` לרענון מלא.
+**Server is canonical:** `root@95.217.236.163:/srv/poly1` (alias `ssh poly1`, Hetzner Helsinki) הוא source of truth ל־runtime. השרתים הקודמים — Kamatera `trader@83.229.82.193` (הוחלף 2026-05-28) ו-Hetzner Falkenstein `167.233.27.32` (הוחלף 2026-05-29 בגלל Polymarket geoblock על Germany) — נמחקו. ראה `docs/HETZNER_SERVER_ACCESS.md` לרענון מלא + `docs/WALLET_RECOVERY_FLOW.md` לנוהל סגירת פוזיציות.
 Local הוא staging/dev/review בלבד. ה־server נשמר נקי דרך `scripts/verify_server_source_of_truth.sh`
 (חוץ מ־`deploy/.env.runtime` המאושר).
 

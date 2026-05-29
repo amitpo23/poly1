@@ -17,8 +17,14 @@ production incident.
 - `SPEC.md` — what the bot does, contracts between modules, env vars.
 - `deploy/PREFLIGHT.md` — operator checklist before live trading.
 - `docs/HETZNER_SERVER_ACCESS.md` — **how to reach the production server**
-  (`ssh poly1` → `167.233.27.32`). Old Kamatera host `83.229.82.193` was
-  retired 2026-05-28. Required reading before any `ssh`/`scp` to "the server".
+  (`ssh poly1` → `95.217.236.163`, Hetzner Helsinki). Past hosts: Kamatera
+  `83.229.82.193` retired 2026-05-28, Hetzner Falkenstein `167.233.27.32`
+  retired 2026-05-29 (Polymarket geoblocks Germany). **Required reading
+  before any `ssh`/`scp` to "the server" — includes the §11 geoblock list.**
+- `docs/WALLET_RECOVERY_FLOW.md` — the **only working** procedure for
+  redeeming resolved-winner positions (the direct redeem_winnings.py path
+  returns $0 due to an EC-point compression bug). Use the
+  move-to-proxy → UI redeem → sweep flow.
 - `docs/AGENTS_MAP.md` — what each module in `agents/application/` does
   (with the gotcha that `btc5min_timed_v2/v3` are independent strategies,
   not version-bumps).
